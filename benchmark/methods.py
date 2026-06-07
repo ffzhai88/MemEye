@@ -28,35 +28,38 @@ def _normalize_modality(config: Dict[str, Any], method_name: str) -> str:
 
 
 def _estimate_turn_tokens(turn: Dict[str, Any]) -> int:
-    """Estimate token count for a single history turn (text + images)."""
+    """估算单条历史轮次的大致 token 开销，包括文本与图片两部分。"""
+    # 把当前轮次的文本内容转成字符串，并按固定比例估算文本 token 数。
     text = str(turn.get("text", ""))
     text_tokens = max(1, len(text) // _CHARS_PER_TOKEN)
+    # 把图片数量乘上预设的图片 token 开销，作为视觉内容的估计成本。
     image_tokens = len(turn.get("images", []) or []) * _IMAGE_TOKEN_COST
+    # 返回文本和图片两部分的总估算 token 数。
     return text_tokens + image_tokens
 
 
 def _truncate_history(history: List[Dict[str, Any]], max_tokens: int) -> List[Dict[str, Any]]:
-    """Truncate history from the front (keep most recent turns) to fit within max_tokens.
-
-    This follows the standard Full Memory approach in Mem-Gallery:
-    include all memory and truncate according to the context token limit.
-    Truncation removes the oldest turns first (FIFO-style).
-    """
+    """按“保留最近轮次、丢弃最老轮次”的方式截断历史上下文，使其不超过 token 上限。"""
+    # 如果配置的 token 上限小于等于 0，就不做任何截断，直接返回原历史。
     if max_tokens <= 0:
         return history
 
-    # Walk backwards (most recent first) and accumulate token budget
+    # 从最后一轮开始往前累加 token 开销，优先保留最近的历史。
     cumulative = 0
+    # 默认保留全部历史；如果超限，再把过老的轮次裁掉。
     cutoff_idx = len(history)
     for i in range(len(history) - 1, -1, -1):
+        # 估算当前轮次的 token 开销，并累加到总预算中。
         cumulative += _estimate_turn_tokens(history[i])
+        # 一旦超出预算，就从当前位置之后开始保留，丢弃更早的轮次。
         if cumulative > max_tokens:
             cutoff_idx = i + 1
             break
     else:
-        # Everything fits
+        # 如果整个历史都没有超限，就直接返回原列表，不需要裁剪。
         return history
 
+    # 返回保留最近轮次后的历史片段。
     return history[cutoff_idx:]
 
 
@@ -78,8 +81,10 @@ class _MemGalleryHistoryMethod(HistoryMethod):
     history_source = "history"
 
     def _validate_modality_inputs(self, dataset: MemoryBenchmarkDataset) -> None:
+        # 只有 text_only 模式才需要额外校验 caption；如果当前方法是多模态模式，就跳过这一步。
         if self.modality != "text_only":
             return
+        # 把 caption 校验结果写入 runtime_info，方便后续分析是否成功加载了文本替代信息。
         self.runtime_info.update(validate_text_only_captions(dataset.rounds))
 
     def _update_history_runtime(
@@ -88,9 +93,11 @@ class _MemGalleryHistoryMethod(HistoryMethod):
         *,
         history_before_truncation: Optional[int] = None,
     ) -> None:
+        # 先保留已有的 runtime 信息，避免覆盖别的统计字段。
         existing = dict(self.runtime_info)
         self.runtime_info.clear()
         self.runtime_info.update(existing)
+        # 统一写入当前方法的基本运行时标签，方便后续结果汇总与日志分析。
         self.runtime_info.update(
             {
                 "method_modality": self.modality,
@@ -100,6 +107,7 @@ class _MemGalleryHistoryMethod(HistoryMethod):
                 "history_turns_after_truncation": len(history),
             }
         )
+        # 如果有截断前的原始长度，就额外记录下来，便于观察上下文压缩比例。
         if history_before_truncation is not None:
             self.runtime_info["history_turns_before_truncation"] = history_before_truncation
 
@@ -108,10 +116,14 @@ class _MemGalleryFullContextMethod(_MemGalleryHistoryMethod):
     history_source = "full_context"
 
     def build_history(self, dataset: MemoryBenchmarkDataset, qa: Dict[str, Any]) -> List[Dict[str, Any]]:
-        """Mem-Gallery-style full-context memory, split into text and multimodal variants."""
+        """按全上下文方式构造历史记忆，支持文本和多模态两种模式。"""
+        # 先检查当前模态是否需要额外的 caption 校验；text_only 模式下会补充 caption 相关运行信息。
         self._validate_modality_inputs(dataset)
+        # 初始化一个空列表，用来保存所有会话轮次拼接后的历史上下文。
         history: List[Dict[str, Any]] = []
+        # 遍历数据集中所有会话，按顺序把每轮对话加入历史。
         for sid in dataset.session_order():
+            # 把当前会话中的轮次转换为可用于模型输入的历史条目。
             history.extend(
                 history_from_round_ids(
                     dataset.get_session(sid),
@@ -120,11 +132,15 @@ class _MemGalleryFullContextMethod(_MemGalleryHistoryMethod):
                 )
             )
 
+        # 读取最大上下文长度，默认 128k tokens；如果配置中没有设置，就使用默认值。
         max_tokens = int(self.config.get("context_token_limit", 128_000))
-        # Reserve tokens for system prompt (~500) + question (~200) + answer generation
+        # 预留一部分 token 给系统提示、用户问题和生成答案，避免上下文把主对话挤爆。
         reserved = int(self.config.get("reserved_tokens", 1_000))
+        # 用截断函数把历史压缩到可用 token 上限内，优先保留最近的轮次。
         truncated = _truncate_history(history, max_tokens - reserved)
+        # 更新运行时统计信息：记录截断前后轮次数量，帮助分析上下文长度和模态开销。
         self._update_history_runtime(truncated, history_before_truncation=len(history))
+        # 返回最终可用于推理的历史上下文列表。
         return truncated
 
 
@@ -342,6 +358,7 @@ def get_method(method_name: str, config: Optional[Dict[str, Any]] = None) -> His
         MMAAgentMethod.name: MMAAgentMethod,
     }
     cls = registry.get(method_name)
+    # 如果方法不再以上的registry中，就尝试按名称动态加载对应的类；如果仍然找不到，就默认使用 Mirix 方法，支持更多社区贡献的扩展方法。
     if cls is None:
         if method_name == "a_mem":
             from .a_mem import AMemMethod

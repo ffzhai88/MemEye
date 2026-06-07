@@ -325,85 +325,111 @@ def parse_matrix_coords(point: Any) -> List[Tuple[str, str]]:
 # Result aggregation
 # ---------------------------------------------------------------------------
 
+# 需要汇总的核心指标集合；这里统一覆盖 EM、包含率、F1、BLEU、BERTScore 和 LLM Judge。
 _OPEN_METRICS = ("em", "contains_gt", "f1", "bleu", "bleu_1", "bleu_2", "bert", "judge")
 
 
 def _mean(vals: List[float]) -> float:
+    # 对一组数值取平均；如果为空列表，就返回 0，避免除零或空结果导致异常。
     return _stats.mean(vals) if vals else 0.0
 
 
 def summarize_results(results: List[Dict[str, Any]]) -> Dict[str, Any]:
     """
-    Aggregate open-mode metrics overall, by X, by Y, and by (Xi,Yj) cell.
-    Metrics missing from a row (e.g. bert=None when disabled) are skipped.
+    把逐题结果汇总成全局、按 X 分组、按 Y 分组和按矩阵单元分组的统计信息。
+    对于某些指标未启用的题目（例如 bert=None），会在汇总时自动跳过，不影响平均值计算。
     """
-    # Aggregate all rows (open + mcq) uniformly. MCQ rows have em/f1 but
-    # bleu/bert/judge are None — _mean() skips None values via the filter.
+    # 先把原始结果复制一份，作为“总题数”统计的基准。
     open_rows = list(results)
+    # 只挑出 MCQ 题，用于单独统计正确率、有效选择率和旋转位置偏置。
     mcq_rows  = [r for r in results if r.get("mode") == "mcq"]
+    # 只保留至少有一个有效度量值的行，避免把纯文本记录也纳入数值聚合。
     metric_rows = [r for r in results if any(r.get(m) is not None for m in _OPEN_METRICS)]
 
+    # 初始化四类汇总容器：全局、按 X、按 Y、按单元格。
     overall: Dict[str, List[float]] = {m: [] for m in _OPEN_METRICS}
     by_x:    Dict[str, Dict[str, List[float]]] = {}
     by_y:    Dict[str, Dict[str, List[float]]] = {}
     by_cell: Dict[str, Dict[str, List[float]]] = {}
+    # MCQ 专用的汇总容器，记录 MCQ 题的平均分和有效选择率。
     mcq_overall: Dict[str, List[float]] = {m: [] for m in _OPEN_METRICS}
 
+    # 辅助函数：把某一行的有效数值指标追加到指定分组桶中。
     def _add_to(bucket: Dict[str, Dict[str, List[float]]], key: str, row: Dict) -> None:
+        # 如果这个分组尚未存在，就先初始化空列表。
         b = bucket.setdefault(key, {m: [] for m in _OPEN_METRICS})
         for m in _OPEN_METRICS:
+            # 只收集非 None 的数值，避免把未启用的指标（如 bert=None）带进来。
             val = row.get(m)
             if val is not None:
                 b[m].append(float(val))
 
+    # 遍历所有有数值的结果行，先做全局汇总，再做 X/Y/Cell 分组汇总。
     for row in metric_rows:
+        # 把这行的有效指标追加到全局指标列表里。
         for m in _OPEN_METRICS:
             val = row.get(m)
             if val is not None:
                 overall[m].append(float(val))
 
+        # 解析题目中的矩阵坐标，例如 point=[['X1','X3'],['Y1']]。
         cells = parse_matrix_coords(row.get("point"))
         seen_x: set = set()
         seen_y: set = set()
         for (xi, yj) in cells:
+            # 第一次遇到某个 X 标签时，把这一行加到 by_x 中。
             if xi not in seen_x:
                 _add_to(by_x, xi, row)
                 seen_x.add(xi)
+            # 第一次遇到某个 Y 标签时，把这一行加到 by_y 中。
             if yj not in seen_y:
                 _add_to(by_y, yj, row)
                 seen_y.add(yj)
+            # 每个 (Xi, Yj) 组合都单独形成一个 cell bucket。
             _add_to(by_cell, f"{xi}_{yj}", row)
 
+    # 把中间的分组列表转换成“平均值字典”，只保留真正有数值的项。
     def _collapse(bucket: Dict) -> Dict:
         return {k: {m: _mean(vs) for m, vs in mv.items() if vs} for k, mv in bucket.items()}
 
+    # 组装最终的汇总结果：包括总题数、全局平均值，以及 X/Y/Cell 的分组平均值。
     summary: Dict[str, Any] = {
+        # open_count 表示总共处理了多少题（包括 MCQ 和 open-ended），用于后续统计覆盖率。
         "open_count": len(open_rows),
+        # overall 是全局平均值，按每个指标分别计算。
         "overall":    {m: _mean(vs) for m, vs in overall.items() if vs},
+        # by_x / by_y / by_cell 分别按实验矩阵的行、列、单元做聚合，方便定位表现差异。
         "by_x":       _collapse(by_x),
         "by_y":       _collapse(by_y),
         "by_cell":    _collapse(by_cell),
     }
+    # 如果存在 MCQ 题，再补充 MCQ 专用的统计信息。
     if mcq_rows:
+        # 记录本次结果里一共有多少条 MCQ 题。
         summary["mcq_count"] = len(mcq_rows)
+        # 计算有效选择率：模型是否成功给出合法选项字母的比例。
         summary["mcq_valid_rate"] = (
             sum(1 for r in mcq_rows if r.get("valid_choice")) / len(mcq_rows)
         )
+        # 把 MCQ 题的数值指标也一并收集，用于计算 MCQ 平均得分。
         for row in mcq_rows:
             for m in _OPEN_METRICS:
                 val = row.get(m)
                 if val is not None:
                     mcq_overall[m].append(float(val))
+        # 把 MCQ 题的平均指标写回 summary，方便单独查看 MCQ 表现。
         summary["mcq_overall"] = {m: _mean(vs) for m, vs in mcq_overall.items() if vs}
 
-        # Aggregate position bias from rotation MCQ results
+        # 对旋转 MCQ 做额外统计：按正确答案位置（A/B/C/D）统计各位置的准确率。
         rotation_rows = [r for r in mcq_rows if r.get("rotations")]
         if rotation_rows:
             per_position_em: Dict[str, List[float]] = {}
             for row in rotation_rows:
+                # 每个旋转版本都记录了其正确位置和这一次的 EM，因此可以统计“某位置下的平均命中率”。
                 for rot in row["rotations"]:
                     pos = rot["correct_position"]
                     per_position_em.setdefault(pos, []).append(float(rot["em"]))
+            # 按字母顺序输出每个位置的平均 EM，便于发现位置偏置。
             summary["mcq_per_position_accuracy"] = {
                 pos: _mean(vals) for pos, vals in sorted(per_position_em.items())
             }
