@@ -43,7 +43,7 @@ class LegacyRunOptions:
 
 
 def merge_legacy_config(opts: LegacyRunOptions) -> Dict[str, Any]:
-    # Try to load base config from file
+    # 兼容旧版命令行入口：先读取 YAML 基础配置，再用 CLI 参数覆盖，形成统一的运行配置。
     base: Dict[str, Any] = {}
     if opts.config_path:
         try:
@@ -91,6 +91,7 @@ def merge_legacy_config(opts: LegacyRunOptions) -> Dict[str, Any]:
 
 
 def _effective_method_name(method_cfg: Dict[str, Any]) -> str:
+    # 统一规范化方法名，兼容旧配置中的 modality 变体，避免结果目录和日志混乱。
     method_name = str(method_cfg.get("name", "method")).strip() or "method"
     if method_name in {"full_context_multimodal", "full_context_text_only",
                        "full_context_no_visual", "question_only",
@@ -123,6 +124,7 @@ def load_sys_prompt(mode: str = "open", method_cfg: Optional[Dict[str, Any]] = N
 
 
 def instantiate_router(model_cfg: Dict[str, Any], system_prompt: str = ""):
+    # 根据模型提供方选择不同的推理路由器，统一封装 OpenAI / Gemini / 本地 Qwen 的调用入口。
     provider = model_cfg.get("provider", "qwen_local")
     if provider == "qwen_local":
         return QwenLocalRouter(
@@ -184,6 +186,7 @@ def compose_modular_config(
 
 
 def resolve_runtime_paths(cfg: Dict[str, Any], config_dir: Path) -> Dict[str, Path]:
+    # 解析运行时需要的真实路径，包括数据文件、图片目录和输出目录，保证实验在不同目录下可复现。
     dataset_cfg = cfg.get("dataset", {})
     eval_cfg = cfg.get("eval", {})
     task_name = str(cfg.get("task", {}).get("name", "task")).strip() or "task"
@@ -302,13 +305,26 @@ def run_benchmark(
     enable_llm_judge: bool = False,
     judge_config: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
+    """
+    执行一次完整的 benchmark 跑通流程。
+
+    主要职责包括：
+    1. 根据配置解析真实的数据路径与输出路径；
+    2. 实例化目标 memory method 与模型 router；
+    3. 遍历所有 QA 样本，调用模型生成答案并计算指标；
+    4. 记录运行时信息、汇总结果和逐题预测结果，写入 runs/ 或 output/。
+    """
+    # 第一步：把配置中的相对路径转换成实际可访问的文件路径，并确定实验输出目录。
     paths = resolve_runtime_paths(cfg, config_dir)
     mode = str(cfg.get("eval", {}).get("mode", "open"))
     max_questions = int(cfg.get("eval", {}).get("max_questions", 0))
+    # 第二步：生成这次运行的独立目录，避免不同实验结果互相覆盖。
     run_dir = default_run_dir(cfg, paths["output_root"])
     run_dir.mkdir(parents=True, exist_ok=True)
 
+    # 第三步：加载任务数据集，准备题目列表与图像路径解析能力。
     dataset = MemoryBenchmarkDataset(paths["dialog_json"], paths["image_root"])
+    # 第四步：把模型配置、运行时路径和评测配置注入到 method 中，便于 method 自己读取。
     method_cfg = dict(cfg.get("method", {}))
     method_cfg["_model_cfg"] = dict(cfg.get("model", {}))
     method_cfg["_runtime_paths"] = {
@@ -317,6 +333,7 @@ def run_benchmark(
         "run_dir": str(run_dir),
     }
     method_cfg["_eval_cfg"] = dict(cfg.get("eval", {}))
+    # 获取具体 memory method 实例；agentic 方法会自行处理推理流程，非 agentic 方法走统一的 router.answer。
     method = get_method(
         str(method_cfg.get("name", "full_context_multimodal")),
         config=method_cfg,
@@ -329,7 +346,7 @@ def run_benchmark(
         sys_prompt = load_sys_prompt(mode, method_cfg)
         router = instantiate_router(cfg["model"], system_prompt=sys_prompt)
 
-    # Build LLM judge client once before the loop
+    # 第五步：如果启用了 LLM-as-a-Judge，则提前初始化 judge 客户端，避免每题重复创建连接。
     _judge_client = None
     _judge_template = None
     _judge_model = None
@@ -345,13 +362,12 @@ def run_benchmark(
         prompt_path = Path(__file__).parent / "llm_judge.txt"
         _judge_template = prompt_path.read_text(encoding="utf-8")
 
+    # 第六步：得到待评测的 QA 列表；如果配置了 max_questions，则只跑前 N 题，方便调试和小规模验证。
     qas = dataset.iter_qas(limit=max_questions)
     results: List[Dict[str, Any]] = []
 
-    # Cache history for non-agentic methods whose build_history is
-    # independent of the QA (e.g. full_context). Avoids rebuilding the
-    # same 500+ turn history for every question and allows API-level
-    # prompt-prefix caching to kick in.
+    # 对于与问题无关的全量历史方法，缓存 build_history 的结果，避免每个 QA 都重复拼接长上下文。
+    # 这能显著减少重复计算，并让模型调用时更容易复用 prompt 前缀缓存。
     _cached_history: Optional[List[Dict[str, Any]]] = None
     _history_is_qa_independent = (
         not is_agentic
@@ -359,15 +375,24 @@ def run_benchmark(
         and method.history_source in ("full_context",)
     )
 
+    # 第七步：逐题执行推理与评分。
+    # 这里一共分成三类评测分支，分别对应不同的题型与评分方式：
+    # 1) 旋转 MCQ 分支：当 QA 的 options 是一个列表时，会把每个候选位置都轮换一次。
+    #    每次都调用模型做一次选择，最后统计平均 EM 和位置偏置（position bias）。
+    #    这能检测模型是否因为选项顺序而“偏爱某个字母”。
+    # 2) 普通 MCQ 分支：当 QA 只有一个 options 字典时，直接把题目拼成标准 MCQ prompt，
+    #    用 extract_choice 抽取模型返回的选项字母，再计算 EM / exact_match。
+    # 3) Open-ended 分支：当题目没有选项时，模型直接生成自由文本答案，
+    #    再用 F1、BLEU、BERTScore、LLM Judge 等指标做语义与文本相似度评估。
     for i, qa in enumerate(qas, start=1):
         question_text = qa.get("question", "")
         gt = qa.get("answer", "")
         has_options = isinstance(qa.get("options"), (dict, list)) and bool(qa.get("options"))
         rotation_mode = is_rotation_mcq(qa)
 
-        # Determine effective mode for this QA:
-        # - QA with options → always mcq scoring
-        # - QA without options → use config mode
+        # 根据题目类型决定当前 QA 的评测模式：
+        # - 有选项题统一按 MCQ 处理；
+        # - 无选项题按配置的 open/mcq 模式执行。
         qa_mode = "mcq" if has_options else mode
 
         if is_agentic:
@@ -380,26 +405,37 @@ def run_benchmark(
                 _cached_history = history
         current_method_runtime = dict(getattr(method, "runtime_info", {}) or {})
 
-        # Resolve any QA-level question images
+        # 解析当前题目的图片路径；如果当前 method 是 text_only / no_visual，则不传图，避免无关视觉输入。
         question_image_paths = dataset.resolve_question_images(qa)
         if getattr(method, "modality", "") in ("text_only", "no_visual"):
             question_image_paths = []
 
-        # --- MCQ with rotations ---
+        # --- 分支 1：旋转 MCQ（rotation MCQ） ---
+        # 这里的核心思路不是“只跑一次”，而是把同一道题的正确选项位置轮换多次。
+        # 这样可以观察模型是否受选项顺序影响，并把多个轮次的结果聚合成一个去偏后的 EM。
         if qa_mode == "mcq" and rotation_mode:
+            # 取出这道题的所有旋转版本，每个版本都包含一套不同顺序的选项。
             rotations = qa["options"]
+            # 记录一共有多少个旋转版本，后面用来做平均 EM 和位置偏置统计。
             n_rot = len(rotations)
+            # 打印这道题的基本信息，方便在日志中追踪当前题的历史长度和旋转数。
             print(
                 f"[INFO] QA {i}/{len(qas)} point={qa.get('point')} "
                 f"method={method.name} mode=mcq rotations={n_rot} history_turns={len(history)}"
             )
+            # 用于保存每个旋转版本的结果，后面再汇总成一个去偏 EM。
             rotation_results = []
             for r_idx, rot in enumerate(rotations):
+                # 当前旋转版本的正确答案字母（如 A/B/C/D）。
                 rot_answer = rot["answer"]
+                # 去掉 answer 字段后，保留真正的选项内容，用于拼装 prompt。
                 rot_options = {k: v for k, v in rot.items() if k != "answer"}
+                # 把题干和当前旋转后的选项拼成最终输入文本。
                 question = _format_options_block(question_text, rot_options)
+                # 提取模型返回值时允许的合法选项集合。
                 valid_keys = set(rot_options.keys())
 
+                # 记录开始时间，用于计算这一次推理的耗时。
                 t0 = dt.datetime.now()
                 if is_agentic:
                     answer_kwargs: Dict[str, Any] = {}
@@ -407,19 +443,26 @@ def run_benchmark(
                         answer_signature = inspect.signature(method.answer)
                     except (TypeError, ValueError):
                         answer_signature = None
+                    # 对于 agentic 方法，如果它的 answer() 支持 question_images，就把题图传进去。
                     if answer_signature is not None and "question_images" in answer_signature.parameters:
                         answer_kwargs["question_images"] = question_image_paths
+                    # 调用 method 自己的 answer() 完成推理。
                     pred = method.answer(dataset, qa, question, **answer_kwargs)
                 else:
+                    # 对于普通方法，走统一的 router.answer(history, question, question_images=...)。
                     pred = router.answer(history, question, question_images=question_image_paths)
+                # 计算单轮推理耗时，单位为毫秒。
                 latency_ms = int((dt.datetime.now() - t0).total_seconds() * 1000)
 
+                # 从模型输出里提取选项字母，并和正确答案做对照。
                 choice = extract_choice(pred, valid_keys=valid_keys)
+                # 只有抽取出的选项字母与正确答案一致时，EM 才为 1。 
                 em = 1.0 if choice == rot_answer.strip().upper() else 0.0
-                # Capture token usage if available
+                # 记录 token 用量（如果 router 提供了 last_usage）。
                 usage = {}
                 if router is not None and hasattr(router, "last_usage"):
                     usage = dict(router.last_usage or {})
+                # 把这一次旋转版本的结果追加到列表中，等所有旋转跑完后再汇总。
                 rotation_results.append({
                     "rotation_idx": r_idx,
                     "correct_position": rot_answer,
@@ -434,10 +477,11 @@ def run_benchmark(
                     f"em={em:.0f} latency_ms={latency_ms}"
                 )
 
-            # Aggregate across rotations
+            # 把所有旋转版本的 EM 求平均，得到去偏后的整体得分。
             debiased_em = sum(r["em"] for r in rotation_results) / n_rot
+            # 把每个旋转版本耗时加总，得到这道题的总延迟。
             total_latency = sum(r["latency_ms"] for r in rotation_results)
-            # Position bias: fraction of times each position was chosen
+            # 统计模型实际选择了哪些选项字母，观察位置偏置（A/B/C/D 选择分布）。
             position_counts: Dict[str, int] = {}
             for r in rotation_results:
                 c = r["choice"]
@@ -480,7 +524,9 @@ def run_benchmark(
             }
             print(f"[MCQ][{i}] debiased_em={debiased_em:.2f} position_bias={position_counts} total_latency={total_latency}ms")
 
-        # --- Legacy MCQ (single options dict) ---
+        # --- 分支 2：普通 MCQ（single options dict） ---
+        # 这类题目已经是标准的单一选项集合，直接把题干与选项拼成 prompt 即可。
+        # 模型输出通常是一段文本，代码会用 extract_choice 从中提取真正的选项字母 A/B/C/D。
         elif qa_mode == "mcq":
             question = format_question(qa)
             print(
@@ -496,12 +542,18 @@ def run_benchmark(
                     answer_signature = None
                 if answer_signature is not None and "question_images" in answer_signature.parameters:
                     answer_kwargs["question_images"] = question_image_paths
+                # 如果 agentic method 支持图像参数，就把题图传入其 answer()。
                 pred = method.answer(dataset, qa, question, **answer_kwargs)
             else:
+                # 普通方法走统一的 router.answer 路径。
                 pred = router.answer(history, question, question_images=question_image_paths)
+            # 计算这次回答的耗时，并把结果写回结果对象，方便后续做性能分析。
             latency_ms = int((dt.datetime.now() - t0).total_seconds() * 1000)
+            # 只保留选项字母作为有效答案集合；这里的 keys 通常是 A/B/C/D。
             valid_keys = set(qa.get("options", {}).keys())
+            # 从模型输出中抽取选项字母，并和标准答案做比较。
             choice = extract_choice(pred, valid_keys=valid_keys)
+            # 当抽取结果与正确答案一致时，EM 为 1，否则为 0。
             em = 1.0 if choice == gt.strip().upper() else 0.0
             result = {
                 "idx": i,
@@ -533,7 +585,9 @@ def run_benchmark(
             print(f"[MCQ][{i}] choice={choice} gt={gt} em={em} latency_ms={latency_ms}")
 
         else:
-            # --- Open-ended QA ---
+            # --- 分支 3：Open-ended QA（开放式回答） ---
+            # 这类题目没有固定选项，模型需要自己生成自然语言答案。
+            # 因此评分不仅看是否精确匹配，还会用 F1 / BLEU / BERTScore / LLM Judge 做更全面的比较。
             question = format_question(qa)
             print(
                 f"[INFO] QA {i}/{len(qas)} point={qa.get('point')} "
@@ -548,22 +602,29 @@ def run_benchmark(
                     answer_signature = None
                 if answer_signature is not None and "question_images" in answer_signature.parameters:
                     answer_kwargs["question_images"] = question_image_paths
+                # agentic 方法会自行管理记忆与推理流程，因此这里直接调用其 answer()。
                 pred = method.answer(dataset, qa, question, **answer_kwargs)
             else:
+                # 普通方法则依赖 router 来完成最终生成。
                 pred = router.answer(history, question, question_images=question_image_paths)
+            # 计算这种自由文本回答的耗时。
             latency_ms = int((dt.datetime.now() - t0).total_seconds() * 1000)
-            # Capture token usage if available
+            # 如果 router 暴露了 token 用量，就记录下来，用于后续分析成本。
             _open_usage = {}
             if router is not None and hasattr(router, "last_usage"):
                 _open_usage = dict(router.last_usage or {})
 
+            # 先做基础的文本匹配判断：exact / contains。
             exact, contains = score_open(pred, gt)
+            # 再计算更细的文本相似度指标。
             _f1 = f1_score(pred, gt)
             _bleu = bleu_score(pred, gt)
             _bleu1 = bleu_score(pred, gt, weights=(1, 0, 0, 0))
             _bleu2 = bleu_score(pred, gt, weights=(0.5, 0.5, 0, 0))
+            # 如果启用了 BERTScore，就额外计算语义相似度分数。
             _bert  = bert_score_metric(pred, gt) if enable_bert_score else None
 
+            # 如果启用了 LLM Judge，则额外调用 judge 模型给出打分与推理解释。
             _judge: Optional[float] = None
             _judge_reasoning: Optional[str] = None
             if enable_llm_judge and _judge_client is not None:
@@ -619,6 +680,7 @@ def run_benchmark(
             result["method_runtime"] = current_method_runtime
         results.append(result)
 
+    # 第八步：所有题目跑完后，汇总 method 的运行时信息，并生成最终的 payload。
     method_runtime = dict(getattr(method, "runtime_info", {}) or {})
     payload = build_payload(cfg, paths, run_dir, dataset, results, method_runtime=method_runtime)
 
@@ -628,6 +690,7 @@ def run_benchmark(
         run_cfg["method_runtime"] = method_runtime
     cfg_to_write["run"] = run_cfg
 
+    # 第九步：把实验配置、指标摘要、逐题结果写入磁盘，供后续复现、对比和可视化使用。
     write_json(run_dir / "config.json", cfg_to_write)
     write_json(run_dir / "metrics.json", {k: payload[k] for k in payload if k != "results"})
     write_jsonl(run_dir / "predictions.jsonl", results)

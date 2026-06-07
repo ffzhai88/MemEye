@@ -1,7 +1,7 @@
 name: qwen3_vl_8b_openrouter
 provider: openai_api
 model: qwen/qwen3-vl-8b-instruct
-api_key_env: OPENROUTER_API_KEY
-base_url: https://openrouter.ai/api/v1
+api_key_env: OPENAI_API_KEY
+base_url: https://api.siliconflow.cn/v1
 max_new_tokens: 128
 timeout: 90
