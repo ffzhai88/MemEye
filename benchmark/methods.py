@@ -387,6 +387,10 @@ def get_method(method_name: str, config: Optional[Dict[str, Any]] = None) -> His
             from .semantic_rag_agentic import SemanticRAGAgenticMethod
 
             return SemanticRAGAgenticMethod(config=config)
+        if method_name == "hippo_agentic":
+            from .hippo_agentic import HippoAgenticMethod
+
+            return HippoAgenticMethod(config=config)
         if method_name == "memgpt":
             from .memgpt import MemGPTMethod
 
