@@ -383,6 +383,10 @@ def get_method(method_name: str, config: Optional[Dict[str, Any]] = None) -> His
             from .a_mem import AMemMethod
 
             return AMemMethod(config=config)
+        if method_name == "semantic_rag_multimodal_agentic":
+            from .semantic_rag_agentic import SemanticRAGAgenticMethod
+
+            return SemanticRAGAgenticMethod(config=config)
         if method_name == "memgpt":
             from .memgpt import MemGPTMethod
 

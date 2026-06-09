@@ -1,0 +1,10 @@
+name: semantic_rag_multimodal_agentic
+modality: multimodal
+retrieval_backend: dense_multimodal
+# Agentic semantic RAG multimodal will build a memory store once and answer via its own answer()/answer_question().
+top_k: 10
+neighbor_window: 0
+text_embedding_model: all-MiniLM-L6-v2
+multimodal_embedding_model: siglip2-base-patch16-384
+text_dense_weight: 0.5
+image_dense_weight: 0.5

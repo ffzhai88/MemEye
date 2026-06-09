@@ -39,3 +39,4 @@ config/tasks_external/
 # Misc
 *.tar.gz
 *.zip
+eval.sh

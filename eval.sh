@@ -18,38 +18,43 @@ echo $OPENAI_API_KEY
 #  --model-config config/models/qwen3_vl_8b_openrouter.yaml \
 #  --method-config config/methods/semantic_rag_multimodal.yaml
 
+# python run_benchmark.py \
+#   --task-config config/tasks_external/brand_memory_test.yaml \
+#   --model-config config/models/qwen3_vl_8b_openrouter.yaml \
+#   --method-config config/methods/semantic_rag_multimodal.yaml
+
+# python run_benchmark.py \
+#   --task-config config/tasks_external/card_playlog_test.yaml \
+#   --model-config config/models/qwen3_vl_8b_openrouter.yaml \
+#   --method-config config/methods/semantic_rag_multimodal.yaml
+
+# python run_benchmark.py \
+#   --task-config config/tasks_external/cartoon_entertainment_companion.yaml \
+#   --model-config config/models/qwen3_vl_8b_openrouter.yaml \
+#   --method-config config/methods/semantic_rag_multimodal.yaml
+
+# python run_benchmark.py \
+#   --task-config config/tasks_external/multi_scene_visual_case_archive_assistant.yaml \
+#   --model-config config/models/qwen3_vl_8b_openrouter.yaml \
+#   --method-config config/methods/semantic_rag_multimodal.yaml
+
+# python run_benchmark.py \
+#   --task-config config/tasks_external/outdoor_navigation_route_memory_assistant.yaml \
+#   --model-config config/models/qwen3_vl_8b_openrouter.yaml \
+#   --method-config config/methods/semantic_rag_multimodal.yaml
+
+# python run_benchmark.py \
+#   --task-config config/tasks_external/personal_health_dashboard_assistant.yaml \
+#   --model-config config/models/qwen3_vl_8b_openrouter.yaml \
+#   --method-config config/methods/semantic_rag_multimodal.yaml
+
+
+# python run_benchmark.py \
+#   --task-config config/tasks_external/social_chat_memory_test.yaml \
+#   --model-config config/models/qwen3_vl_8b_openrouter.yaml \
+#   --method-config config/methods/semantic_rag_multimodal.yaml
+
 python run_benchmark.py \
   --task-config config/tasks_external/brand_memory_test.yaml \
   --model-config config/models/qwen3_vl_8b_openrouter.yaml \
-  --method-config config/methods/semantic_rag_multimodal.yaml
-
-python run_benchmark.py \
-  --task-config config/tasks_external/card_playlog_test.yaml \
-  --model-config config/models/qwen3_vl_8b_openrouter.yaml \
-  --method-config config/methods/semantic_rag_multimodal.yaml
-
-python run_benchmark.py \
-  --task-config config/tasks_external/cartoon_entertainment_companion.yaml \
-  --model-config config/models/qwen3_vl_8b_openrouter.yaml \
-  --method-config config/methods/semantic_rag_multimodal.yaml
-
-python run_benchmark.py \
-  --task-config config/tasks_external/multi_scene_visual_case_archive_assistant.yaml \
-  --model-config config/models/qwen3_vl_8b_openrouter.yaml \
-  --method-config config/methods/semantic_rag_multimodal.yaml
-
-python run_benchmark.py \
-  --task-config config/tasks_external/outdoor_navigation_route_memory_assistant.yaml \
-  --model-config config/models/qwen3_vl_8b_openrouter.yaml \
-  --method-config config/methods/semantic_rag_multimodal.yaml
-
-python run_benchmark.py \
-  --task-config config/tasks_external/personal_health_dashboard_assistant.yaml \
-  --model-config config/models/qwen3_vl_8b_openrouter.yaml \
-  --method-config config/methods/semantic_rag_multimodal.yaml
-
-
-python run_benchmark.py \
-  --task-config config/tasks_external/social_chat_memory_test.yaml \
-  --model-config config/models/qwen3_vl_8b_openrouter.yaml \
-  --method-config config/methods/semantic_rag_multimodal.yaml
+  --method-config config/methods/semantic_rag_multimodal_agentic.yaml
