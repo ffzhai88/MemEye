@@ -140,6 +140,10 @@ class MultimodalEmbedder:
 
         with torch.no_grad():
             features = self._model.get_text_features(**text_inputs)
+
+            if hasattr(features, 'pooler_output'):
+                features = features.pooler_output
+
             features = features / features.norm(dim=-1, keepdim=True)
 
         return features.cpu().numpy().flatten().tolist()
@@ -164,6 +168,10 @@ class MultimodalEmbedder:
 
         with torch.no_grad():
             features = self._model.get_image_features(**image_inputs)
+
+            if hasattr(features, 'pooler_output'):
+                features = features.pooler_output
+
             features = features / features.norm(dim=-1, keepdim=True)
 
         return features.cpu().numpy().flatten().tolist()

@@ -446,7 +446,18 @@ def run_benchmark(
                     # 对于 agentic 方法，如果它的 answer() 支持 question_images，就把题图传进去。
                     if answer_signature is not None and "question_images" in answer_signature.parameters:
                         answer_kwargs["question_images"] = question_image_paths
+                    
+                    
                     # 调用 method 自己的 answer() 完成推理。
+                    '''
+                    qa：当前这道题的“题目对象”。它是从 dataset.iter_qas(...) 里取出来的一个字典。
+                    里面不仅有题干，还包含答案、选项、题目 ID、所属 session、clue、point 等元信息。
+                    qa["question"] = 题干
+                    qa["answer"] = 标准答案
+                    qa["options"] = 选项
+                    qa["session_id"] / qa["clue"] = 上下文来源信息
+                    question：当前这道题“实际发给模型的 prompt 文本”。它不是原始 qa 字典，而是由代码提前拼出来的字符串。例如在 MCQ 分支里，它会变成：“题干 + A. xxx + B. yyy + … + Answer with ONLY the option letter …”
+                    '''
                     pred = method.answer(dataset, qa, question, **answer_kwargs)
                 else:
                     # 对于普通方法，走统一的 router.answer(history, question, question_images=...)。

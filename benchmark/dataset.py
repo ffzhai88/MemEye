@@ -171,32 +171,47 @@ def history_from_round_ids(
     allowed_round_ids: Optional[set[str]] = None,
     modality: str = "multimodal",
 ) -> List[Dict[str, Any]]:
+    # 初始化输出列表，用来保存最终拼好的历史消息。
     history: List[Dict[str, Any]] = []
+    # 遍历当前 session 里的所有对话轮次。
     for d in session.get("dialogues", []):
+        # 取出这一轮的 round_id，作为后续筛选和标记的依据。
         rid = d.get("round", "")
+        # 如果传入了允许的 round_id 集合，就只保留命中的轮次。
         if allowed_round_ids is not None and rid not in allowed_round_ids:
             continue
+        # 从预先构建好的 rounds 表里取出当前轮次的完整内容。
         r = rounds.get(rid, {})
+        # 提取 user、assistant 的原始文本。
         user_text = r.get("user", "")
         assistant_text = r.get("assistant", "")
+        # 提取该轮的图片路径列表。
         images = list(r.get("images", []) or [])
+        # 根据当前模态决定是否把图片或 caption 加入历史文本。
         if modality == "text_only":
+            # 把图片 caption 拼接到 user 文本中，形成可读的纯文本记忆。
             caption_text = build_caption_text(r)
             if caption_text:
                 user_text = f"{user_text}\n{caption_text}".strip() if user_text else caption_text
+            # text_only 模式下不把图片传给模型，只保留文本。
             images = []
         elif modality == "no_visual":
-            # No images, no captions — pure dialogue text for leakage testing
+            # no_visual 模式只保留纯文本，不使用图片和 caption。
             images = []
         elif modality == "multimodal":
+            # multimodal 模式保留图片路径，直接用原始 images 列表。
             images = images
         else:
+            # 其他模态不支持，直接报错提示调用方。
             raise ValueError(f"Unsupported history modality: {modality}")
 
+        # 如果 user 文本或者图片存在，就把它作为一条 user 消息加入 history。
         if user_text or images:
             history.append({"role": "user", "text": user_text, "images": images, "round_id": rid})
+        # 如果 assistant 文本存在，就把它作为一条 assistant 消息加入 history。
         if assistant_text:
             history.append({"role": "assistant", "text": assistant_text, "images": [], "round_id": rid})
+    # 返回构造好的历史上下文列表，供后续推理使用。
     return history
 
 

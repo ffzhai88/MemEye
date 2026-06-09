@@ -10,6 +10,8 @@ build/
 .env
 .env.local
 .env.*
+.gitignore
+
 
 # IDE
 .vscode/
@@ -26,6 +28,7 @@ runs/
 output/
 logs/
 locked_results/
+nohup.out
 
 # Data (hosted on HuggingFace)
 data/

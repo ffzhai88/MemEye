@@ -2,9 +2,9 @@ name: a_mem
 
 backend: openai
 llm_model: qwen/qwen3-vl-8b-instruct
-llm_api_key: ""
+llm_api_key: "sk-vutycwckjxdohudkuuvlixqpuyzrjrhgtgptdjsikngrjiok"
 llm_api_key_env: OPENROUTER_API_KEY
-llm_base_url: "https://openrouter.ai/api/v1"
+llm_base_url: "https://api.siliconflow.cn/v1"
 retrieve_k: 10
 embedding_model: all-MiniLM-L6-v2
 caption_preprocessed: true

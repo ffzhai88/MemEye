@@ -72,6 +72,7 @@ class HistoryMethod(ABC):
         self.runtime_info: Dict[str, Any] = {}
         self.modality = self.fixed_modality or _normalize_modality(self.config, self.name)
 
+    # build_history 是所有方法必须实现的核心接口，负责根据数据集和 QA 信息构造适合模型输入的历史上下文列表。每个历史条目是一个字典，包含文本、图片等信息，具体格式由 history_from_round_ids 统一处理。
     @abstractmethod
     def build_history(self, dataset: MemoryBenchmarkDataset, qa: Dict[str, Any]) -> List[Dict[str, Any]]:
         raise NotImplementedError
@@ -232,31 +233,49 @@ class _RetrievalHistoryMethod(_MemGalleryHistoryMethod):
     history_source = "retrieval"
 
     def build_history(self, dataset: MemoryBenchmarkDataset, qa: Dict[str, Any]) -> List[Dict[str, Any]]:
+        # 先做模态校验，text_only 需要检查 caption 是否可用，避免后续检索结果不完整。
         self._validate_modality_inputs(dataset)
+        # 调用检索器，按当前题目 qa 选出相关的 round_id 列表。
         selected_round_ids = select_round_ids_for_qa(dataset, qa, self.config, runtime_info=self.runtime_info)
+        # 如果检索结果为空，说明当前题目没有找到可用上下文，直接返回空历史。
         if not selected_round_ids:
             return []
 
+        # 准备一个空列表，保存最终要送入模型的历史上下文。
         history: List[Dict[str, Any]] = []
+        # 把检索到的 round_id 转成集合，便于后续快速匹配。
         allowed_round_ids = set(selected_round_ids)
+        # 遍历所有会话，把命中的轮次转成 history 条目。
+        # history: 是一个list，每个元素是一个dict，包含role（user/assistant）、text（文本内容）、images（图片路径列表）等信息，具体格式由history_from_round_ids函数统一处理。
         for sid in dataset.session_order():
             history.extend(
                 history_from_round_ids(
+                    # 当前会话的原始对话结构。
                     dataset.get_session(sid),
+                    # 全部 round 的元数据表。
                     dataset.rounds,
+                    # 只保留检索命中的 round_id。
                     allowed_round_ids,
+                    # 根据当前方法的模态决定是文本还是多模态历史。
                     modality=self.modality,
                 )
             )
+        # 把检索结果的运行时信息写回 runtime_info，方便后续统计与分析。
         self.runtime_info.update(
             {
+                # 当前方法的模态。
                 "method_modality": self.modality,
+                # 标识当前历史来源是检索而不是全量上下文。
                 "history_source": self.history_source,
+                # text_only 模式下是否加载了 caption。
                 "captions_loaded": self.modality == "text_only",
+                # multimodal 模式下是否加载了图像。
                 "images_loaded": self.modality == "multimodal",
+                # 检索后最终保留的历史轮次数量。
                 "history_turns_after_truncation": len(history),
             }
         )
+        # 返回最终拼好的历史上下文列表，供 router.answer() 使用。
         return history
 
 
