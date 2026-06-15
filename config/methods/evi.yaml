@@ -1,4 +1,5 @@
 # EVI: Evidence-grounded Visual Indexing
 # Model config is read from the separate --model-config file
 method: evi
+name: evi
 modality: multimodal

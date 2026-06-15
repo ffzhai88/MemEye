@@ -383,7 +383,7 @@ class EVIMethod(HistoryMethod):
         print(f"[EVI] Processing {len(sessions)} session(s)...")
         self._system.process_all_sessions(dataset)
         self._dataset_key = dataset_id
-        print(f"[EVI] Done: {self._system.num_extracted} image rounds indexed.")
+        print(f"[EVI] Done: {self._system.num_indexed} vectors indexed.")
 
     def answer(
         self,
@@ -426,8 +426,7 @@ def get_method(method_name: str, config: Optional[Dict[str, Any]] = None) -> His
 
             return SemanticRAGAgenticMethod(config=config)
         if method_name == "evi":
-            from .evi import EVIMethod
-
+            # EVIMethod is defined in this file
             return EVIMethod(config=config)
         if method_name == "memgpt":
             from .memgpt import MemGPTMethod

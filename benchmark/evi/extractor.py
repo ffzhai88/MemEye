@@ -1,167 +1,228 @@
 """
-EVI: Phase 1 — VLM-based three-level extraction.
-One VLM call per image-bearing round.
+EVI v2: Phase 1 — Multi-dimensional image description generator.
+
+Two separate VLM calls per image:
+  1. Image-only: generates multiple free-form descriptions from different angles
+     (background, objects, colors, layout, details — VLM decides count)
+  2. Context-aware: generates one description based on the full conversation context
+     (user+assistant of this round + all prior rounds in this session)
+
+Both results merged into a single JSON and cached.
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
-from typing import TYPE_CHECKING, Any, Dict, List, Optional
+import os
+from pathlib import Path
+from typing import TYPE_CHECKING, List, Optional
 
 if TYPE_CHECKING:
     from .vlm import VLMCallable
 
-from .schemas import (
-    AnchorData,
-    ExtractionResult,
-    GistData,
-    SceneAttributes,
-    TagData,
-)
+from .schemas import ImageNode
 
 log = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# System prompt (fixed, not task-adaptive)
+# Cache
 # ---------------------------------------------------------------------------
 
-SYSTEM_PROMPT = """You are a visual scene analyzer. Given an image and its conversation context, extract three levels of information.
+_CACHE_DIR: Optional[str] = None
 
-LEVEL 1 — GIST (scene summary):
-Write 2-3 sentences describing the scene naturally. Cover:
-- What is the setting and overall composition?
-- What is the background color and lighting like?
-- What are the main visual elements?
-This text will be used for semantic search, so make it descriptive but concise.
 
-Also extract coarse scene attributes:
-- "background_color": main background color (standard names: red, blue, green, yellow, white, black, purple, orange, teal, gray, brown, beige, pink, dark_blue, light_blue, dark_green)
-- "lighting": bright | dim | dark | mixed | natural | artificial
-- "setting": type of place (outdoor, indoor, cave, office, lab, game_ui, dining_table, street, museum_gallery, restoration_table, dashboard_ui, chat_ui, kitchen, etc.)
-- "mood": warm | cold | dramatic | calm | playful | tense | professional | cozy
+def _cache_dir() -> str:
+    global _CACHE_DIR
+    if _CACHE_DIR is None:
+        _CACHE_DIR = os.environ.get(
+            "EVI_CACHE_DIR",
+            str(Path.home() / ".cache" / "evi_descriptions"),
+        )
+        os.makedirs(_CACHE_DIR, exist_ok=True)
+    return _CACHE_DIR
 
-LEVEL 2 — TAGS (salient object labels):
-For each VISUALLY SALIENT object, character, or element, output a flat tag.
-A tag is a short list: [noun, color_or_key_feature, rough_position, optional_count]
 
-Rules:
-- Only list things that are clearly visible (not tiny background details)
-- Use short, precise nouns: "card", "coffee_cup", "dinosaur", "logo", "kpi_panel", "ad", "person", "bottle", "can", "burger", "fries", "furniture", "window", "door", "table", "chair", "lamp", "plant", "vehicle", "building", "road_sign", "microtube", "label", "paint_swatch"
-- Color should be a standard name. If not applicable, use the most distinctive feature.
-- Position: "left", "right", "center", "top", "bottom", "top_left", "bottom_right", "background", "foreground"
-- count: only include if there are multiple indistinguishable items of the same type (e.g. 3 cards, 5 eggs).
-- Keep total tags under 15 per image. Do NOT include tiny details.
+def _cache_key(image_path: str) -> str:
+    return hashlib.sha256(image_path.encode()).hexdigest()[:32]
 
-Examples:
-["card", "yellow", "bottom", 3]
-["logo", "red_and_white", "top_left"]
-["coffee_cup", "blue", "center"]
-["dinosaur", "purple", "left"]
-["ad", "coca_cola", "center"]
 
-LEVEL 3 — ANCHORS (from conversation text):
-Extract explicit names, labels, or identifiers from the conversation that help identify this round. These are NOT from the image — they are from the user message and assistant response.
+# ---------------------------------------------------------------------------
+# Prompt 1: image-only, free-form multiple descriptions
+# ---------------------------------------------------------------------------
 
-- "explicit_labels": list of proper names (brands: Coca-Cola, Pepsi, McDonald's, etc.; character names; player IDs like Player 0; room names; episode numbers; person names)
-- "explicit_topic": what this round is about (short phrase, e.g. "McDonald's healthy positioning campaign")
-- "user_intent": what the user is doing (e.g. comparing, documenting, tracking progress, asking opinion, flagging a detail)
+IMAGE_ONLY_PROMPT = """You are a visual analyst. Look at this image and generate multiple short, self-contained descriptions from different angles.
 
-Output JSON schema:
+Output a JSON object with a single field "descriptions": a list of strings.
+Each string is a 2-3 sentence description covering ONE specific aspect of the image.
+
+Cover as many distinct aspects as are relevant. Possible aspects include but are not limited to:
+- Overall scene composition and layout
+- Background color, lighting, atmosphere
+- Main objects/characters/people, their colors and attributes
+- Text, labels, numbers, or branding visible
+- Spatial arrangement (what is where)
+- Style, mood, or visual treatment
+- Any distinctive details or anomalies
+
+IMPORTANT: Let the image content determine how many descriptions you write.
+A simple image might need 2-3, a complex one might need 6-8.
+Each description must be self-contained (searchable in isolation) and focus on ONE angle.
+
+Example output for a product ad image:
 {
-  "gist": {
-    "free_text": str,
-    "scene_attributes": {
-      "background_color": str,
-      "lighting": str,
-      "setting": str,
-      "mood": str
-    }
-  },
-  "tags": [[noun, color, position, optional_count], ...],
-  "anchors": {
-    "explicit_labels": [str, ...],
-    "explicit_topic": str,
-    "user_intent": str
-  }
+  "descriptions": [
+    "The background is solid red with no other visual elements, drawing full attention to the centered product.",
+    "A Coca-Cola bottle is positioned in the center of the frame, featuring the classic red label and contoured glass shape.",
+    "The lighting is bright and even, giving the product a clean, polished look against the red backdrop.",
+    "Small white text at the bottom reads 'Share a Coke with...' suggesting a personalization campaign."
+  ]
 }"""
 
 
 # ---------------------------------------------------------------------------
-# Extraction routines
+# Prompt 2: context-aware, single description
 # ---------------------------------------------------------------------------
 
-def _parse_raw(raw: dict) -> ExtractionResult:
-    """Convert raw VLM JSON output into typed ExtractionResult."""
-    result = ExtractionResult(round_id="", image_path="")
+CONTEXT_PROMPT = """You are a visual analyst. Given an image and its conversation context, describe what this image means in the broader conversation.
 
-    # Gist
-    gist_raw = raw.get("gist", {})
-    attrs_raw = gist_raw.get("scene_attributes", {})
-    result.gist = GistData(
-        free_text=gist_raw.get("free_text", ""),
-        scene_attributes=SceneAttributes(
-            background_color=attrs_raw.get("background_color", ""),
-            lighting=attrs_raw.get("lighting", ""),
-            setting=attrs_raw.get("setting", ""),
-            mood=attrs_raw.get("mood", ""),
-        ),
-    )
+Focus on:
+- Why did the user share this image at this point in the conversation?
+- What aspect of the image is being discussed or compared?
+- How does this image relate to earlier images or topics in the session?
 
-    # Tags
-    for tag_raw in raw.get("tags", []):
-        if not isinstance(tag_raw, list) or len(tag_raw) < 2:
-            continue
-        tag = TagData(
-            noun=str(tag_raw[0]),
-            color=str(tag_raw[1]) if len(tag_raw) > 1 else "",
-            position=str(tag_raw[2]) if len(tag_raw) > 2 else "",
-            count=int(tag_raw[3]) if len(tag_raw) > 3 and tag_raw[3] is not None else None,
-        )
-        result.tags.append(tag)
-
-    # Anchors
-    anc_raw = raw.get("anchors", {})
-    result.anchors = AnchorData(
-        explicit_labels=[str(l) for l in anc_raw.get("explicit_labels", []) if l],
-        explicit_topic=str(anc_raw.get("explicit_topic", "")),
-        user_intent=str(anc_raw.get("user_intent", "")),
-    )
-
-    return result
+Write 2-4 sentences. The description should capture the IMAGE'S ROLE in the conversation, not just its visual content.
+It will be used for semantic search, so include both conversational keywords and visual references.
+Do NOT output JSON — just write the description directly."""
 
 
-def extract_with_vlm(
+# ---------------------------------------------------------------------------
+# Extraction
+# ---------------------------------------------------------------------------
+
+
+def _extract_json(text: str) -> Optional[dict]:
+    """Extract JSON from VLM response, handling markdown fences and surrounding text."""
+    import re
+    # Try ```json ... ``` block first
+    m = re.search(r'```(?:json)?\s*\n?(.*?)\n?```', text, re.DOTALL)
+    if m:
+        try:
+            return json.loads(m.group(1))
+        except Exception:
+            pass
+    # Try raw JSON
+    try:
+        return json.loads(text)
+    except Exception:
+        pass
+    # Try { ... } block (greedy, last resort)
+    m = re.search(r'(\{.*\})', text, re.DOTALL)
+    if m:
+        try:
+            return json.loads(m.group(1))
+        except Exception:
+            pass
+    return None
+
+
+def describe_image(
     image_path: str,
     user_text: str,
-    assistant_text: str,
+    prior_rounds_text: str,  # concatenated text of all prior rounds in this session
     vlm_callable: "VLMCallable",
-) -> ExtractionResult:
-    """Call VLM once for an image-bearing round.
+    use_cache: bool = True,
+) -> Optional[ImageNode]:
+    """Two-call image description extraction.
+
+    Call 1 — Image-only: VLM looks at the image alone, generates N free-form descriptions.
+    Call 2 — Context-aware: VLM reads the conversation context, generates one description.
+
+    Both merged into one cache entry. Each description becomes a separate embedding vector.
 
     Args:
-        image_path: Absolute path to the image file.
-        user_text: The user's utterance in this round.
-        assistant_text: The assistant's response in this round.
-        vlm_callable: A callable(system_prompt, user_text, [image_paths]) -> str.
+        image_path: Absolute path to the image.
+        user_text: User utterance in the current round.
+        prior_rounds_text: All prior rounds in this session, concatenated.
+        vlm_callable: (system_prompt, user_text, [image_paths]) -> str.
+        use_cache: Whether to check/save disk cache.
 
     Returns:
-        ExtractionResult with parsed fields. On failure, returns empty result.
+        ImageNode with image_descs (list) and context_desc (str), or None on failure.
     """
-    user_message = f"User: {user_text}\nAssistant: {assistant_text}"
+    # ---- Try cache ----
+    ck = _cache_key(image_path)
+    cache_file = Path(_cache_dir()) / f"{ck}.json"
+    if use_cache and cache_file.exists():
+        try:
+            data = json.loads(cache_file.read_text(encoding="utf-8"))
+            log.info("  [DESCRIBE] Cache HIT for %s", image_path)
+            return ImageNode(
+                round_id="",
+                session_id="",
+                image_path=image_path,
+                image_descs=data.get("image_descriptions", []),
+                context_desc=data.get("context_description", ""),
+            )
+        except Exception:
+            pass
 
-    raw_text = vlm_callable(SYSTEM_PROMPT, user_message, [image_path])
-    if not raw_text:
-        return ExtractionResult(round_id="", image_path=image_path)
+    # ============================================================
+    # Call 1: Image-only — generate multiple free-form descriptions
+    # ============================================================
+    log.info("  [DESCRIBE1] Call 1 (image-only) for %s ...", image_path)
+    raw1 = vlm_callable(IMAGE_ONLY_PROMPT, "Describe this image.", [image_path])
+    image_descs: List[str] = []
+    if raw1:
+        try:
+            data1 = _extract_json(raw1) or {}
+            image_descs = data1.get("descriptions", [])
+            if isinstance(image_descs, str):
+                image_descs = [image_descs]
+        except Exception as exc:
+            log.warning("  [DESCRIBE1] Call 1 JSON parse failed: %s", exc)
 
-    try:
-        import json
-        raw = json.loads(raw_text)
-    except Exception as exc:
-        log.warning("extract_with_vlm: JSON parse failed for %s: %s", image_path, exc)
-        return ExtractionResult(round_id="", image_path=image_path)
+    if not image_descs:
+        log.warning("  [DESCRIBE1] Call 1 returned no descriptions for %s", image_path)
 
-    result = _parse_raw(raw)
-    result.round_id = ""  # caller sets this
-    result.image_path = image_path
-    return result
+    log.info("  [DESCRIE1]   -> %d descriptions generated", len(image_descs))
+
+    # ============================================================
+    # Call 2: Context-aware — describe the image's role in conversation
+    # ============================================================
+    ctx_parts = []
+    if prior_rounds_text:
+        ctx_parts.append(f"--- Prior conversation ---\n{prior_rounds_text}")
+    ctx_parts.append(f"--- Current round ---\n{user_text}")
+    context_prompt = "\n\n".join(ctx_parts)
+
+    log.info("  [DESCRIBE] Call 2 (context-aware) for %s ...", image_path)
+    context_desc = vlm_callable(CONTEXT_PROMPT, context_prompt, [image_path]).strip()
+
+    if not context_desc:
+        log.warning("  [DESCRIBE] Call 2 returned empty for %s", image_path)
+
+    log.info("  [DESCRIBE]   -> context=%d chars", len(context_desc))
+
+    # ============================================================
+    # Save merged cache
+    # ============================================================
+    if use_cache:
+        merged = {
+            "image_path": image_path,
+            "image_descriptions": image_descs,
+            "context_description": context_desc,
+        }
+        try:
+            cache_file.write_text(json.dumps(merged, ensure_ascii=False, indent=2), encoding="utf-8")
+        except Exception as exc:
+            log.warning("  [DESCRIBE] Cache write failed: %s", exc)
+
+    return ImageNode(
+        round_id="",
+        session_id="",
+        image_path=image_path,
+        image_descs=image_descs,
+        context_desc=context_desc,
+    )

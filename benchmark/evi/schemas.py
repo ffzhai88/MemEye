@@ -1,102 +1,55 @@
 """
-EVI: Data structures for evidence extraction and retrieval.
+EVI v2: Data structures for multi-vector temporal indexing.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
 
-# ---------------------------------------------------------------------------
-# Phase 1: extracted data
-# ---------------------------------------------------------------------------
-
 @dataclass
-class SceneAttributes:
-    background_color: str = ""
-    lighting: str = ""
-    setting: str = ""
-    mood: str = ""
-
-
-@dataclass
-class GistData:
-    free_text: str = ""
-    scene_attributes: SceneAttributes = field(default_factory=SceneAttributes)
-
-
-@dataclass
-class TagData:
-    noun: str = ""
-    color: str = ""
-    position: str = ""
-    count: Optional[int] = None
-
-
-@dataclass
-class AnchorData:
-    explicit_labels: List[str] = field(default_factory=list)
-    explicit_topic: str = ""
-    user_intent: str = ""
-
-
-@dataclass
-class ExtractionResult:
-    """Output of one VLM call per round."""
+class DialogueNode:
+    """A conversation round. Indexed as one embedding vector."""
     round_id: str
+    session_id: str
+    text: str               # round_text + image_caption
+    image_path: Optional[str] = None
+    caption: str = ""
+    timestamp: str = ""
+
+
+@dataclass
+class ImageNode:
+    """
+    One image described from multiple angles.
+    - image_descs: free-form descriptions generated from the image alone (VLM decides count)
+    - context_desc: description generated from conversation context (user + assistant + prior rounds)
+    Each description becomes a separate embedding vector.
+    """
+    round_id: str
+    session_id: str
     image_path: str
-    gist: GistData = field(default_factory=GistData)
-    tags: List[TagData] = field(default_factory=list)
-    anchors: AnchorData = field(default_factory=AnchorData)
+    image_descs: List[str] = field(default_factory=list)   # from image-only call
+    context_desc: str = ""                                  # from context-aware call
+    timestamp: str = ""
 
-
-# ---------------------------------------------------------------------------
-# Index entries (flat, stored in dicts)
-# ---------------------------------------------------------------------------
 
 @dataclass
-class GistEntry:
+class VectorRecord:
+    """One embedding vector in the index, referencing its source."""
+    id: str                 # unique: "dialogue_{rid}" or "image_{rid}_{type}"
     round_id: str
-    free_text: str
-    scene_attributes: Dict[str, str]  # flat dict for easy lookup
-    timestamp: str
-    _embedding: Optional[List[float]] = None  # lazy computed
+    session_id: str
+    text: str               # the text that was embedded
+    vector: List[float]
+    node_type: str          # "dialogue" | "image_visual" | "image_context" | "image_session"
+    image_path: Optional[str] = None
+    score: float = 0.0      # set during retrieval
 
 
 @dataclass
-class TagEntry:
-    round_id: str
-    color: str = ""
-    position: str = ""
-    count: Optional[int] = None
-
-
-@dataclass
-class AnchorEntry:
-    keyword: str
-    round_ids: set = field(default_factory=set)
-
-
-# ---------------------------------------------------------------------------
-# Phase 2: retrieval and reasoning
-# ---------------------------------------------------------------------------
-
-@dataclass
-class RichDirectoryEntry:
-    round_id: str
-    free_text: str
-    scene_attributes: Dict[str, str]
-    tags: List[str]  # formatted like "noun(color,position)"
-    anchors: List[str]
-
-
-@dataclass
-class RichDirectory:
-    entries: List[RichDirectoryEntry] = field(default_factory=list)
-
-
-@dataclass
-class AggregateResult:
-    answer: str = ""
-    confidence: float = 0.0
-    candidates: List[str] = field(default_factory=list)
+class RetrievalResult:
+    """Final context block sent to VLM."""
+    ordered_context: str     # temporally sorted text with explicit ordering language
+    image_paths: List[str]   # original images for selected rounds
