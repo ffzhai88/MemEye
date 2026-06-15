@@ -1,6 +1,6 @@
 export OPENAI_API_KEY=sk-vutycwckjxdohudkuuvlixqpuyzrjrhgtgptdjsikngrjiok
 export OPENROUTER_API_KEY=sk-vutycwckjxdohudkuuvlixqpuyzrjrhgtgptdjsikngrjiok
-
+export CUDA_VISIBLE_DEVICES=1
 echo $OPENAI_API_KEY
 
 #python run_benchmark.py \
@@ -54,7 +54,13 @@ echo $OPENAI_API_KEY
 #   --model-config config/models/qwen3_vl_8b_openrouter.yaml \
 #   --method-config config/methods/semantic_rag_multimodal.yaml
 
-python run_benchmark.py \
-  --task-config config/tasks_external/brand_memory_test.yaml \
+# python -u run_benchmark.py \
+#   --task-config config/tasks_external/brand_memory_test.yaml \
+#   --model-config config/models/qwen3_vl_8b_openrouter.yaml \
+#   --method-config config/methods/hippo_agentic.yaml \
+#   --max-questions 5
+
+python -u run_benchmark.py \
+  --task-config config/tasks_external/personal_health_dashboard_assistant.yaml \
   --model-config config/models/qwen3_vl_8b_openrouter.yaml \
-  --method-config config/methods/semantic_rag_multimodal_agentic.yaml
+  --method-config config/methods/hippo_agentic.yaml

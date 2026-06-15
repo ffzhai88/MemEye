@@ -21,8 +21,8 @@ from .llm import _get_llm_class, BaseLLM
 from .embedding_model import _get_embedding_model_class, BaseEmbeddingModel
 from .embedding_store import EmbeddingStore
 from .information_extraction import OpenIE
-from .information_extraction.openie_vllm_offline import VLLMOfflineOpenIE
-from .information_extraction.openie_transformers_offline import TransformersOfflineOpenIE
+#from .information_extraction.openie_vllm_offline import VLLMOfflineOpenIE
+#from .information_extraction.openie_transformers_offline import TransformersOfflineOpenIE
 from .evaluation.retrieval_eval import RetrievalRecall
 from .evaluation.qa_eval import QAExactMatch, QAF1Score
 from .prompts.linking import get_query_instruction

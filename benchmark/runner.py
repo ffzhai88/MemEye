@@ -403,8 +403,6 @@ def run_benchmark(
             history = method.build_history(dataset, qa)
             if _history_is_qa_independent:
                 _cached_history = history
-        current_method_runtime = dict(getattr(method, "runtime_info", {}) or {})
-
         # 解析当前题目的图片路径；如果当前 method 是 text_only / no_visual，则不传图，避免无关视觉输入。
         question_image_paths = dataset.resolve_question_images(qa)
         if getattr(method, "modality", "") in ("text_only", "no_visual"):
@@ -687,6 +685,9 @@ def run_benchmark(
                 + f" latency_ms={latency_ms}"
             )
 
+        # 在 answer() 调用完成后再捕获 runtime_info，确保 method.answer() 内部设置
+        # 的 per-question 运行时信息（如 retrieved_docs、clue_hit_count 等）都能被正确记录。
+        current_method_runtime = dict(getattr(method, "runtime_info", {}) or {})
         if current_method_runtime:
             result["method_runtime"] = current_method_runtime
         results.append(result)

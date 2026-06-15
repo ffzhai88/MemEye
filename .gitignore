@@ -29,6 +29,7 @@ output/
 logs/
 locked_results/
 nohup.out
+outputs/
 
 # Data (hosted on HuggingFace)
 data/
@@ -40,3 +41,4 @@ config/tasks_external/
 *.tar.gz
 *.zip
 eval.sh
+plan.txt

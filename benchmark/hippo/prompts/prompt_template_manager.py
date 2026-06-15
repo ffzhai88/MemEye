@@ -62,7 +62,10 @@ class PromptTemplateManager:
 
                 try:
                     try:
-                        module_name = f"src.hipporag.prompts.templates.{script_name}"
+                        module_name = f"benchmark.hippo.prompts.templates.{script_name}"
+                        # import sys
+                        # print(sys.path)
+                        # print(f"Trying to load module '{module_name}' for template '{script_name}'...")
                         module = importlib.import_module(module_name)
                     except ModuleNotFoundError:
                         module_name = f".prompts.templates.{script_name}"

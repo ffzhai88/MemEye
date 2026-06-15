@@ -3,9 +3,8 @@ modality: multimodal
 retrieval_top_k: 10
 # Hippo-specific index and retrieval settings.
 # If you want to use graph-based open information extraction, set openie_mode to a supported value.
-openie_mode: Transformers-offline
-text_embedding_model: all-MiniLM-L6-v2
-embedding_model_name: all-MiniLM-L6-v2
-llm_model_name: gpt-4.1-nano
-llm_base_url: https://api.openai.com/v1
+openie_mode: online
+embedding_model_name: nvidia/NV-Embed-v2
+llm_model_name: qwen/qwen3-vl-8b-instruct
+llm_base_url: https://api.siliconflow.cn/v1
 save_dir: outputs/hippo_agentic

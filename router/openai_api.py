@@ -134,6 +134,10 @@ class OpenAIAPIRouter(BaseRouter):
             }),
             "temperature": 0,
         }
+        print(f"\n[HippoAgentic::Debug] === FULL REQUEST MESSAGES ===")
+        for i, m in enumerate(payload["messages"]):
+            print(f"[HippoAgentic::Debug]  messages[{i}] role={m['role']} content={str(m.get('content',''))[:1000]}")
+        print(f"[HippoAgentic::Debug] =================================\n")
         response = post_json(
             url=f"{self.base_url}/chat/completions",
             headers={"Authorization": f"Bearer {self.api_key}"},
