@@ -362,6 +362,44 @@ class MMAAgentMethod(HistoryMethod):
         return []
 
 
+class EVIMethod(HistoryMethod):
+    """Evidence-grounded Visual Indexing: lightweight extraction + dual-track retrieval."""
+
+    name = "evi"
+
+    def __init__(self, config: Optional[Dict[str, Any]] = None) -> None:
+        super().__init__(config)
+        self._system: Optional[Any] = None
+        self._dataset_key: Optional[int] = None
+
+    def _ensure_initialized(self, dataset: MemoryBenchmarkDataset) -> None:
+        dataset_id = id(dataset)
+        if self._system is not None and self._dataset_key == dataset_id:
+            return
+        from .evi import EVISystem
+
+        self._system = EVISystem(self.config)
+        sessions = dataset.session_order()
+        print(f"[EVI] Processing {len(sessions)} session(s)...")
+        self._system.process_all_sessions(dataset)
+        self._dataset_key = dataset_id
+        print(f"[EVI] Done: {self._system.num_extracted} image rounds indexed.")
+
+    def answer(
+        self,
+        dataset: MemoryBenchmarkDataset,
+        qa: Dict[str, Any],
+        question: str,
+        question_images: Optional[List[str]] = None,
+    ) -> str:
+        self._ensure_initialized(dataset)
+        assert self._system is not None
+        return self._system.answer_question(question, qa=qa, question_images=question_images)
+
+    def build_history(self, dataset: MemoryBenchmarkDataset, qa: Dict[str, Any]) -> List[Dict[str, Any]]:
+        return []
+
+
 def get_method(method_name: str, config: Optional[Dict[str, Any]] = None) -> HistoryMethod:
     config = config or {}
     registry = {
@@ -387,6 +425,10 @@ def get_method(method_name: str, config: Optional[Dict[str, Any]] = None) -> His
             from .semantic_rag_agentic import SemanticRAGAgenticMethod
 
             return SemanticRAGAgenticMethod(config=config)
+        if method_name == "evi":
+            from .evi import EVIMethod
+
+            return EVIMethod(config=config)
         if method_name == "memgpt":
             from .memgpt import MemGPTMethod
 
