@@ -8,15 +8,37 @@ Two-phase lifecycle:
 
 from __future__ import annotations
 
+import json
 import logging
 from typing import Any, Dict, List, Optional
 
 from .extractor import describe_image
 from .indexes import VectorIndex, embed_text
 from .schemas import VectorRecord
+from .summarizer import load_all_summaries, summarize_session
 from .vlm import VLMCallable, make_vlm_callable
 
 log = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Prompt: LLM directory retrieval — picks candidate sessions from summaries
+# ---------------------------------------------------------------------------
+
+DIRECTORY_RETRIEVAL_PROMPT = """You are a session directory analyst. Below is a list of conversation sessions, each with a date and summary.
+
+{summary_block}
+
+Question: {question}
+
+Which of the above sessions are likely to contain information relevant to answering this question?
+This is a coarse-grained pre-filter — it is much better to over-select and include extra sessions than to miss something relevant. When in doubt, include it.
+
+Return ONLY a JSON object in the following format (no other text):
+{{"candidate_sessions": ["SESSION_ID_1", "SESSION_ID_2"]}}"""
+
+# ---------------------------------------------------------------------------
+# EVISystem
+# ---------------------------------------------------------------------------
 
 
 class EVISystem:
@@ -35,6 +57,7 @@ class EVISystem:
         self._round_text: Dict[str, str] = {}       # round_id -> dialogue text
         self._round_images: Dict[str, str] = {}     # round_id -> image_path (first only)
         self._session_dates: Dict[str, str] = {}    # session_id -> date
+        self._session_summaries: Dict[str, str] = {}    # session_id -> summary text
 
         # VLM callable
         self._vlm: Optional[VLMCallable] = None
@@ -209,12 +232,97 @@ class EVISystem:
                 # After processing this round, add it to prior context for next round
                 prior_rounds_text.append(self._round_text.get(rid, ""))
 
+            # ---- Build session summary for LLM directory retrieval ----
+            session_text_parts = [self._round_text.get(rid, "") for rid in rounds_in_session]
+            session_text = "\n---\n".join(session_text_parts)
+
+            session_node = summarize_session(
+                session_id=sid,
+                session_text=session_text,
+                date=date,
+                vlm_callable=vlm,
+                use_cache=True,
+            )
+            if session_node is not None and session_node.summary:
+                self._session_summaries[sid] = session_node.summary
+                log.info("  Session summary cached: %d chars", len(session_node.summary))
+
         log.info(
-            "Indexing done: %d dialogue nodes, %d image vectors, %d total",
+            "Indexing done: %d dialogue nodes, %d image vectors, %d session summaries, %d total vectors",
             len([r for r in self._vector_index._records if r.node_type == "dialogue"]),
-            len([r for r in self._vector_index._records if r.node_type != "dialogue"]),
+            len([r for r in self._vector_index._records if r.node_type not in ("dialogue", "session")]),
+            len(self._session_summaries),
             len(self._vector_index),
         )
+
+    @staticmethod
+    def _extract_json(text: str) -> Optional[dict]:
+        """Extract JSON from LLM response, handling markdown fences."""
+        import re
+        m = re.search(r'```(?:json)?\s*\n?(.*?)\n?```', text, re.DOTALL)
+        if m:
+            try:
+                return json.loads(m.group(1))
+            except Exception:
+                pass
+        try:
+            return json.loads(text)
+        except Exception:
+            pass
+        m = re.search(r'(\{.*\})', text, re.DOTALL)
+        if m:
+            try:
+                return json.loads(m.group(1))
+            except Exception:
+                pass
+        return None
+
+    def _directory_retrieve(self, question_stem: str) -> Optional[set[str]]:
+        """Stage 1: LLM directory retrieval.
+
+        Loads all cached session summaries and asks the LLM to select
+        candidate sessions relevant to the question. Returns a set of
+        session_ids, or None if the directory cache is empty / the LLM
+        response cannot be parsed (caller falls back to searching all).
+        """
+        summaries = load_all_summaries()
+        if not summaries:
+            log.info("  [DIR] No session summaries cached — skipping directory retrieval")
+            return None
+
+        # Format the summary block
+        lines: List[str] = []
+        for sid, info in summaries.items():
+            summary_text = info.get("summary", "") if isinstance(info, dict) else str(info)
+            sdate = (info.get("date", "") if isinstance(info, dict) else "")
+            sdate_str = f" ({sdate})" if sdate else ""
+            lines.append(f"Session: {sid}{sdate_str}")
+            lines.append(f"Summary: {summary_text}")
+            lines.append("")
+
+        summary_block = "\n".join(lines)
+        prompt = DIRECTORY_RETRIEVAL_PROMPT.format(summary_block=summary_block, question=question_stem)
+
+        log.info("  [DIR] Asking LLM to select relevant sessions from %d summaries ...", len(summaries))
+        raw = self._vlm("", prompt, []) if self._vlm else ""
+        if not raw:
+            log.warning("  [DIR] LLM returned empty response")
+            return None
+
+        log.info("  [DIR] Raw LLM response:\n%s", raw)
+        parsed = self._extract_json(raw)
+        if parsed is None:
+            log.warning("  [DIR] Could not parse LLM response: %s ...", raw[:200])
+            return None
+
+        candidates = parsed.get("candidate_sessions", [])
+        if not isinstance(candidates, list):
+            log.warning("  [DIR] Unexpected format (candidate_sessions not a list)")
+            return None
+
+        candidate_set = {str(s).strip() for s in candidates if str(s).strip()}
+        log.info("  [DIR] LLM selected %d candidate session(s): %s", len(candidate_set), sorted(candidate_set))
+        return candidate_set
 
     # ---- Phase 2: Retrieval + Temporal Assembly ----
 
@@ -225,26 +333,31 @@ class EVISystem:
         question_images: Optional[List[str]] = None,
     ) -> str:
         """
-        回答一个问题：向量检索 → 时序排序 → 上下文组装 → VLM 生成答案
+        回答一个问题：LLM 目录检索 → 向量细粒度检索 → 时序排序 → 上下文组装 → VLM 生成答案
 
         ===== 核心流程（Phase 2）=====
 
-        Step 1 — 向量检索：
+        Step 1 — LLM 目录检索（Directory Retrieval）：
+          - 从缓存中加载所有 session 的综合摘要
+          - 构造目录提示词，让 LLM 基于各 session 的摘要判断哪些包含回答问题的线索
+          - LLM 返回候选 session_id 列表（模糊定位）
+
+        Step 2 — 向量细粒度检索（Vector Search within Candidates）：
           - 使用 all-MiniLM-L6-v2 将问题文本转为向量
           - 注意：使用 qa["question"]（题干，不含选项）作为检索源，
             避免选项文本污染检索相关性
-          - 在所有节点（对话 + 图片）上搜索 Top-20
+          - 仅在候选 session 内的节点上搜索 Top-20
 
-        Step 2 — 按 round 聚合：
+        Step 3 — 按 round 聚合：
           - 同一个 round 可能命中多个节点（dialogue + image_visual + image_context 等）
           - 每个 round 取最高分作为该 round 的相关性分数
           - 保留该 round 命中的所有节点类型（为后面组装上下文使用）
 
-        Step 3 — 时序排序：
+        Step 4 — 时序排序：
           - 按 _round_order（整体对话顺序）对命中的 round 排序
           - 截取 Top-8
 
-        Step 4 — 上下文组装：
+        Step 5 — 上下文组装：
           - 按 session 分组，在每个 session 前插入显式的时间/主题标题
             （例如 "--- Session BRAND_S5 (2024-01-16) ---"）
           - 对每个 round：
@@ -253,18 +366,20 @@ class EVISystem:
             c) 收集高清原图路径（给 VLM 使用）
           - 最终生成一个"时序显式化"的上下文文本块
 
-        Step 5 — VLM 回答：
+        Step 6 — VLM 回答：
           - 构造 prompt：时序上下文 + 问题完整文本（含 MCQ 选项）
           - MCQ 模式：不传图（选项文本已包含足够信息）
           - 非 MCQ 模式：传 Top-5 张原图让 VLM 看图回答
 
         ===== 关键设计决策 =====
 
+        - 两阶段检索：LLM 目录检索做粗筛 → 向量检索做精召，避免在全量数据上做 embedding 搜索
         - 检索问题和最终问题分离：题干用于检索（去噪声），完整问题给 VLM（含选项）
         - 时序排序而不是相关性排序：避免打乱对话顺序导致 VLM 误解
         - 显式的 session 标题：帮助 VLM 理解"这是哪天聊的"
         - 图片路径在上下文组装时就收集好：VLM 调用时不需再查数据库
         - MCQ 模式不传图：选项已经是文字，无需看图判断
+        - 目录检索失败时（无缓存 / LLM 解析失败）自动 fallback 到全量检索，保证鲁棒性
         """
         _ = question_images
         self._ensure()
@@ -284,15 +399,27 @@ class EVISystem:
         if is_mcq:
             log.info("MCQ mode")
 
-        # 1. Embed question stem (without options)
+        # ================================================================
+        # Stage 1: LLM Directory Retrieval — pick candidate sessions
+        # ================================================================
+        candidate_sessions = self._directory_retrieve(question_stem)
+
+        # ================================================================
+        # Stage 2: Vector search — limited to candidate sessions
+        # ================================================================
         q_vec = self._embed(question_stem)
         if not q_vec:
             return ""
 
-        # 2. Search ALL node types
-        all_results = self._vector_index.search(q_vec, top_k=20)
-        log.info("Search returned %d results", len(all_results))
-        # Log top-5 by type
+        search_kwargs: Dict[str, Any] = dict(top_k=20)
+        if candidate_sessions is not None:
+            search_kwargs["session_ids"] = candidate_sessions
+        all_results = self._vector_index.search(q_vec, **search_kwargs)
+
+        log.info("Search returned %d results in %s",
+                 len(all_results),
+                 f"{len(candidate_sessions)} candidate session(s)" if candidate_sessions else "all sessions")
+
         for rec in all_results:
             log.info("  [%.3f] %s | round=%s | type=%s",
                      rec.score, rec.id, rec.round_id, rec.node_type)
@@ -305,7 +432,7 @@ class EVISystem:
                 status = "HIT" if cr in hit else "MISS"
                 log.info("  [CLUE] %s %s", status, cr)
 
-        # Build round_scores
+        # Build round_scores and round_nodes
         round_scores: Dict[str, float] = {}
         for rec in all_results:
             rid = rec.round_id

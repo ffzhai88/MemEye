@@ -36,14 +36,26 @@ class ImageNode:
 
 
 @dataclass
+class SessionNode:
+    """A session-level summary for LLM directory retrieval.
+    The VLM generates a comprehensive summary of what the session is about,
+    which is embedded and used for coarse-grained session lookup.
+    """
+    session_id: str
+    summary: str               # VLM-generated session summary
+    date: str = ""
+    timestamp: str = ""
+
+
+@dataclass
 class VectorRecord:
     """One embedding vector in the index, referencing its source."""
-    id: str                 # unique: "dialogue_{rid}" or "image_{rid}_{type}"
+    id: str                 # unique: "dialogue_{rid}" / "image_{rid}_{type}" / "session_{sid}"
     round_id: str
     session_id: str
     text: str               # the text that was embedded
     vector: List[float]
-    node_type: str          # "dialogue" | "image_visual" | "image_context" | "image_session"
+    node_type: str          # "dialogue" | "image_visual" | "image_context" | "session"
     image_path: Optional[str] = None
     score: float = 0.0      # set during retrieval
 

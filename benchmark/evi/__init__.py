@@ -14,5 +14,6 @@ _evi_logger.setLevel(logging.INFO)
 _evi_logger.propagate = False
 
 from .system import EVISystem
+from .summarizer import load_all_summaries, summarize_session
 
-__all__ = ["EVISystem"]
+__all__ = ["EVISystem", "load_all_summaries", "summarize_session"]

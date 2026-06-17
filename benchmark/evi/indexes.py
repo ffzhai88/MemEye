@@ -64,14 +64,17 @@ class VectorIndex:
         query_vec: List[float],
         top_k: int = 15,
         node_types: Optional[List[str]] = None,
+        session_ids: Optional[set[str]] = None,
     ) -> List[VectorRecord]:
-        """Search by cosine similarity. Optionally filter by node_type."""
+        """Search by cosine similarity. Optionally filter by node_type and/or session_ids."""
         scored: List[Tuple[float, int]] = []
         for idx, rec in enumerate(self._records):
             if node_types and rec.node_type not in node_types:
                 continue
+            if session_ids and rec.session_id not in session_ids:
+                continue
             score = _cosine(query_vec, rec.vector)
-            if score > 0.2:
+            if score > 0:
                 scored.append((score, idx))
 
         scored.sort(key=lambda x: x[0], reverse=True)
