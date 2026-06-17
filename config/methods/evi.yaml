@@ -3,3 +3,23 @@
 method: evi
 name: evi
 modality: multimodal
+
+# --- Text embedding ---
+# Model name for text embedding. Supports:
+#   - "all-MiniLM-L6-v2"   (sentence-transformers, 384-dim, default)
+#   - "nvidia/NV-Embed-v2" (transformers + trust_remote_code, 4096-dim)
+text_embedding_model: nvidia/NV-Embed-v2
+
+# Extra kwargs passed to the TextEmbedder constructor (NV-Embed-v2 mode):
+#   max_length: 32768 | batch_size: 16 | dtype: "auto" | instruction: ""
+# text_embedding_kwargs:
+#   max_length: 16384
+#   batch_size: 8
+
+# --- Directory retrieval (Phase 1 coarse filter) ---
+# When true, LLM selects candidate sessions from summaries before vector search.
+# When false, vector search runs against all sessions directly.
+use_directory_retrieval: False
+
+# Top-k results from vector search (number of candidate rounds to retrieve)
+search_top_k: 20

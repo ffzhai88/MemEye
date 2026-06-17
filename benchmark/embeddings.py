@@ -2,6 +2,8 @@
 Embedding wrappers for M2A. Faithful to official agent/embeddings/.
 
 TextEmbedder       : all-MiniLM-L6-v2 via sentence-transformers (local, 384-dim)
+                     OR nvidia/NV-Embed-v2 via transformers + trust_remote_code (local, 4096-dim)
+                     switching via model_name.
 MultimodalEmbedder : siglip2-base-patch16-384 via transformers (local, 768-dim)
 LocalCLIPEmbedder  : openai/clip-vit-base-patch32 via transformers (local fallback, 512-dim)
 """
@@ -28,25 +30,103 @@ def _sanitized_hf_token_env():
         yield
 
 
+def _is_nv_embed(model_name: str) -> bool:
+    """Check if model_name corresponds to NV-Embed-v2 family."""
+    return "NV-Embed-v2" in model_name
+
+
 class TextEmbedder:
     """
-    Local sentence-transformers text embedder.
-    Model: all-MiniLM-L6-v2 (384-dim). Faithful to official M2A TextEmbedding.
+    Local text embedder supporting multiple backends selected by model_name.
+
+    - ``all-MiniLM-L6-v2`` (default) → sentence-transformers, 384-dim
+    - ``nvidia/NV-Embed-v2``          → transformers + trust_remote_code, 4096-dim
+
+    Extra kwargs are forwarded to the NV-Embed-v2 constructor when that
+    backend is selected, so callers can configure encoding parameters
+    directly (e.g. ``max_length=16384, batch_size=8``).
     """
 
     DEFAULT_MODEL = "all-MiniLM-L6-v2"
 
-    def __init__(self, model_name: str = DEFAULT_MODEL) -> None:
+    # ── NV-Embed-v2 defaults (mirroring nv_embed/NVEmbedV2.py) ──────────────
+    NVEMBED_MAX_LENGTH = 32768
+    NVEMBED_BATCH_SIZE = 16
+    NVEMBED_INSTRUCTION = ""
+    NVEMBED_DTYPE = "auto"
+    NVEMBED_NUM_WORKERS = 32
+
+    def __init__(
+        self,
+        model_name: str = DEFAULT_MODEL,
+        # NV-Embed-v2 specific parameters (ignored by sentence-transformers backend)
+        max_length: Optional[int] = None,
+        batch_size: Optional[int] = None,
+        instruction: str = "",
+        dtype: str = "auto",
+        num_workers: int = 32,
+        **_kwargs,
+    ) -> None:
         self._model_name = model_name
         self._model = None
+        self._is_nvembed = _is_nv_embed(model_name)
+
+        # Store NV-Embed-v2 encoding parameters
+        self._nv_max_length = max_length or self.NVEMBED_MAX_LENGTH
+        self._nv_batch_size = batch_size or self.NVEMBED_BATCH_SIZE
+        self._nv_instruction = instruction or self.NVEMBED_INSTRUCTION
+        self._nv_dtype = dtype or self.NVEMBED_DTYPE
+        self._nv_num_workers = num_workers or self.NVEMBED_NUM_WORKERS
+
+        if self._is_nvembed:
+            print(
+                f"[TextEmbedder] NV-Embed-v2 mode: model={model_name}, "
+                f"max_length={self._nv_max_length}, batch_size={self._nv_batch_size}, "
+                f"dtype={self._nv_dtype}"
+            )
 
     def _load(self) -> None:
-        if self._model is None:
-            from sentence_transformers import SentenceTransformer  # type: ignore
+        if self._model is not None:
+            return
 
-            cache_folder = os.environ.get("HF_HOME") or os.environ.get("TRANSFORMERS_CACHE")
-            with _sanitized_hf_token_env():
-                self._model = SentenceTransformer(self._model_name, cache_folder=cache_folder)
+        if self._is_nvembed:
+            self._load_nvembed()
+        else:
+            self._load_sentence_transformers()
+
+    def _load_sentence_transformers(self) -> None:
+        """Load via sentence-transformers (all-MiniLM-L6-v2 or similar)."""
+        from sentence_transformers import SentenceTransformer  # type: ignore
+
+        cache_folder = os.environ.get("HF_HOME") or os.environ.get("TRANSFORMERS_CACHE")
+        with _sanitized_hf_token_env():
+            self._model = SentenceTransformer(self._model_name, cache_folder=cache_folder)
+
+    def _load_nvembed(self) -> None:
+        """Load via transformers + trust_remote_code (nvidia/NV-Embed-v2)."""
+        import torch
+        from transformers import AutoModel
+
+        cache_dir = os.environ.get("HF_HOME") or os.environ.get("TRANSFORMERS_CACHE")
+        with _sanitized_hf_token_env():
+            self._model = AutoModel.from_pretrained(
+                self._model_name,
+                trust_remote_code=True,
+                cache_dir=cache_dir,
+                torch_dtype=self._nv_dtype,
+                device_map="auto",
+            )
+        self._embedding_dim = self._model.config.hidden_size
+        if torch.cuda.is_available():
+            self._device = "cuda"
+        elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+            self._device = "mps"
+        else:
+            self._device = "cpu"
+        print(
+            f"[TextEmbedder] Loaded NV-Embed-v2: {self._model_name} "
+            f"({self._embedding_dim}-dim) on {self._device}"
+        )
 
     @property
     def is_available(self) -> bool:
@@ -56,13 +136,79 @@ class TextEmbedder:
         except Exception:
             return False
 
+    def _format_nv_instruction(self) -> str:
+        """Format instruction as NV-Embed-v2 expects: ``Instruct: {msg}\nQuery: ``."""
+        if self._nv_instruction:
+            return f"Instruct: {self._nv_instruction}\nQuery: "
+        return ""
+
     def embed_query(self, text: str) -> List[float]:
         self._load()
+        if self._is_nvembed:
+            return self._nv_embed_query(text)
+        # sentence-transformers path
         return self._model.encode(text, normalize_embeddings=True).tolist()  # type: ignore
 
     def embed_batch(self, texts: List[str]) -> List[List[float]]:
+        if not texts:
+            return []
         self._load()
+        if self._is_nvembed:
+            return self._nv_embed_batch(texts)
+        # sentence-transformers path
         return self._model.encode(texts, normalize_embeddings=True).tolist()  # type: ignore
+
+    # ── NV-Embed-v2 internal helpers ───────────────────────────────────────
+
+    def _nv_embed_query(self, text: str) -> List[float]:
+        result = self._model.encode(  # type: ignore
+            prompts=[text],
+            max_length=self._nv_max_length,
+            instruction=self._format_nv_instruction(),
+        )
+        if hasattr(result, "cpu"):
+            result = result.cpu().numpy()
+        return result[0].tolist()  # type: ignore
+
+    def _nv_embed_batch(self, texts: List[str]) -> List[List[float]]:
+        import numpy as np
+        import torch
+        from tqdm import tqdm
+
+        instruction = self._format_nv_instruction()
+        batch_size = self._nv_batch_size
+
+        if len(texts) <= batch_size:
+            result = self._model.encode(  # type: ignore
+                prompts=texts,
+                max_length=self._nv_max_length,
+                instruction=instruction,
+            )
+            if hasattr(result, "cpu"):
+                result = result.cpu().numpy()
+            return result.tolist()  # type: ignore
+
+        # Batch mode: split into chunks and concatenate
+        all_results = []
+        pbar = tqdm(total=len(texts), desc="NVEmbed Batch Encoding")
+        for i in range(0, len(texts), batch_size):
+            chunk = texts[i : i + batch_size]
+            chunk_result = self._model.encode(  # type: ignore
+                prompts=chunk,
+                max_length=self._nv_max_length,
+                instruction=instruction,
+            )
+            all_results.append(chunk_result)
+            pbar.update(len(chunk))
+        pbar.close()
+
+        if all_results and hasattr(all_results[0], "cpu"):
+            result = torch.cat(all_results, dim=0).cpu().numpy()
+        elif all_results:
+            result = np.concatenate(all_results, axis=0)
+        else:
+            return []
+        return result.tolist()  # type: ignore
 
 
 class MultimodalEmbedder:

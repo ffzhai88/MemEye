@@ -46,6 +46,7 @@ class EVISystem:
 
     def __init__(self, config: Optional[Dict[str, Any]] = None) -> None:
         cfg = config or {}
+        self._cfg = cfg  # full merged config (method + model + task)
         self._model_cfg = dict(cfg.get("_model_cfg", {}))
 
         # Vector index (single, stores both dialogue + image nodes)
@@ -62,6 +63,11 @@ class EVISystem:
         # VLM callable
         self._vlm: Optional[VLMCallable] = None
         self._embedder: Optional[Any] = None
+
+        # Config flags
+        self._use_directory_retrieval: bool = cfg.get("use_directory_retrieval", True)
+        self._search_top_k: int = int(cfg.get("search_top_k", 20))
+
         self._initialized = False
 
     # ---- lazy init ----
@@ -72,13 +78,26 @@ class EVISystem:
         self._initialized = True
         self._vlm = make_vlm_callable(self._model_cfg)
 
-        # Text embedder
-        try:
-            from sentence_transformers import SentenceTransformer
-            self._embedder = SentenceTransformer("all-MiniLM-L6-v2")
-            log.info("Embedder: all-MiniLM-L6-v2 loaded.")
-        except ImportError:
-            log.warning("sentence-transformers not available")
+        # Text embedder — configurable via config dict.
+        # Priority: method config (self._cfg) → model config (self._model_cfg) → default.
+        from ..embeddings import TextEmbedder
+
+        embed_model = (
+            self._cfg.get("text_embedding_model")
+            or self._model_cfg.get("text_embedding_model")
+            or TextEmbedder.DEFAULT_MODEL
+        )
+        embed_kwargs = dict(
+            self._cfg.get("text_embedding_kwargs")
+            or self._model_cfg.get("text_embedding_kwargs")
+            or {}
+        )
+        self._embedder = TextEmbedder(embed_model, **embed_kwargs)
+
+        if self._embedder.is_available:
+            log.info("Embedder: %s loaded.", embed_model)
+        else:
+            log.warning("Embedder: %s not available — disabling retrieval", embed_model)
             self._embedder = None
 
     def _embed(self, text: str) -> List[float]:
@@ -97,7 +116,7 @@ class EVISystem:
         1. 对话节点（Dialogue Node）：
            - 将 round 中的 user 文本和 assistant 文本拼接成一条纯文本
            - 如果该 round 有图片且数据中提供了 image_caption，则追加到文本后面
-           - 用 all-MiniLM-L6-v2 将该文本转为 embedding → 存入向量索引
+           - 用配置的 text embedding 模型（默认 all-MiniLM-L6-v2，也支持 NV-Embed-v2 等）将该文本转为 embedding → 存入向量索引
            - 节点类型标记为 "dialogue"
 
         2. 图片节点（Image Node）— 两次 VLM 调用，结果合并缓存：
@@ -343,7 +362,7 @@ class EVISystem:
           - LLM 返回候选 session_id 列表（模糊定位）
 
         Step 2 — 向量细粒度检索（Vector Search within Candidates）：
-          - 使用 all-MiniLM-L6-v2 将问题文本转为向量
+          - 使用配置的 text embedding 模型（默认 all-MiniLM-L6-v2，也支持 NV-Embed-v2 等）将问题文本转为向量
           - 注意：使用 qa["question"]（题干，不含选项）作为检索源，
             避免选项文本污染检索相关性
           - 仅在候选 session 内的节点上搜索 Top-20
@@ -380,6 +399,7 @@ class EVISystem:
         - 图片路径在上下文组装时就收集好：VLM 调用时不需再查数据库
         - MCQ 模式不传图：选项已经是文字，无需看图判断
         - 目录检索失败时（无缓存 / LLM 解析失败）自动 fallback 到全量检索，保证鲁棒性
+        - 可通过配置 `use_directory_retrieval: false` 跳过 LLM 目录检索，直接全量向量搜索
         """
         _ = question_images
         self._ensure()
@@ -401,8 +421,13 @@ class EVISystem:
 
         # ================================================================
         # Stage 1: LLM Directory Retrieval — pick candidate sessions
+        # (can be disabled via use_directory_retrieval: false in config)
         # ================================================================
-        candidate_sessions = self._directory_retrieve(question_stem)
+        candidate_sessions = None
+        if self._use_directory_retrieval:
+            candidate_sessions = self._directory_retrieve(question_stem)
+        else:
+            log.info("  [DIR] Directory retrieval disabled by config — searching all sessions")
 
         # ================================================================
         # Stage 2: Vector search — limited to candidate sessions
@@ -411,7 +436,7 @@ class EVISystem:
         if not q_vec:
             return ""
 
-        search_kwargs: Dict[str, Any] = dict(top_k=20)
+        search_kwargs: Dict[str, Any] = dict(top_k=self._search_top_k)
         if candidate_sessions is not None:
             search_kwargs["session_ids"] = candidate_sessions
         all_results = self._vector_index.search(q_vec, **search_kwargs)
@@ -445,8 +470,8 @@ class EVISystem:
                 round_nodes[rid] = []
             round_nodes[rid].append(rec)
 
-        # 4. Take top-8 by relevance score, then sort chronologically
-        top_by_score = sorted(round_scores.keys(), key=lambda r: round_scores[r], reverse=True)[:8]
+        # 4. Take top-10 by relevance score, then sort chronologically
+        top_by_score = sorted(round_scores.keys(), key=lambda r: round_scores[r], reverse=True)[:10]
         ordered_rounds = [rid for rid in self._round_order if rid in top_by_score]
 
         # Log type breakdown for selected rounds
@@ -454,6 +479,13 @@ class EVISystem:
         for rid in ordered_rounds:
             types = [r.node_type for r in round_nodes.get(rid, [])]
             log.info("  %s score=%.3f types=%s", rid, round_scores.get(rid, 0), types)
+
+        # Log CLUE hit/miss after chronological top-10, compared to the earlier raw search hit/miss
+        if clue_rounds:
+            final_hit = {rid for rid in ordered_rounds}
+            for cr in clue_rounds:
+                status = "HIT" if cr in final_hit else "MISS"
+                log.info("  [CLUE FINAL] %s %s", status, cr)
 
         # 5. Assemble temporally ordered context
         image_paths: List[str] = []
