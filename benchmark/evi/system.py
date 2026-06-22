@@ -66,7 +66,10 @@ class EVISystem:
 
         # Config flags
         self._use_directory_retrieval: bool = cfg.get("use_directory_retrieval", True)
-        self._search_top_k: int = int(cfg.get("search_top_k", 20))
+        self._search_top_k: int = int(cfg.get("search_top_k", 20))  # legacy alias for max_rounds
+        self._raw_search_k: int = int(cfg.get("raw_search_k", max(self._search_top_k * 3, 60)))
+        self._max_rounds: int = int(cfg.get("max_rounds", self._search_top_k))
+        self._diversity_boost: float = float(cfg.get("diversity_boost", 0.03))
 
         self._initialized = False
 
@@ -119,12 +122,16 @@ class EVISystem:
            - 用配置的 text embedding 模型（默认 all-MiniLM-L6-v2，也支持 NV-Embed-v2 等）将该文本转为 embedding → 存入向量索引
            - 节点类型标记为 "dialogue"
 
-        2. 图片节点（Image Node）— 两次 VLM 调用，结果合并缓存：
+        2. 图片节点（Image Node）— 三轮 VLM 调用构建微型知识图谱，结果合并缓存：
            a) 图片本身 → 不固定数量的自由文本描述（VLM 自行决定从哪些角度描述）
               每个描述独立嵌入，类型标记为 "image_visual"
-           b) 图片在对话中的角色 → 基于完整上下文（当前 round + 该 session 之前所有 round）
-              生成一段描述，类型标记为 "image_context"
-           - 同一个图片可能对应 N+1 个向量（N 个 image_visual + 1 个 image_context）
+           b) 图片在对话中的角色 + 命名 → 基于完整上下文（当前 round + 该 session 之前所有 round），
+              生成图片的语义名称（image_name）和上下文描述（context_description）
+              image_name 独立嵌入，类型标记为 "image_name"
+              context_desc 独立嵌入，类型标记为 "image_context"
+           c) 三元组提取 → 以 image_name 为中心节点，提取结构化事实三元组
+              每个事实独立嵌入，类型标记为 "image_fact"
+           - 同一个图片可能对应 N+3+ 个向量（N 个 image_visual + 1 个 image_name + 1 个 image_context + M 个 image_fact）
 
         同时记录：
         - _round_order: 所有 round 的全局顺序（按 session + round 序排列）
@@ -137,9 +144,9 @@ class EVISystem:
 
         - Phase 1 完全 blind：不依赖任何问题信息。只做"尽可能全面的描述"
         - 每个图片生成 3 种描述而不是 1 种：不同的描述覆盖不同的检索需求
-          （纯视觉匹配 vs 语义语境匹配 vs session 级宏观匹配）
+          （纯视觉匹配 vs 语义语境匹配 vs 名称匹配 vs 精确事实匹配）
         - 对话节点和图片节点放在同一个向量索引中：检索时可以同时命中
-        - VLM 调用次数 = 有图片的 round 数量（已被缓存，重复运行不产生费用）
+        - VLM 调用次数 = 有图片的 round 数量 × 3（已被缓存，重复运行不产生费用）
         """
         self._ensure()
         vlm = self._vlm
@@ -246,6 +253,37 @@ class EVISystem:
                                 node_type="image_context",
                                 image_path=img_path,
                             ))
+
+                    # Embed image_name as a node-level vector
+                    if img_node.image_name:
+                        name_text = img_node.image_name
+                        n_vec = self._embed(name_text)
+                        if n_vec:
+                            self._vector_index.add(VectorRecord(
+                                id=f"image_{rid}_name",
+                                round_id=rid,
+                                session_id=sid,
+                                text=name_text,
+                                vector=n_vec,
+                                node_type="image_name",
+                                image_path=img_path,
+                            ))
+
+                    # Embed each fact as a separate vector
+                    for fidx, fact in enumerate(img_node.facts):
+                        f_text = fact.to_text()
+                        f_vec = self._embed(f_text)
+                        if f_vec:
+                            self._vector_index.add(VectorRecord(
+                                id=f"image_{rid}_fact{fidx}",
+                                round_id=rid,
+                                session_id=sid,
+                                text=f_text,
+                                vector=f_vec,
+                                node_type="image_fact",
+                                image_path=img_path,
+                            ))
+
                     total_img += 1
 
                 # After processing this round, add it to prior context for next round
@@ -266,10 +304,15 @@ class EVISystem:
                 self._session_summaries[sid] = session_node.summary
                 log.info("  Session summary cached: %d chars", len(session_node.summary))
 
+        n_dialogue = len([r for r in self._vector_index._records if r.node_type == "dialogue"])
+        n_visual = len([r for r in self._vector_index._records if r.node_type == "image_visual"])
+        n_context = len([r for r in self._vector_index._records if r.node_type == "image_context"])
+        n_name = len([r for r in self._vector_index._records if r.node_type == "image_name"])
+        n_fact = len([r for r in self._vector_index._records if r.node_type == "image_fact"])
         log.info(
-            "Indexing done: %d dialogue nodes, %d image vectors, %d session summaries, %d total vectors",
-            len([r for r in self._vector_index._records if r.node_type == "dialogue"]),
-            len([r for r in self._vector_index._records if r.node_type not in ("dialogue", "session")]),
+            "Indexing done: %d dialogue, %d visual, %d context, %d names, %d facts, "
+            "%d session summaries — %d total vectors",
+            n_dialogue, n_visual, n_context, n_name, n_fact,
             len(self._session_summaries),
             len(self._vector_index),
         )
@@ -368,7 +411,7 @@ class EVISystem:
           - 仅在候选 session 内的节点上搜索 Top-20
 
         Step 3 — 按 round 聚合：
-          - 同一个 round 可能命中多个节点（dialogue + image_visual + image_context 等）
+          - 同一个 round 可能命中多个节点（dialogue + image_visual + image_name + image_context + image_fact 等）
           - 每个 round 取最高分作为该 round 的相关性分数
           - 保留该 round 命中的所有节点类型（为后面组装上下文使用）
 
@@ -381,8 +424,10 @@ class EVISystem:
             （例如 "--- Session BRAND_S5 (2024-01-16) ---"）
           - 对每个 round：
             a) 对话文本
-            b) 图片的多维描述（视觉描述 + 上下文描述）
-            c) 收集高清原图路径（给 VLM 使用）
+            b) image_name（微图谱根节点名称）
+            c) image_facts（结构化三元组，即微图谱边）
+            d) 图片的多维描述（视觉描述 + 上下文描述）
+            e) 收集高清原图路径（给 VLM 使用）
           - 最终生成一个"时序显式化"的上下文文本块
 
         Step 6 — VLM 回答：
@@ -411,6 +456,17 @@ class EVISystem:
         log.info("========== EVI Answer ==========")
         log.info("Q: %s", question)
 
+        # Dump config for debugging
+        log.info("  [CFG] directory_retrieval=%s, raw_search_k=%d, max_rounds=%d, diversity_boost=%.2f, total_vectors=%d",
+                  self._use_directory_retrieval, self._raw_search_k, self._max_rounds, self._diversity_boost, len(self._vector_index))
+        log.debug("  [CFG] round_order=%d rounds, %d sessions indexed",
+                  len(self._round_order), len(self._session_dates))
+        node_type_counts = {}
+        for rec in self._vector_index._records:
+            node_type_counts[rec.node_type] = node_type_counts.get(rec.node_type, 0) + 1
+        log.debug("  [CFG] vector index composition: %s",
+                  " | ".join(f"{k}:{v}" for k, v in sorted(node_type_counts.items())))
+
         # Use the raw question text (without MCQ options) for embedding
         question_stem = (qa or {}).get("question", "").strip() or question
         log.info("Question (for retrieval): %s", question_stem)
@@ -426,43 +482,55 @@ class EVISystem:
         candidate_sessions = None
         if self._use_directory_retrieval:
             candidate_sessions = self._directory_retrieve(question_stem)
-        else:
-            log.info("  [DIR] Directory retrieval disabled by config — searching all sessions")
+        #else:
+        #    log.info("  [DIR] Directory retrieval disabled by config — searching all sessions")
 
         # ================================================================
         # Stage 2: Vector search — limited to candidate sessions
         # ================================================================
         q_vec = self._embed(question_stem)
         if not q_vec:
+            log.warning("  [EMBED] Embedding returned empty — aborting")
             return ""
 
-        search_kwargs: Dict[str, Any] = dict(top_k=self._search_top_k)
+        search_kwargs: Dict[str, Any] = dict(top_k=self._raw_search_k)
         if candidate_sessions is not None:
             search_kwargs["session_ids"] = candidate_sessions
+
+        log.info("  [SEARCH] Retrieving top-%d raw vectors ...", self._raw_search_k)
         all_results = self._vector_index.search(q_vec, **search_kwargs)
 
-        log.info("Search returned %d results in %s",
+        log.info("  [SEARCH] Returned %d results in %s",
                  len(all_results),
                  f"{len(candidate_sessions)} candidate session(s)" if candidate_sessions else "all sessions")
 
-        for rec in all_results:
-            log.info("  [%.3f] %s | round=%s | type=%s",
-                     rec.score, rec.id, rec.round_id, rec.node_type)
+        log.info("  [SEARCH] Raw results (top 30 shown):")
+        for rec in all_results[:30]:
+            log.info("    [%.4f] %-30s round=%-12s type=%-14s session=%s",
+                      rec.score, rec.id, rec.round_id, rec.node_type, rec.session_id)
 
-        # Log clue rounds hit/miss in top 20
+        # Log clue rounds hit/miss in raw search
         clue_rounds = (qa or {}).get("clue", [])
         if clue_rounds:
             hit = {rec.round_id for rec in all_results}
+            log.info("  [CLUE RAW] %d clue rounds:", len(clue_rounds))
             for cr in clue_rounds:
                 status = "HIT" if cr in hit else "MISS"
-                log.info("  [CLUE] %s %s", status, cr)
+                log.info("    [CLUE RAW] %s: %s", status, cr)
 
-        # Build round_scores and round_nodes
+        # ================================================================
+        # Stage 3: Aggregate results by round — max score per round
+        # ================================================================
+        log.info("  [AGGREGATE] Aggregating %d raw results by round ...", len(all_results))
         round_scores: Dict[str, float] = {}
+        round_node_types: Dict[str, set] = {}
         for rec in all_results:
             rid = rec.round_id
             if rid not in round_scores or rec.score > round_scores[rid]:
                 round_scores[rid] = rec.score
+            if rid not in round_node_types:
+                round_node_types[rid] = set()
+            round_node_types[rid].add(rec.node_type)
         round_nodes: Dict[str, List[VectorRecord]] = {}
         for rec in all_results:
             rid = rec.round_id
@@ -470,24 +538,112 @@ class EVISystem:
                 round_nodes[rid] = []
             round_nodes[rid].append(rec)
 
-        # 4. Take top-10 by relevance score, then sort chronologically
-        top_by_score = sorted(round_scores.keys(), key=lambda r: round_scores[r], reverse=True)[:10]
+        # log.info("  [AGGREGATE] %d unique rounds from %d raw results", len(round_scores), len(all_results))
+        # log.info("  [AGGREGATE] All unique rounds sorted by score:")
+        # for rid in sorted(round_scores.keys(), key=lambda r: round_scores[r], reverse=True):
+        #     types_fmt = ",".join(sorted(round_node_types.get(rid, [])))
+        #     log.info("    [%.4f] %-12s types=[%s]", round_scores[rid], rid, types_fmt)
+
+        # Type contribution analysis: which node_types dominate retrieval
+        type_freq: dict = {}
+        type_max_score: dict = {}
+        type_avg_scores: dict = {}
+        for rec in all_results:
+            t = rec.node_type
+            type_freq[t] = type_freq.get(t, 0) + 1
+            if t not in type_max_score or rec.score > type_max_score[t]:
+                type_max_score[t] = rec.score
+            type_avg_scores.setdefault(t, []).append(rec.score)
+        log.info("  [AGGREGATE] Type contribution in raw results:")
+        for t in sorted(type_freq.keys()):
+            avg = sum(type_avg_scores[t]) / len(type_avg_scores[t])
+            log.info("      %-14s count=%-3d max_score=%.4f avg_score=%.4f",
+                      t, type_freq[t], type_max_score[t], avg)
+
+        # ================================================================
+        # Stage 3.5: Diversity boost — reward rounds with richer node_type coverage
+        #   A round that matches from multiple angles (e.g. dialogue + image_name + facts)
+        #   is more likely to be truly relevant than one matching on only one type.
+        #   boost = base_score * (1.0 + (num_extra_types * diversity_boost))
+        # ================================================================
+        log.info("  [BOOST] Diversity boost: +%.0f%% per extra node_type", self._diversity_boost * 100)
+        boosted_scores: Dict[str, float] = {}
+        for rid, base_score in round_scores.items():
+            types = round_node_types.get(rid, set())
+            extra_types = len(types) - 1  # at least 1 (dialogue) is always present
+            if extra_types > 0:
+                boost = 1.0 + extra_types * self._diversity_boost
+                boosted = base_score * boost
+                boosted_scores[rid] = boosted
+                log.info("    [BOOST] %-12s base=%.4f types=%d boost=%.2fx → %.4f",
+                          rid, base_score, len(types), boost, boosted)
+            else:
+                boosted_scores[rid] = base_score  # no boost for single-type rounds
+
+        # Show top-5 before/after for comparison
+        sorted_before = sorted(round_scores.items(), key=lambda x: x[1], reverse=True)[:5]
+        sorted_after = sorted(boosted_scores.items(), key=lambda x: x[1], reverse=True)[:5]
+        log.info("  [BOOST] Top-5 BEFORE boost:")
+        for rid, s in sorted_before:
+            log.info("    [%.4f] %-12s types=[%s]", s, rid, ",".join(sorted(round_node_types.get(rid, []))))
+        log.info("  [BOOST] Top-5 AFTER boost:")
+        for rid, s in sorted_after:
+            log.info("    [%.4f] %-12s types=[%s]", s, rid, ",".join(sorted(round_node_types.get(rid, []))))
+
+        # ================================================================
+        # Stage 4: Temporal ordering — boosted top-N → chronological
+        # ================================================================
+        top_by_score = sorted(boosted_scores.keys(), key=lambda r: boosted_scores[r], reverse=True)[:self._max_rounds]
         ordered_rounds = [rid for rid in self._round_order if rid in top_by_score]
 
-        # Log type breakdown for selected rounds
-        log.info("Top %d rounds by relevance:", len(ordered_rounds))
-        for rid in ordered_rounds:
-            types = [r.node_type for r in round_nodes.get(rid, [])]
-            log.info("  %s score=%.3f types=%s", rid, round_scores.get(rid, 0), types)
+        log.info("  [ORDER] After chronological sort: %d rounds (max_rounds=%d)",
+                 len(ordered_rounds), self._max_rounds)
 
-        # Log CLUE hit/miss after chronological top-10, compared to the earlier raw search hit/miss
+        # Show boosted top-N with scores and types
+        log.info("  [ORDER] Top-%d by boosted score:", self._max_rounds)
+        for rid in top_by_score[:self._max_rounds]:
+            types_fmt = ",".join(sorted(round_node_types.get(rid, [])))
+            log.info("    [%.4f] %-12s types=[%s] (base=%.4f)",
+                      boosted_scores.get(rid, 0), rid, types_fmt, round_scores.get(rid, 0))
+
+        if ordered_rounds:
+            first_rid, last_rid = ordered_rounds[0], ordered_rounds[-1]
+            log.debug("  [ORDER] Chronological range: %s → %s", first_rid, last_rid)
+            sids_in_order = {self._round_session.get(rid, "?") for rid in ordered_rounds}
+            log.debug("  [ORDER] Sessions covered: %s", sorted(sids_in_order))
+            chrono_scores = [round_scores.get(rid, 0) for rid in ordered_rounds]
+            log.debug("  [ORDER] Score range chrono: min=%.4f max=%.4f",
+                      min(chrono_scores), max(chrono_scores))
+
+        # Log CLUE hit/miss after chronological sort
         if clue_rounds:
             final_hit = {rid for rid in ordered_rounds}
+            log.info("  [CLUE FINAL] %d clue rounds after chrono sort:", len(clue_rounds))
             for cr in clue_rounds:
                 status = "HIT" if cr in final_hit else "MISS"
-                log.info("  [CLUE FINAL] %s %s", status, cr)
+                log.info("    [CLUE FINAL] %s: %s", status, cr)
 
-        # 5. Assemble temporally ordered context
+            # Show which clue rounds were missed and why
+            missed = [cr for cr in clue_rounds if cr not in final_hit]
+            if missed:
+                log.info("  [CLUE FINAL] Missed rounds analysis:")
+                for cr in missed:
+                    if cr in boosted_scores:
+                        rank = sorted(boosted_scores.keys(), key=lambda r: boosted_scores[r], reverse=True).index(cr)
+                        score = round_scores[cr]
+                        log.info("      %s: base=%.4f boosted=%.4f (rank=%d in boosted, dropped by chrono max_rounds=%d)",
+                                  cr, score, boosted_scores[cr], rank, self._max_rounds)
+                    elif cr not in self._round_order:
+                        log.info("      %s: not in round_order (missing from dataset)", cr)
+                    else:
+                        log.info("      %s: not found in any vector results", cr)
+
+        # ================================================================
+        # Stage 5: Context assembly — build temporally ordered prompt
+        # ================================================================
+        log.info("  [ASSEMBLE] Assembling context from %d rounds in %d sessions ...",
+                 len(ordered_rounds),
+                 len({self._round_session.get(rid, "?") for rid in ordered_rounds}))
         image_paths: List[str] = []
         context_parts: List[str] = []
         last_sid = ""
@@ -501,26 +657,55 @@ class EVISystem:
                 context_parts.append(
                     f"--- Session {sid} ({date}) ---"
                 )
+                log.debug("  [ASSEMBLE]   session header: %s (%s)", sid, date)
                 last_sid = sid
 
             # Round text
             context_parts.append(f"  Round {rid}:")
             context_parts.append(f"    {self._round_text.get(rid, '')}")
+            log.debug("  [ASSEMBLE]   Round %s (session=%s, score=%.4f):",
+                      rid, sid, round_scores.get(rid, 0))
 
-            # Image descriptions from vector results
-            img_descs = []
-            for rec in round_nodes.get(rid, []):
-                if rec.node_type != "dialogue" and rec.text:
-                    img_descs.append(f"    [{rec.node_type}] {rec.text}")
-            if img_descs:
-                context_parts.extend(img_descs[:3])
+            # Image information from vector results — structured by type
+            image_records = [rec for rec in round_nodes.get(rid, []) if rec.node_type != "dialogue"]
+            n_img_items = 0
+
+            # Show image_name first (the micro-KG root)
+            name_rec = next((r for r in image_records if r.node_type == "image_name"), None)
+            if name_rec:
+                context_parts.append(f"    [IMAGE] {name_rec.text}")
+                n_img_items += 1
+
+            # Show facts grouped (micro-KG edges)
+            fact_recs = [r for r in image_records if r.node_type == "image_fact"]
+            for r in fact_recs:
+                context_parts.append(f"      ── {r.text}")
+                n_img_items += 1
+
+            # Show descriptions last (visual + context)
+            desc_recs = [r for r in image_records if r.node_type in ("image_visual", "image_context")]
+            for r in desc_recs:
+                context_parts.append(f"    [{r.node_type}] {r.text}")
+                n_img_items += 1
+
+            log.debug("  [ASSEMBLE]     -> %d image items added (%s)",
+                      n_img_items,
+                      "name=" + ("yes" if name_rec else "no") +
+                      " facts=" + str(len(fact_recs)) +
+                      " descs=" + str(len(desc_recs)))
 
             # Collect original image
             img_path = self._round_images.get(rid)
             if img_path:
                 image_paths.append(img_path)
+                log.debug("  [ASSEMBLE]     -> collected image: %s", img_path)
 
-        # 6. Build final prompt
+        log.info("  [ASSEMBLE] Done: %d lines of context, %d images collected",
+                 len(context_parts), len(image_paths))
+
+        # ================================================================
+        # Stage 6: Build final prompt and call VLM
+        # ================================================================
         context_text = "\n".join(context_parts)
 
         prompt = f"""Below is a conversation history organized by session and round, in chronological order.
@@ -529,16 +714,36 @@ class EVISystem:
 
 Question: {question}"""
 
-        log.info("Context: %d chars, %d images", len(context_text), len(image_paths))
+        log.info("  [VLM] Prompt built: %d chars, %d images for VLM, MCQ=%s",
+                 len(prompt),
+                 len(image_paths[:5]) if not is_mcq else 0,
+                 is_mcq)
+        log.debug("  [VLM] Context breakdown: text=%d chars, system_prefix=%d chars",
+                  len(context_text), len(prompt) - len(context_text))
+        log.debug("  [VLM] Images passed: %s",
+                  image_paths[:5] if not is_mcq else "(MCQ mode — no images passed to VLM)")
+        if len(image_paths) > 5:
+            log.debug("  [VLM]   (+ %d more images not sent due to limit)", len(image_paths) - 5)
+
         log.info("----- Final Prompt to VLM -----\n%s\n----- End Prompt -----", prompt)
 
         # 7. MCQ mode: just return the LLM response (no image needed for routing)
+        log.info("  [VLM] Calling VLM (mode=%s) ...", "MCQ (no images)" if is_mcq else f"open-ended ({len(image_paths[:5])} images)")
         if is_mcq:
             answer = vlm("", prompt, [])
         else:
             answer = vlm("", prompt, image_paths[:5])
 
-        log.info("Answer: %s", answer[:300] if answer else "(empty)")
+        if answer:
+            log.info("  [VLM] Response: %d chars", len(answer))
+            log.info("  [VLM] First 500 chars: %s", answer[:500])
+            # Log condensed version for quick scan
+            answer_one_line = answer.replace("\n", "\\n").replace("\r", "")
+            log.debug("  [VLM] Full response (one-line): %s",
+                      answer_one_line[:1000] + ("..." if len(answer_one_line) > 1000 else ""))
+        else:
+            log.warning("  [VLM] Empty response from VLM")
+
         log.info("==============================\n")
         return answer
 

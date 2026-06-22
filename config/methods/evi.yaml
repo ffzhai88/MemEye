@@ -21,5 +21,21 @@ text_embedding_model: nvidia/NV-Embed-v2
 # When false, vector search runs against all sessions directly.
 use_directory_retrieval: False
 
-# Top-k results from vector search (number of candidate rounds to retrieve)
-search_top_k: 20
+# --- Group-then-rerank search ---
+# raw_search_k: how many raw vectors to retrieve from the index (larger window).
+#   One round can produce many vectors (dialogue + image_name + image_facts + descs),
+#   so a larger raw_search_k ensures diverse rounds survive aggregation.
+#   Default: max(search_top_k * 3, 60).
+# max_rounds: how many unique rounds to include in the final temporal context.
+#   Default: search_top_k (legacy alias, default 20).
+# search_top_k: legacy alias for max_rounds (kept for backward compat).
+raw_search_k: 60
+max_rounds: 10
+search_top_k: 10
+
+# --- Diversity boost ---
+# Rounds that match the query via multiple node_types (dialogue + image_name +
+# image_fact + image_context + image_visual) get a score multiplier:
+#   boosted = base_score * (1.0 + (num_extra_types * diversity_boost))
+# 0.03 = +3% per extra type (max ~+12% for all 5 types hitting).
+diversity_boost: 0.03

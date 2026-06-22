@@ -4,12 +4,15 @@ EVI v2: In-memory vector index for multi-modal search.
 
 from __future__ import annotations
 
+import logging
 import math
 import re
 import string
 from typing import Any, FrozenSet, List, Optional, Tuple
 
 from .schemas import VectorRecord
+
+log = logging.getLogger(__name__)
 
 # Lightweight English stop word set (no external dependency on nltk corpus download).
 _STOP_WORDS: FrozenSet[str] = frozenset({
@@ -67,22 +70,64 @@ class VectorIndex:
         session_ids: Optional[set[str]] = None,
     ) -> List[VectorRecord]:
         """Search by cosine similarity. Optionally filter by node_type and/or session_ids."""
+        total = len(self._records)
         scored: List[Tuple[float, int]] = []
+
+        filter_stats: dict = {"by_node_type": 0, "by_session_id": 0}
         for idx, rec in enumerate(self._records):
             if node_types and rec.node_type not in node_types:
+                filter_stats["by_node_type"] += 1
                 continue
             if session_ids and rec.session_id not in session_ids:
+                filter_stats["by_session_id"] += 1
                 continue
             score = _cosine(query_vec, rec.vector)
             if score > 0:
                 scored.append((score, idx))
 
         scored.sort(key=lambda x: x[0], reverse=True)
+
+        # Log debug info
+        filtered_out = filter_stats["by_node_type"] + filter_stats["by_session_id"]
+        log.debug("  [VEC SEARCH] total=%d, filtered_out=%d "
+                  "(node_type=%d, session=%d), scored=%d",
+                  total, filtered_out,
+                  filter_stats["by_node_type"], filter_stats["by_session_id"],
+                  len(scored))
+
+        if not scored:
+            log.debug("  [VEC SEARCH] No results — returning empty")
+            return []
+
+        top_scores = [s for s, _ in scored[:top_k]]
+        log.debug("  [VEC SEARCH] top-%d scores: min=%.4f max=%.4f mean=%.4f",
+                  min(top_k, len(top_scores)),
+                  min(top_scores), max(top_scores),
+                  sum(top_scores) / len(top_scores))
+
+        # Score distribution by bands
+        bands = {"0.0-0.3": 0, "0.3-0.5": 0, "0.5-0.7": 0, "0.7-0.9": 0, "0.9-1.0": 0}
+        for s, _ in scored:
+            if s < 0.3: bands["0.0-0.3"] += 1
+            elif s < 0.5: bands["0.3-0.5"] += 1
+            elif s < 0.7: bands["0.5-0.7"] += 1
+            elif s < 0.9: bands["0.7-0.9"] += 1
+            else: bands["0.9-1.0"] += 1
+        log.debug("  [VEC SEARCH] score distribution: %s",
+                  " | ".join(f"{k}:{v}" for k, v in bands.items() if v > 0))
+
         results = []
         for score, idx in scored[:top_k]:
             rec = self._records[idx]
             rec.score = score
             results.append(rec)
+
+        # Log node_type breakdown in results
+        type_counts: dict = {}
+        for r in results:
+            type_counts[r.node_type] = type_counts.get(r.node_type, 0) + 1
+        log.debug("  [VEC SEARCH] result types: %s",
+                  " | ".join(f"{k}:{v}" for k, v in sorted(type_counts.items())))
         return results
 
     def get_by_type(self, node_type: str) -> List[VectorRecord]:
