@@ -39,3 +39,35 @@ search_top_k: 10
 #   boosted = base_score * (1.0 + (num_extra_types * diversity_boost))
 # 0.03 = +3% per extra type (max ~+12% for all 5 types hitting).
 diversity_boost: 0.03
+
+# --- QDMO interaction mode ---
+#
+# When set to "qdmo", the system uses query-conditioned memory-to-memory
+# interaction + emergent clustering instead of standard topK + temporal assembly.
+# All parameters below are ignored when interaction_mode = "standard".
+#
+# Pipeline:
+#   query → soft activation → active subset → interaction → clustering → LLM
+#
+# Set to "standard" to use the original EVI v2 retrieval pipeline.
+interaction_mode: "standard"
+
+# Active subset size: how many memory nodes participate in interaction (O(N^2)).
+# Larger = more comprehensive but slower. 20-50 is a good range.
+# Only used when interaction_mode = "qdmo".
+active_k: 30
+
+# Softmax temperature for activation distribution.
+# Lower = sharper (fewer nodes get meaningful weight).
+# Higher = smoother (more nodes participate).
+# 0.2-0.5 is a good range.
+softmax_temperature: 0.3
+
+# Number of seed nodes for emergent clustering.
+# Top-K activated nodes become cluster seeds.
+num_cluster_seeds: 5
+
+# Cosine similarity threshold for cluster membership.
+# Nodes with similarity >= this threshold to a seed join its cluster.
+# 0.55-0.75 is a good range depending on embedding dimension.
+cluster_threshold: 0.65

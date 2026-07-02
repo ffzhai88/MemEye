@@ -103,6 +103,21 @@ class VectorRecord:
 
 
 @dataclass
+class MemoryCluster:
+    """
+    QDMO emergent cluster: a group of related memory nodes induced by query-conditioned interaction.
+
+    After memory-to-memory interaction, nodes that show high similarity to a seed node
+    in the updated embedding space form a cluster. Each cluster represents a
+    "semantic attractor basin" — a coherent set of memories that are jointly relevant to the query.
+    """
+    seed_record: VectorRecord                       # the seed node this cluster is built around
+    members: List[VectorRecord] = field(default_factory=list)   # all nodes in this cluster (including seed)
+    centroid: List[float] = field(default_factory=list)          # mean embedding of cluster members after interaction
+    coherence_score: float = 0.0                    # average cosine similarity among members
+
+
+@dataclass
 class RetrievalResult:
     """Final context block sent to VLM."""
     ordered_context: str     # temporally sorted text with explicit ordering language

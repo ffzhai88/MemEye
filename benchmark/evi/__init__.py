@@ -1,5 +1,12 @@
 """
 EVI v2: Multi-dimensional vector indexing with temporal assembly.
+
+Two retrieval modes (config: interaction_mode):
+  - "standard" (default): LLM directory retrieval → vector topK → diversity boost → temporal assembly
+  - "qdmo":           soft activation → active subset → memory interaction → emergent clustering → cluster context
+
+QDMO adds query-conditioned memory-to-memory interaction and emergent clustering,
+where memories dynamically reorganize based on the query rather than being retrieved as independent items.
 """
 import logging
 import sys

@@ -4,17 +4,23 @@ EVI v2: Multi-vector temporal indexing for multimodal long-term memory.
 Two-phase lifecycle:
   1. process_all_sessions(dataset) — build vector index
   2. answer_question(question, qa) — retrieve + temporally assemble + VLM
+
+QDMO mode (interaction_mode="qdmo"):
+  Adds query-conditioned memory-to-memory interaction and emergent clustering
+  before VLM reasoning:
+    query → soft activation → active subset → interaction → clustering → LLM
 """
 
 from __future__ import annotations
 
 import json
 import logging
-from typing import Any, Dict, List, Optional
+import math
+from typing import Any, Dict, List, Optional, Tuple
 
 from .extractor import describe_image
-from .indexes import VectorIndex, embed_text
-from .schemas import VectorRecord
+from .indexes import VectorIndex, embed_text, sigmoid, softmax
+from .schemas import MemoryCluster, VectorRecord
 from .summarizer import load_all_summaries, summarize_session
 from .vlm import VLMCallable, make_vlm_callable
 
@@ -70,6 +76,13 @@ class EVISystem:
         self._raw_search_k: int = int(cfg.get("raw_search_k", max(self._search_top_k * 3, 60)))
         self._max_rounds: int = int(cfg.get("max_rounds", self._search_top_k))
         self._diversity_boost: float = float(cfg.get("diversity_boost", 0.03))
+
+        # ---- QDMO interaction mode ----
+        self._interaction_mode: str = str(cfg.get("interaction_mode", "standard"))
+        self._active_k: int = int(cfg.get("active_k", 30))
+        self._softmax_temperature: float = float(cfg.get("softmax_temperature", 0.3))
+        self._num_cluster_seeds: int = int(cfg.get("num_cluster_seeds", 5))
+        self._cluster_threshold: float = float(cfg.get("cluster_threshold", 0.65))
 
         self._initialized = False
 
@@ -386,6 +399,472 @@ class EVISystem:
         log.info("  [DIR] LLM selected %d candidate session(s): %s", len(candidate_set), sorted(candidate_set))
         return candidate_set
 
+    # ================================================================
+    # QDMO Pipeline (Step 2–6): query-conditioned interaction + clustering
+    # ================================================================
+
+    def _soft_activation(
+        self,
+        q_vec: List[float],
+    ) -> List[Tuple[float, VectorRecord]]:
+        """Step 2: Soft activation — compute relevance scores between query and ALL memory nodes.
+
+        Unlike standard topK retrieval, this assigns a weight to every node
+        via softmax over cosine similarities. The resulting distribution
+        represents "how much each memory is awakened" by the query.
+
+        Returns:
+            List of (softmax_weight, VectorRecord) sorted descending by weight.
+        """
+        scored = self._vector_index.compute_all_scores(q_vec)
+        if not scored:
+            return []
+
+        scores_only = [s for s, _ in scored]
+        weights = softmax(scores_only, temperature=self._softmax_temperature)
+
+        result = list(zip(weights, [rec for _, rec in scored]))
+        result.sort(key=lambda x: x[0], reverse=True)
+
+        log.info("  [QDMO ACTIVATION] %d nodes scored, temperature=%.2f", len(result), self._softmax_temperature)
+        log.info("  [QDMO ACTIVATION] weight range: [%.6f, %.6f], top-5 weights: %s",
+                 result[-1][0] if result else 0,
+                 result[0][0] if result else 0,
+                 [f"{w:.4f}" for w, _ in result[:5]])
+
+        # Distribution bands
+        bands = {"0.0-0.01": 0, "0.01-0.1": 0, "0.1-0.5": 0, "0.5-1.0": 0}
+        for w, _ in result:
+            if w < 0.01: bands["0.0-0.01"] += 1
+            elif w < 0.1: bands["0.01-0.1"] += 1
+            elif w < 0.5: bands["0.1-0.5"] += 1
+            else: bands["0.5-1.0"] += 1
+        log.info("  [QDMO ACTIVATION] weight distribution: %s",
+                 " | ".join(f"{k}:{v}" for k, v in bands.items() if v > 0))
+
+        # Node type composition in top weights
+        top_types: dict = {}
+        for _, rec in result[:50]:
+            top_types[rec.node_type] = top_types.get(rec.node_type, 0) + 1
+        log.info("  [QDMO ACTIVATION] top-50 node_type composition: %s",
+                 " | ".join(f"{k}:{v}" for k, v in sorted(top_types.items())))
+
+        return result
+
+    def _select_active_subset(
+        self,
+        scored_nodes: List[Tuple[float, VectorRecord]],
+    ) -> Tuple[List[VectorRecord], List[float]]:
+        """Step 3: Active subset selection — pick top-K nodes for interaction.
+
+        Keeps only the most activated nodes to control interaction complexity.
+        The subset represents "which memories are allowed to influence each other."
+
+        Args:
+            scored_nodes: (weight, VectorRecord) list from _soft_activation.
+
+        Returns:
+            Tuple of (active_records, active_weights) both in the same order.
+        """
+        subset = scored_nodes[:self._active_k]
+        active_records = [rec for _, rec in subset]
+        active_weights = [w for w, _ in subset]
+
+        log.info("  [QDMO SUBSET] Selected %d active nodes (max_active=%d)",
+                 len(active_records), self._active_k)
+        log.info("  [QDMO SUBSET] Weight range in active subset: [%.6f, %.6f]",
+                 min(active_weights), max(active_weights))
+
+        type_counts: dict = {}
+        for rec in active_records:
+            type_counts[rec.node_type] = type_counts.get(rec.node_type, 0) + 1
+        log.info("  [QDMO SUBSET] Active subset composition: %s",
+                 " | ".join(f"{k}:{v}" for k, v in sorted(type_counts.items())))
+
+        return active_records, active_weights
+
+    @staticmethod
+    def _cosine(a: List[float], b: List[float]) -> float:
+        """Compute cosine similarity between two vectors."""
+        dot = sum(x * y for x, y in zip(a, b))
+        na = math.sqrt(sum(x * x for x in a))
+        nb = math.sqrt(sum(x * x for x in b))
+        return dot / (na * nb) if na and nb else 0.0
+
+    def _memory_interaction(
+        self,
+        q_vec: List[float],
+        active_records: List[VectorRecord],
+    ) -> Dict[str, List[float]]:
+        """Step 4: Memory-to-memory interaction (query-conditioned).
+
+        This is the core QDMO step. Each memory node is updated based on
+        other nodes it is related to — but only when both are relevant to
+        the query (query gate mechanism).
+
+        For each pair (i, j):
+            1. sim_ij = cosine(emb_i, emb_j)       — base similarity
+            2. gate_i = sigmoid(cosine(q, emb_i))   — query relevance of i
+               gate_j = sigmoid(cosine(q, emb_j))   — query relevance of j
+            3. g_ij = gate_i * gate_j               — query gate (both must be relevant)
+               (Simplified from sigmoid(gate_i + gate_j) for numerical stability)
+            4. α_ij = g_ij * sim_ij                 — interaction weight
+            5. h_i' = Σ_j α_ij * emb_j / Σ_j α_ij   — weighted update
+
+        Args:
+            q_vec: Query embedding.
+            active_records: Records in the active subset.
+
+        Returns:
+            Dict mapping record_id -> updated embedding vector (interaction result).
+        """
+        n = len(active_records)
+        if n == 0:
+            return {}
+
+        # Precompute query gates for all active nodes
+        query_gates: Dict[str, float] = {}
+        for rec in active_records:
+            gate = sigmoid(self._cosine(q_vec, rec.vector))
+            query_gates[rec.id] = gate
+
+        log.info("  [QDMO INTERACT] %d active nodes, computing pairwise interactions ...", n)
+        log.info("  [QDMO INTERACT] Query gate stats — min=%.4f max=%.4f mean=%.4f",
+                 min(query_gates.values()), max(query_gates.values()),
+                 sum(query_gates.values()) / len(query_gates))
+
+        # Gate distribution bands
+        gate_bands = {"0.0-0.3": 0, "0.3-0.5": 0, "0.5-0.7": 0, "0.7-1.0": 0}
+        for g in query_gates.values():
+            if g < 0.3: gate_bands["0.0-0.3"] += 1
+            elif g < 0.5: gate_bands["0.3-0.5"] += 1
+            elif g < 0.7: gate_bands["0.5-0.7"] += 1
+            else: gate_bands["0.7-1.0"] += 1
+        log.info("  [QDMO INTERACT] Gate distribution: %s",
+                 " | ".join(f"{k}:{v}" for k, v in gate_bands.items() if v > 0))
+
+        # Precompute base similarity matrix (n x n)
+        sim_matrix: List[List[float]] = [[0.0] * n for _ in range(n)]
+        for i in range(n):
+            for j in range(n):
+                if i == j:
+                    sim_matrix[i][j] = 1.0
+                else:
+                    sim_matrix[i][j] = self._cosine(active_records[i].vector, active_records[j].vector)
+
+        # Compute interaction weights and update each node
+        updated_embeddings: Dict[str, List[float]] = {}
+        interaction_weight_log: List[Tuple[str, str, float]] = []  # (src_id, tgt_id, weight)
+
+        for i, rec_i in enumerate(active_records):
+            weights: List[float] = []
+            vectors: List[List[float]] = []
+
+            for j, rec_j in enumerate(active_records):
+                # Query-conditioned gate: both i and j must be relevant to query
+                g_ij = query_gates[rec_i.id] * query_gates[rec_j.id]
+                # Interaction weight = gate * similarity
+                alpha = g_ij * sim_matrix[i][j]
+                if alpha > 0.001:  # only keep meaningful interactions
+                    weights.append(alpha)
+                    vectors.append(rec_j.vector)
+                    if i != j and len(interaction_weight_log) < 20:  # sample top pairs
+                        interaction_weight_log.append((rec_i.id, rec_j.id, alpha))
+
+            # Weighted sum
+            if weights and vectors:
+                total_w = sum(weights)
+                updated = [
+                    sum(w * v[idx] for w, v in zip(weights, vectors)) / total_w
+                    for idx in range(len(vectors[0]))
+                ]
+            else:
+                updated = list(rec_i.vector)  # fallback: unchanged
+
+            updated_embeddings[rec_i.id] = updated
+
+        # Log interaction pattern summary
+        log.info("  [QDMO INTERACT] Interaction weights (sample top-20 non-self pairs):")
+        for src, tgt, w in sorted(interaction_weight_log, key=lambda x: x[2], reverse=True)[:20]:
+            log.info("    [%.4f] %s → %s", w, src, tgt)
+
+        # Measure shift magnitude
+        shifts = []
+        for rec in active_records:
+            old = rec.vector
+            new = updated_embeddings[rec.id]
+            shift = math.sqrt(sum((a - b) ** 2 for a, b in zip(old, new)))
+            shifts.append(shift)
+        log.info("  [QDMO INTERACT] Embedding shift — min=%.4f max=%.4f mean=%.4f",
+                 min(shifts), max(shifts), sum(shifts) / len(shifts))
+
+        # Shift distribution
+        shift_bands = {"0.0-0.01": 0, "0.01-0.05": 0, "0.05-0.1": 0, "0.1+": 0}
+        for s in shifts:
+            if s < 0.01: shift_bands["0.0-0.01"] += 1
+            elif s < 0.05: shift_bands["0.01-0.05"] += 1
+            elif s < 0.1: shift_bands["0.05-0.1"] += 1
+            else: shift_bands["0.1+"] += 1
+        log.info("  [QDMO INTERACT] Shift distribution: %s",
+                 " | ".join(f"{k}:{v}" for k, v in shift_bands.items() if v > 0))
+
+        return updated_embeddings
+
+    def _emergent_clustering(
+        self,
+        updated_embeddings: Dict[str, List[float]],
+        scored_nodes: List[Tuple[float, VectorRecord]],
+    ) -> List[MemoryCluster]:
+        """Step 5: Emergent clustering — find semantic groups in interaction-updated space.
+
+        After memory-to-memory interaction, nodes that have moved closer together
+        in the embedding space form natural clusters. Uses seed-based grouping:
+        - Seeds = top-K nodes by original activation weight
+        - Cluster = all nodes whose updated embedding has cosine > threshold to seed
+        - Each node joins the first seed it matches (greedy assignment)
+
+        Args:
+            updated_embeddings: Record id -> updated embedding vector from interaction.
+            scored_nodes: (weight, VectorRecord) from soft_activation.
+
+        Returns:
+            List of MemoryCluster objects, ordered by seed activation weight descending.
+        """
+        # Get seed candidates: top-K by original activation weight
+        seed_candidates = [rec for _, rec in scored_nodes[:self._num_cluster_seeds * 3]]
+
+        # Filter to ones with updated embeddings
+        seeds: List[VectorRecord] = []
+        for rec in seed_candidates:
+            if rec.id in updated_embeddings:
+                seeds.append(rec)
+            if len(seeds) >= self._num_cluster_seeds:
+                break
+
+        if not seeds:
+            log.warning("  [QDMO CLUSTER] No seeds found — skipping clustering")
+            return []
+
+        # Greedy assignment: assign each node to the first seed it matches
+        assigned: set = set()
+        clusters: List[MemoryCluster] = []
+
+        for seed in seeds:
+            if seed.id in assigned:
+                continue
+
+            seed_emb = updated_embeddings.get(seed.id, seed.vector)
+            members: List[VectorRecord] = [seed]
+            assigned.add(seed.id)
+
+            # Find nodes similar to this seed in the updated space
+            for _, rec in scored_nodes:
+                if rec.id in assigned or rec.id not in updated_embeddings:
+                    continue
+                node_emb = updated_embeddings[rec.id]
+                sim = self._cosine(seed_emb, node_emb)
+                if sim >= self._cluster_threshold:
+                    members.append(rec)
+                    assigned.add(rec.id)
+
+            # Compute centroid and coherence
+            if len(members) > 0:
+                centroid = [
+                    sum(updated_embeddings.get(m.id, m.vector)[d] for m in members) / len(members)
+                    for d in range(len(seed_emb))
+                ]
+                coherence = sum(
+                    self._cosine(centroid, updated_embeddings.get(m.id, m.vector))
+                    for m in members
+                ) / len(members)
+
+                cluster = MemoryCluster(
+                    seed_record=seed,
+                    members=members,
+                    centroid=centroid,
+                    coherence_score=coherence,
+                )
+                clusters.append(cluster)
+
+        log.info("  [QDMO CLUSTER] Formed %d clusters from %d seeds (threshold=%.2f)",
+                 len(clusters), self._num_cluster_seeds, self._cluster_threshold)
+
+        for idx, cl in enumerate(clusters):
+            types_in_cluster: dict = {}
+            for m in cl.members:
+                types_in_cluster[m.node_type] = types_in_cluster.get(m.node_type, 0) + 1
+            log.info("  [QDMO CLUSTER]   Cluster %d: %d members, coherence=%.4f, types=%s",
+                     idx, len(cl.members), cl.coherence_score,
+                     " | ".join(f"{k}:{v}" for k, v in sorted(types_in_cluster.items())))
+
+        # Log unassigned ratio
+        total_in_scored = len(scored_nodes)
+        unassigned = total_in_scored - len(assigned)
+        log.info("  [QDMO CLUSTER] %d / %d nodes assigned to clusters (%d unassigned)",
+                 len(assigned), total_in_scored, unassigned)
+
+        return clusters
+
+    @staticmethod
+    def _build_cluster_context(
+        clusters: List[MemoryCluster],
+    ) -> str:
+        """Step 6: Build LLF context from clusters.
+
+        Organizes memory nodes by cluster (semantic group) instead of by
+        chronological order. Each cluster represents a distinct "aspect"
+        of information relevant to the query.
+
+        Args:
+            clusters: List of MemoryCluster from emergent clustering.
+
+        Returns:
+            Formatted context string grouped by cluster.
+        """
+        parts: List[str] = []
+        for idx, cl in enumerate(clusters):
+            # Separate members by type for structured output
+            dialogue_members = [m for m in cl.members if m.node_type == "dialogue"]
+            image_name_members = [m for m in cl.members if m.node_type == "image_name"]
+            fact_members = [m for m in cl.members if m.node_type == "image_fact"]
+            desc_members = [m for m in cl.members if m.node_type in ("image_visual", "image_context")]
+
+            parts.append(f"Relevant Information Group {idx + 1} "
+                         f"(coherence: {cl.coherence_score:.2f}, "
+                         f"members: {len(cl.members)}):")
+
+            if dialogue_members:
+                for m in dialogue_members:
+                    parts.append(f"  [Conversation] {m.text}")
+
+            if image_name_members:
+                for m in image_name_members:
+                    parts.append(f"  [Image] {m.text}")
+
+            if fact_members:
+                parts.append("  [Facts from this image]:")
+                for m in fact_members:
+                    parts.append(f"    - {m.text}")
+
+            if desc_members:
+                for m in desc_members:
+                    parts.append(f"  [{m.node_type}] {m.text}")
+
+            parts.append("")  # blank line between groups
+
+        return "\n".join(parts)
+
+    def _qdmo_answer(
+        self,
+        question: str,
+        qa: Optional[Dict[str, Any]],
+        question_images: Optional[List[str]],
+    ) -> str:
+        """Run the full QDMO pipeline (Steps 2-7) and return VLM answer.
+
+        Steps:
+          2. Soft activation: relevance scores for ALL nodes
+          3. Active subset: top-K nodes for interaction
+          4. Memory-to-memory interaction: query-conditioned attention
+          5. Emergent clustering: seed-based grouping in updated space
+          6. Context construction: cluster-organized text
+          7. VLM reasoning: answer based on cluster structure
+        """
+        _ = question_images
+        vlm = self._vlm
+        if vlm is None:
+            raise RuntimeError("VLM not initialized")
+
+        log.info("")
+        log.info("========== EVI QDMO Answer ==========")
+        log.info("Q: %s", question)
+
+        question_stem = (qa or {}).get("question", "").strip() or question
+        is_mcq = bool(qa and qa.get("options"))
+
+        # Step 2: Soft activation
+        log.info("")
+        log.info("--- [QDMO Step 2] Soft Activation ---")
+        q_vec = self._embed(question_stem)
+        if not q_vec:
+            log.warning("  [QDMO] Embedding returned empty — aborting")
+            return ""
+
+        scored_nodes = self._soft_activation(q_vec)
+        if not scored_nodes:
+            log.warning("  [QDMO] No nodes scored — returning empty")
+            return ""
+
+        # Step 3: Active subset selection
+        log.info("")
+        log.info("--- [QDMO Step 3] Active Subset ---")
+        active_records, active_weights = self._select_active_subset(scored_nodes)
+        if not active_records:
+            log.warning("  [QDMO] Active subset empty — returning empty")
+            return ""
+
+        # Step 4: Memory-to-memory interaction
+        log.info("")
+        log.info("--- [QDMO Step 4] Memory Interaction ---")
+        updated_embs = self._memory_interaction(q_vec, active_records)
+        if not updated_embs:
+            log.warning("  [QDMO] Interaction produced no updates — returning empty")
+            return ""
+
+        # Step 5: Emergent clustering
+        log.info("")
+        log.info("--- [QDMO Step 5] Emergent Clustering ---")
+        clusters = self._emergent_clustering(updated_embs, scored_nodes)
+
+        if not clusters:
+            log.warning("  [QDMO] No clusters formed — using standard context assembly")
+            # Fallback to interaction-updated nodes as flat context
+            context_text = "\n".join(
+                f"  [{rec.node_type}] {rec.text}"
+                for _, rec in scored_nodes[:self._max_rounds]
+            )
+        else:
+            # Step 6: Build cluster-organized context
+            log.info("")
+            log.info("--- [QDMO Step 6] Context Construction ---")
+            context_text = self._build_cluster_context(clusters)
+
+        # Step 7: VLM reasoning
+        log.info("")
+        log.info("--- [QDMO Step 7] VLM Reasoning ---")
+        prompt = f"""Below is information organized by relevant groups, each representing a distinct aspect of the conversation history.
+
+{context_text}
+
+Question: {question}"""
+
+        log.info("  [QDMO VLM] Prompt %d chars, MCQ=%s", len(prompt), is_mcq)
+        log.debug("----- Final Prompt to VLM -----\n%s\n----- End Prompt -----", prompt)
+
+        if is_mcq:
+            answer = vlm("", prompt, [])
+        else:
+            # Collect images from the most relevant nodes (top-5 by activation weight)
+            image_paths: List[str] = []
+            seen_paths: set = set()
+            for _, rec in scored_nodes:
+                if rec.image_path and rec.image_path not in seen_paths:
+                    image_paths.append(rec.image_path)
+                    seen_paths.add(rec.image_path)
+                    if len(image_paths) >= 5:
+                        break
+            log.info("  [QDMO VLM] Collected %d unique images for VLM", len(image_paths))
+            answer = vlm("", prompt, image_paths)
+
+        if answer:
+            log.info("  [QDMO VLM] Response: %d chars", len(answer))
+            log.info("  [QDMO VLM] First 500 chars: %s", answer[:500])
+        else:
+            log.warning("  [QDMO VLM] Empty response")
+
+        log.info("====================================\n")
+        return answer
+
     # ---- Phase 2: Retrieval + Temporal Assembly ----
 
     def answer_question(
@@ -451,6 +930,10 @@ class EVISystem:
         vlm = self._vlm
         if vlm is None:
             raise RuntimeError("VLM not initialized")
+
+        # ---- QDMO mode: use memory interaction + emergent clustering pipeline ----
+        if self._interaction_mode == "qdmo":
+            return self._qdmo_answer(question, qa, question_images)
 
         log.info("")
         log.info("========== EVI Answer ==========")
