@@ -1,241 +1,212 @@
-"""
-EVI v2: In-memory vector index for multi-modal search.
-"""
-
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 import math
+import os
 import re
 import string
-from typing import Any, Dict, FrozenSet, List, Optional, Tuple
+from pathlib import Path
+from typing import Any, FrozenSet, Iterable, List, Optional, Tuple
 
-from .schemas import VectorRecord
+from .schemas import EvidenceAnchor
 
 log = logging.getLogger(__name__)
 
-# Lightweight English stop word set (no external dependency on nltk corpus download).
 _STOP_WORDS: FrozenSet[str] = frozenset({
     "a", "an", "the", "and", "or", "but", "if", "because", "as", "what",
     "which", "this", "that", "these", "those", "then", "just", "so", "than",
     "such", "both", "through", "about", "for", "is", "are", "was", "were",
-    "been", "be", "being", "have", "has", "had", "having", "do", "does",
-    "did", "doing", "would", "could", "should", "might", "may", "must",
-    "shall", "will", "can", "need", "dare", "ought", "used", "to", "of",
-    "in", "for", "on", "with", "at", "by", "from", "into", "through",
-    "during", "before", "after", "above", "below", "between", "out",
-    "off", "over", "under", "again", "further", "then", "once", "here",
-    "there", "when", "where", "why", "how", "all", "each", "every",
-    "both", "few", "more", "most", "other", "some", "such", "no", "nor",
-    "not", "only", "own", "same", "so", "than", "too", "very", "just",
-    "because", "as", "until", "while", "it", "its", "itself", "they",
-    "them", "their", "themselves", "he", "him", "his", "himself", "she",
-    "her", "hers", "herself", "we", "us", "our", "ours", "ourselves",
-    "you", "your", "yours", "yourself", "yourselves", "i", "me", "my",
-    "mine", "myself",
+    "been", "be", "being", "have", "has", "had", "do", "does", "did", "would",
+    "could", "should", "might", "may", "must", "will", "can", "to", "of", "in",
+    "on", "with", "at", "by", "from", "into", "before", "after", "above",
+    "below", "between", "out", "off", "over", "under", "again", "further",
+    "once", "here", "there", "when", "where", "why", "how", "all", "each",
+    "every", "few", "more", "most", "other", "some", "no", "nor", "not",
+    "only", "own", "same", "too", "very", "it", "its", "they", "them", "their",
+    "he", "him", "his", "she", "her", "we", "us", "our", "you", "your", "i",
+    "me", "my",
 })
 
 _PUNCTUATION_PATTERN: re.Pattern = re.compile(r"[{}]".format(re.escape(string.punctuation)))
 
+_TYPE_ALIASES = {
+    "dialogue": "temporal",
+    "event": "temporal",
+    "state": "temporal",
+    "ocr": "text",
+    "ui": "structured_visual",
+    "chart": "structured_visual",
+    "chart_ui": "structured_visual",
+    "table": "structured_visual",
+    "diagram": "structured_visual",
+    "visual": "scene",
+    "object": "entity",
+}
 
-def sigmoid(x: float) -> float:
-    """Numerically stable sigmoid."""
-    if x >= 0:
-        return 1.0 / (1.0 + math.exp(-x))
-    else:
-        exp_x = math.exp(x)
-        return exp_x / (1.0 + exp_x)
+_VALID_TYPES = {
+    "scene",
+    "text",
+    "entity",
+    "attribute",
+    "spatial",
+    "relation",
+    "identity",
+    "structured_visual",
+    "temporal",
+}
+
+_EMBED_CACHE_DIR: Optional[str] = None
 
 
-def softmax(scores: List[float], temperature: float = 1.0) -> List[float]:
-    """Softmax with temperature. Returns probabilities in same order."""
-    if not scores:
-        return []
-    scaled = [s / temperature for s in scores]
-    max_s = max(scaled)
-    exp_vals = [math.exp(s - max_s) for s in scaled]  # numerical stability
-    sum_exp = sum(exp_vals)
-    return [e / sum_exp for e in exp_vals]
+def _embed_cache_dir() -> str:
+    global _EMBED_CACHE_DIR
+    if _EMBED_CACHE_DIR is None:
+        _EMBED_CACHE_DIR = os.environ.get(
+            "EVI_EMBED_CACHE_DIR",
+            str(Path.home() / ".cache" / "evi_embeddings"),
+        )
+        os.makedirs(_EMBED_CACHE_DIR, exist_ok=True)
+    return _EMBED_CACHE_DIR
 
 
-def _clean_text(text: str) -> str:
-    """Remove punctuation, lower-case, and drop English stop words.
+def _embed_cache_key(text: str, namespace: str) -> str:
+    raw = json.dumps(
+        {"version": "embed_v1", "namespace": namespace, "text": text},
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:40]
 
-    Returns a cleaned string with tokens joined by a single space.
-    """
-    text = text.lower()
+
+def clean_text(text: str) -> str:
+    text = str(text).lower()
     text = _PUNCTUATION_PATTERN.sub(" ", text)
-    tokens = text.split()
-    tokens = [t for t in tokens if t not in _STOP_WORDS and len(t) > 1]
+    tokens = [t for t in text.split() if t not in _STOP_WORDS and len(t) > 1]
     return " ".join(tokens)
 
 
-class VectorIndex:
-    """Simple in-memory vector store with cosine similarity search."""
-
-    def __init__(self):
-        self._records: List[VectorRecord] = []
-
-    def add(self, rec: VectorRecord) -> None:
-        self._records.append(rec)
-
-    def __len__(self) -> int:
-        return len(self._records)
-
-    def search(
-        self,
-        query_vec: List[float],
-        top_k: int = 15,
-        node_types: Optional[List[str]] = None,
-        session_ids: Optional[set[str]] = None,
-    ) -> List[VectorRecord]:
-        """Search by cosine similarity. Optionally filter by node_type and/or session_ids."""
-        total = len(self._records)
-        scored: List[Tuple[float, int]] = []
-
-        filter_stats: dict = {"by_node_type": 0, "by_session_id": 0}
-        for idx, rec in enumerate(self._records):
-            if node_types and rec.node_type not in node_types:
-                filter_stats["by_node_type"] += 1
-                continue
-            if session_ids and rec.session_id not in session_ids:
-                filter_stats["by_session_id"] += 1
-                continue
-            score = _cosine(query_vec, rec.vector)
-            if score > 0:
-                scored.append((score, idx))
-
-        scored.sort(key=lambda x: x[0], reverse=True)
-
-        # Log debug info
-        filtered_out = filter_stats["by_node_type"] + filter_stats["by_session_id"]
-        log.debug("  [VEC SEARCH] total=%d, filtered_out=%d "
-                  "(node_type=%d, session=%d), scored=%d",
-                  total, filtered_out,
-                  filter_stats["by_node_type"], filter_stats["by_session_id"],
-                  len(scored))
-
-        if not scored:
-            log.debug("  [VEC SEARCH] No results — returning empty")
-            return []
-
-        top_scores = [s for s, _ in scored[:top_k]]
-        log.debug("  [VEC SEARCH] top-%d scores: min=%.4f max=%.4f mean=%.4f",
-                  min(top_k, len(top_scores)),
-                  min(top_scores), max(top_scores),
-                  sum(top_scores) / len(top_scores))
-
-        # Score distribution by bands
-        bands = {"0.0-0.3": 0, "0.3-0.5": 0, "0.5-0.7": 0, "0.7-0.9": 0, "0.9-1.0": 0}
-        for s, _ in scored:
-            if s < 0.3: bands["0.0-0.3"] += 1
-            elif s < 0.5: bands["0.3-0.5"] += 1
-            elif s < 0.7: bands["0.5-0.7"] += 1
-            elif s < 0.9: bands["0.7-0.9"] += 1
-            else: bands["0.9-1.0"] += 1
-        log.debug("  [VEC SEARCH] score distribution: %s",
-                  " | ".join(f"{k}:{v}" for k, v in bands.items() if v > 0))
-
-        results = []
-        for score, idx in scored[:top_k]:
-            rec = self._records[idx]
-            rec.score = score
-            results.append(rec)
-
-        # Log node_type breakdown in results
-        type_counts: dict = {}
-        for r in results:
-            type_counts[r.node_type] = type_counts.get(r.node_type, 0) + 1
-        log.debug("  [VEC SEARCH] result types: %s",
-                  " | ".join(f"{k}:{v}" for k, v in sorted(type_counts.items())))
-        return results
-
-    def compute_all_scores(
-        self,
-        query_vec: List[float],
-        node_types: Optional[List[str]] = None,
-        session_ids: Optional[set[str]] = None,
-    ) -> List[Tuple[float, VectorRecord]]:
-        """Compute cosine similarity between query_vec and ALL records.
-
-        Unlike search(), this returns every scored record (not just topK),
-        used by QDMO soft activation to get the full activation distribution.
-
-        Args:
-            query_vec: Query embedding vector.
-            node_types: Optional filter — only score records with these node_types.
-            session_ids: Optional filter — only score records in these sessions.
-
-        Returns:
-            List of (score, VectorRecord) sorted descending by score.
-            Records with score <= 0 are excluded.
-        """
-        scored: List[Tuple[float, VectorRecord]] = []
-        for rec in self._records:
-            if node_types and rec.node_type not in node_types:
-                continue
-            if session_ids and rec.session_id not in session_ids:
-                continue
-            score = _cosine(query_vec, rec.vector)
-            if score > 0:
-                rec.score = score
-                scored.append((score, rec))
-        scored.sort(key=lambda x: x[0], reverse=True)
-        return scored
-
-    def get_embeddings_bulk(self, record_ids: Optional[set[str]] = None) -> Dict[str, VectorRecord]:
-        """Retrieve full VectorRecord objects (with embeddings) by id.
-
-        Used by QDMO interaction step to access embedding vectors for
-        memory-to-memory attention.
-
-        Args:
-            record_ids: Set of record ids to look up. If None, returns all records.
-
-        Returns:
-            Dict mapping record_id -> VectorRecord (includes .vector field).
-        """
-        if record_ids is None:
-            return {r.id: r for r in self._records}
-        records: Dict[str, VectorRecord] = {}
-        for rec in self._records:
-            if rec.id in record_ids:
-                records[rec.id] = rec
-        return records
-
-    def get_by_type(self, node_type: str) -> List[VectorRecord]:
-        return [r for r in self._records if r.node_type == node_type]
-
-
-def _cosine(a: List[float], b: List[float]) -> float:
+def cosine(a: List[float], b: List[float]) -> float:
     dot = sum(x * y for x, y in zip(a, b))
     na = math.sqrt(sum(x * x for x in a))
     nb = math.sqrt(sum(x * x for x in b))
     return dot / (na * nb) if na and nb else 0.0
 
 
-def embed_text(text: str, embedder: Any) -> List[float]:
-    """Embed text using various embedder interfaces.
+def normalize_type(evidence_type: str) -> str:
+    raw = str(evidence_type or "scene").strip().lower()
+    raw = raw.replace("-", "_").replace(" ", "_")
+    normalized = _TYPE_ALIASES.get(raw, raw)
+    return normalized if normalized in _VALID_TYPES else "scene"
 
-    The input text is cleaned before embedding:
-    lower-cased, punctuation removed, English stop words dropped.
-    """
+
+def embed_text(
+    text: str,
+    embedder: Any,
+    cache_namespace: str = "default",
+    use_cache: bool = True,
+) -> List[float]:
+    """Embed text through the repository TextEmbedder-compatible interface."""
     if embedder is None:
         return []
-    text = _clean_text(text)
-    # Try common interfaces: .encode() (sentence-transformers),
-    # .embed_query() (chromadb/langchain), or callable
-    for method_name in ("encode", "embed_query", "__call__"):
+    text = clean_text(text)
+    if not text:
+        return []
+
+    cache_file: Optional[Path] = None
+    if use_cache:
+        cache_file = Path(_embed_cache_dir()) / f"{_embed_cache_key(text, cache_namespace)}.json"
+        if cache_file.exists():
+            try:
+                data = json.loads(cache_file.read_text(encoding="utf-8"))
+                vector = data.get("vector", []) if isinstance(data, dict) else []
+                if isinstance(vector, list) and vector:
+                    return [float(x) for x in vector]
+            except Exception:
+                pass
+
+    vector: List[float] = []
+    for method_name in ("embed_query", "encode", "__call__"):
         try:
-            fn = getattr(embedder, method_name, embedder if method_name == "__call__" else None)
-            if fn is None:
-                continue
-            result = fn([text] if method_name == "__call__" else text)
+            if method_name == "__call__":
+                fn = embedder
+                result = fn([text])
+            else:
+                fn = getattr(embedder, method_name, None)
+                if fn is None:
+                    continue
+                result = fn(text)
             if hasattr(result, "tolist"):
-                return result.tolist()
+                result = result.tolist()
             if isinstance(result, (list, tuple)):
-                return list(result)
-            return result
+                if result and isinstance(result[0], (list, tuple)):
+                    vector = list(result[0])
+                else:
+                    vector = list(result)
+            else:
+                vector = list(result)
+            break
         except Exception:
             continue
-    return []
+
+    if vector:
+        try:
+            vector = [float(x) for x in vector]
+        except Exception:
+            vector = []
+
+    if vector and use_cache and cache_file is not None:
+        try:
+            cache_file.write_text(
+                json.dumps({"namespace": cache_namespace, "text": text, "vector": vector}, ensure_ascii=False),
+                encoding="utf-8",
+            )
+        except Exception:
+            pass
+    return vector
+
+
+class EvidenceIndex:
+    """Simple in-memory vector index for EvidenceAnchor objects."""
+
+    def __init__(self) -> None:
+        self._anchors: List[EvidenceAnchor] = []
+
+    def add(self, anchor: EvidenceAnchor) -> None:
+        anchor.evidence_type = normalize_type(anchor.evidence_type)
+        self._anchors.append(anchor)
+
+    def extend(self, anchors: Iterable[EvidenceAnchor]) -> None:
+        for anchor in anchors:
+            self.add(anchor)
+
+    def __len__(self) -> int:
+        return len(self._anchors)
+
+    @property
+    def anchors(self) -> List[EvidenceAnchor]:
+        return self._anchors
+
+    def search(
+        self,
+        query_vec: List[float],
+        top_k: int = 60,
+        session_ids: Optional[set[str]] = None,
+    ) -> List[EvidenceAnchor]:
+        results: List[Tuple[float, int]] = []
+        for idx, anchor in enumerate(self._anchors):
+            if session_ids is not None and anchor.session_id not in session_ids:
+                continue
+            score = cosine(query_vec, anchor.vector)
+            if score <= 0:
+                continue
+            results.append((score, idx))
+        results.sort(key=lambda item: item[0], reverse=True)
+
+        out: List[EvidenceAnchor] = []
+        for score, idx in results[:top_k]:
+            anchor = self._anchors[idx]
+            anchor.score = score
+            out.append(anchor)
+        return out

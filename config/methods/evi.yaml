@@ -1,73 +1,46 @@
-# EVI: Evidence-grounded Visual Indexing
-# Model config is read from the separate --model-config file
+# QDMO-EVI: Query-Driven Memory Organization with Evidence anchors
 method: evi
 name: evi
 modality: multimodal
 
-# --- Text embedding ---
-# Model name for text embedding. Supports:
-#   - "all-MiniLM-L6-v2"   (sentence-transformers, 384-dim, default)
-#   - "nvidia/NV-Embed-v2" (transformers + trust_remote_code, 4096-dim)
+# Text embedding backend used for task-agnostic evidence-anchor retrieval.
+# Safer default for local compile/smoke tests is all-MiniLM-L6-v2; use NV-Embed-v2 for full experiments if available.
+#text_embedding_model: all-MiniLM-L6-v2
 text_embedding_model: nvidia/NV-Embed-v2
-
-# Extra kwargs passed to the TextEmbedder constructor (NV-Embed-v2 mode):
-#   max_length: 32768 | batch_size: 16 | dtype: "auto" | instruction: ""
 # text_embedding_kwargs:
 #   max_length: 16384
 #   batch_size: 8
 
-# --- Directory retrieval (Phase 1 coarse filter) ---
-# When true, LLM selects candidate sessions from summaries before vector search.
-# When false, vector search runs against all sessions directly.
-use_directory_retrieval: False
+# VLM budget for offline anchor extraction, group verification, and final answering.
+vlm_max_new_tokens: 1024
+vlm_timeout: 90
 
-# --- Group-then-rerank search ---
-# raw_search_k: how many raw vectors to retrieve from the index (larger window).
-#   One round can produce many vectors (dialogue + image_name + image_facts + descs),
-#   so a larger raw_search_k ensures diverse rounds survive aggregation.
-#   Default: max(search_top_k * 3, 60).
-# max_rounds: how many unique rounds to include in the final temporal context.
-#   Default: search_top_k (legacy alias, default 20).
-# search_top_k: legacy alias for max_rounds (kept for backward compat).
-raw_search_k: 60
-max_rounds: 10
-search_top_k: 10
+# Broad retrieval over evidence anchors before query-driven organization.
+raw_search_k: 120
 
-# --- Diversity boost ---
-# Rounds that match the query via multiple node_types (dialogue + image_name +
-# image_fact + image_context + image_visual) get a score multiplier:
-#   boosted = base_score * (1.0 + (num_extra_types * diversity_boost))
-# 0.03 = +3% per extra type (max ~+12% for all 5 types hitting).
-diversity_boost: 0.03
+# Query-driven memory organization budget. This is not a benchmark-specific task planner;
+# groups are built from semantic affinity, provenance, evidence type compatibility, and chronology.
+max_groups: 6
+max_group_size: 12
+max_group_images: 4
 
-# --- QDMO interaction mode ---
-#
-# When set to "qdmo", the system uses query-conditioned memory-to-memory
-# interaction + emergent clustering instead of standard topK + temporal assembly.
-# All parameters below are ignored when interaction_mode = "standard".
-#
-# Pipeline:
-#   query → soft activation → active subset → interaction → clustering → LLM
-#
-# Set to "standard" to use the original EVI v2 retrieval pipeline.
-interaction_mode: "standard"
+# Group-level visual verification checks retrieved image evidence without generating LLM group descriptions.
+use_group_verification: true
 
-# Active subset size: how many memory nodes participate in interaction (O(N^2)).
-# Larger = more comprehensive but slower. 20-50 is a good range.
-# Only used when interaction_mode = "qdmo".
-active_k: 30
+# Images included in the final VLM answer call.
+max_answer_images: 20
 
-# Softmax temperature for activation distribution.
-# Lower = sharper (fewer nodes get meaningful weight).
-# Higher = smoother (more nodes participate).
-# 0.2-0.5 is a good range.
-softmax_temperature: 0.3
+# Important for fair multimodal experiments:
+# false = do not index MemEye-provided image_caption fields; rely on image-derived anchors.
+# true  = include dataset captions as an ablation / upper-information variant.
+use_dataset_captions: false
 
-# Number of seed nodes for emergent clustering.
-# Top-K activated nodes become cluster seeds.
-num_cluster_seeds: 5
-
-# Cosine similarity threshold for cluster membership.
-# Nodes with similarity >= this threshold to a seed join its cluster.
-# 0.55-0.75 is a good range depending on embedding dimension.
-cluster_threshold: 0.65
+# Cache text embeddings for dialogue anchors, visual anchors, and questions.
+use_embedding_cache: true
+# EVI debug trace. The file records indexing, retrieval, grouping, verification,
+# final prompt preview, selected images, and model answer for bug/effect debugging.
+evi_debug: true
+evi_debug_log_path: logs/evi_debug.log
+evi_debug_append: true
+evi_debug_top_k: 20
+evi_debug_prompt_chars: 12000
