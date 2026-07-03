@@ -26,7 +26,9 @@ max_candidate_anchors: 8
 max_final_briefs: 10
 max_excluded_briefs: 3
 
-# Images included in the final VLM answer call, selected from non-excluded briefs.
+# Images included in the final VLM answer call.
+# false = final answer is text-only over selected assertions; true = attach selected memory images for visual re-check ablations.
+use_final_memory_images: false
 max_answer_images: 12
 
 # Important for fair multimodal experiments:
