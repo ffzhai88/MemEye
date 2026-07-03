@@ -48,6 +48,7 @@ class EVISystem:
         self._max_final_briefs = int(cfg.get("max_final_briefs", 10))
         self._max_excluded_briefs = int(cfg.get("max_excluded_briefs", 3))
         self._max_answer_images = int(cfg.get("max_answer_images", 12))
+        self._use_final_memory_images = self._as_bool(cfg.get("use_final_memory_images"), False)
         self._use_dataset_captions = self._as_bool(cfg.get("use_dataset_captions"), False)
         self._use_embedding_cache = self._as_bool(cfg.get("use_embedding_cache"), True)
         self._use_memory_brief_cache = self._as_bool(cfg.get("use_memory_brief_cache"), True)
@@ -192,6 +193,7 @@ class EVISystem:
             "max_candidate_anchors": self._max_candidate_anchors,
             "max_final_briefs": self._max_final_briefs,
             "max_answer_images": self._max_answer_images,
+            "use_final_memory_images": self._use_final_memory_images,
             "use_dataset_captions": self._use_dataset_captions,
             "use_embedding_cache": self._use_embedding_cache,
             "use_memory_brief_cache": self._use_memory_brief_cache,
@@ -322,7 +324,7 @@ class EVISystem:
         lines.append("Question:")
         lines.append(str(question or ""))
         lines.append("")
-        lines.append("Answer using only the evidence assertions and attached images. Do not use excluded or unselected memories.")
+        #lines.append("Answer using only the evidence assertions and attached images. Do not use excluded or unselected memories.")
         return "\n".join(lines)
     def _answer_images(self, briefs: List[MemoryBrief], question_images: Optional[List[str]]) -> List[str]:
         images: List[str] = []
@@ -333,6 +335,8 @@ class EVISystem:
                 seen.add(path)
             if len(images) >= self._max_answer_images:
                 return images
+        if not self._use_final_memory_images:
+            return images
         for brief in briefs:
             if brief.relevance == "excluded":
                 continue
@@ -457,15 +461,17 @@ class EVISystem:
         if len(prompt) > self._debug_prompt_chars:
             prompt_preview = f"{prompt_preview}\n... [truncated with {len(prompt) - self._debug_prompt_chars} more chars]"
         log.info("QDMO-EVI final prompt preview:\n%s", prompt_preview)
-        log.info("QDMO-EVI answer images=%s", images)
+        log.info("QDMO-EVI answer images=%s use_final_memory_images=%s", images, self._use_final_memory_images)
         trace_json(log, "final_answer_call", {
             "prompt_chars": len(prompt),
             "prompt_preview": prompt_preview,
             "images": images,
+            "use_final_memory_images": self._use_final_memory_images,
         }, max_chars=self._debug_prompt_chars + 4000)
         log.info("QDMO-EVI final prompt=%d chars, images=%d", len(prompt), len(images))
 
-        answer = self._vlm(FINAL_ANSWER_SYSTEM_PROMPT, prompt, images)
+        #answer = self._vlm(FINAL_ANSWER_SYSTEM_PROMPT, prompt, images)
+        answer = self._vlm('', prompt, images)
         trace_json(log, "answer_done", {"answer": answer})
         log.info("QDMO-EVI answer returned length=%d", len(str(answer)))
         return answer
