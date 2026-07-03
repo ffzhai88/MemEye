@@ -10,6 +10,8 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional
 if TYPE_CHECKING:
     from .vlm import VLMCallable
 
+from ._utils import extract_json, retry_vlm_call
+
 log = logging.getLogger(__name__)
 
 _PROMPT_VERSION = "anchor_v2_generic_schema"
@@ -84,27 +86,6 @@ def _cache_key(image_path: str, round_text: str, prior_rounds_text: str) -> str:
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:40]
 
 
-def _extract_json(text: str) -> Optional[dict]:
-    import re
-
-    m = re.search(r"```(?:json)?\s*\n?(.*?)\n?```", text, re.DOTALL)
-    if m:
-        try:
-            return json.loads(m.group(1))
-        except Exception:
-            pass
-    try:
-        return json.loads(text)
-    except Exception:
-        pass
-    m = re.search(r"(\{.*\})", text, re.DOTALL)
-    if m:
-        try:
-            return json.loads(m.group(1))
-        except Exception:
-            pass
-    return None
-
 
 def _context_text(round_text: str, prior_rounds_text: str) -> str:
     parts: List[str] = []
@@ -164,8 +145,11 @@ def extract_image_anchors(
 
     user_text = _context_text(round_text, prior_rounds_text)
     log.info("  [ANCHORS] Extracting anchors for %s", image_path)
-    raw = vlm_callable(ANCHOR_EXTRACTION_PROMPT, user_text, [image_path])
-    parsed = _extract_json(raw or "") or {}
+    raw = retry_vlm_call(
+        lambda: vlm_callable(ANCHOR_EXTRACTION_PROMPT, user_text, [image_path]),
+        label=f"anchor-extract {Path(image_path).name}",
+    )
+    parsed = extract_json(raw or "") or {}
     raw_anchors = parsed.get("anchors", []) if isinstance(parsed, dict) else []
     anchors = [a for a in (_coerce_anchor(x) for x in raw_anchors) if a]
 

@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Optional
 
 from .schemas import EvidenceGroup
+from ._utils import extract_json, retry_vlm_call
 
 if TYPE_CHECKING:
     from .vlm import VLMCallable
@@ -67,27 +68,6 @@ def _cache_key(question_stem: str, group: EvidenceGroup) -> str:
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:40]
 
 
-def _extract_json(text: str) -> Optional[dict]:
-    import re
-
-    m = re.search(r"```(?:json)?\s*\n?(.*?)\n?```", text, re.DOTALL)
-    if m:
-        try:
-            return json.loads(m.group(1))
-        except Exception:
-            pass
-    try:
-        return json.loads(text)
-    except Exception:
-        pass
-    m = re.search(r"(\{.*\})", text, re.DOTALL)
-    if m:
-        try:
-            return json.loads(m.group(1))
-        except Exception:
-            pass
-    return None
-
 
 def _as_str_list(value: object) -> list[str]:
     if isinstance(value, list):
@@ -144,12 +124,15 @@ Evidence anchors:
 {chr(10).join(anchor_lines)}
 """
     log.info("  [GROUP VERIFY] %s images=%d anchors=%d", group.id, len(group.image_paths), len(group.anchors))
-    raw = vlm_callable(GROUP_VERIFICATION_PROMPT, user_text, group.image_paths)
+    raw = retry_vlm_call(
+        lambda: vlm_callable(GROUP_VERIFICATION_PROMPT, user_text, group.image_paths),
+        label=f"group-verify {group.id}",
+    )
     if not raw:
         group.missing_evidence.append("Group verification returned an empty response.")
         group.confidence = 0.0
         return group
-    parsed = _extract_json(raw or "") or {}
+    parsed = extract_json(raw or "") or {}
     group.verified_evidence = _as_str_list(parsed.get("verified_evidence", []))
     group.contradictions = _as_str_list(parsed.get("contradictions", []))
     group.missing_evidence = _as_str_list(parsed.get("missing_evidence", []))

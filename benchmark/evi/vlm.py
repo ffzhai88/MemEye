@@ -8,6 +8,8 @@ import os
 from pathlib import Path
 from typing import Callable, List, Optional
 
+from ._utils import guess_mime, retry_vlm_call
+
 log = logging.getLogger(__name__)
 
 VLMCallable = Callable[[str, str, List[str]], str]
@@ -86,8 +88,7 @@ def with_disk_cache(fn: VLMCallable, namespace: str) -> VLMCallable:
 def _encode_image(path: str) -> str:
     with open(path, "rb") as f:
         b64 = base64.b64encode(f.read()).decode("utf-8")
-    suffix = Path(path).suffix.lower()
-    mime = "image/png" if suffix == ".png" else "image/jpeg"
+    mime = guess_mime(path)
     return f"data:{mime};base64,{b64}"
 
 
@@ -129,12 +130,12 @@ def make_openai_vlm(
         }
         if not any(model.startswith(prefix) for prefix in ("gpt-5", "o3", "o4")):
             payload["temperature"] = 0.0
-        try:
+
+        def _do_call() -> str:
             resp = client.chat.completions.create(**payload)
             return resp.choices[0].message.content or ""
-        except Exception as exc:
-            log.warning("VLM call failed: %s", exc)
-            return ""
+
+        return retry_vlm_call(_do_call, label=f"vlm {model}")
 
     return _call
 

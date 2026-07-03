@@ -5,8 +5,6 @@ import json
 import logging
 import math
 import os
-import re
-import string
 from pathlib import Path
 from typing import Any, FrozenSet, Iterable, List, Optional, Tuple
 
@@ -28,8 +26,6 @@ _STOP_WORDS: FrozenSet[str] = frozenset({
     "he", "him", "his", "she", "her", "we", "us", "our", "you", "your", "i",
     "me", "my",
 })
-
-_PUNCTUATION_PATTERN: re.Pattern = re.compile(r"[{}]".format(re.escape(string.punctuation)))
 
 _TYPE_ALIASES = {
     "dialogue": "temporal",
@@ -58,6 +54,7 @@ _VALID_TYPES = {
 }
 
 _EMBED_CACHE_DIR: Optional[str] = None
+_EMBED_METHOD_CACHE: dict[int, str] = {}  # id(embedder) -> method_name
 
 
 def _embed_cache_dir() -> str:
@@ -81,9 +78,9 @@ def _embed_cache_key(text: str, namespace: str) -> str:
 
 
 def clean_text(text: str) -> str:
+    """Normalize text for embedding: lowercase and remove stop words, preserving punctuation."""
     text = str(text).lower()
-    text = _PUNCTUATION_PATTERN.sub(" ", text)
-    tokens = [t for t in text.split() if t not in _STOP_WORDS and len(t) > 1]
+    tokens = [t for t in text.split() if t not in _STOP_WORDS]
     return " ".join(tokens)
 
 
@@ -99,6 +96,56 @@ def normalize_type(evidence_type: str) -> str:
     raw = raw.replace("-", "_").replace(" ", "_")
     normalized = _TYPE_ALIASES.get(raw, raw)
     return normalized if normalized in _VALID_TYPES else "scene"
+
+
+def _resolve_embed_method(embedder: Any) -> Optional[str]:
+    """Probe the embedder object once and cache which call interface it supports."""
+    eid = id(embedder)
+    cached = _EMBED_METHOD_CACHE.get(eid)
+    if cached:
+        return cached
+
+    for method_name in ("embed_query", "encode", "__call__"):
+        try:
+            if method_name == "__call__":
+                test_result = embedder(["probe"])
+            else:
+                fn = getattr(embedder, method_name, None)
+                if fn is None:
+                    continue
+                test_result = fn("probe")
+
+            if hasattr(test_result, "tolist"):
+                test_result = test_result.tolist()
+            if isinstance(test_result, (list, tuple)) and len(test_result) > 0:
+                _EMBED_METHOD_CACHE[eid] = method_name
+                log.debug("Embed method resolved: %s for embedder %d", method_name, eid)
+                return method_name
+        except Exception:
+            continue
+
+    log.warning("Could not resolve an embedding method for embedder %d", eid)
+    return None
+
+
+def _call_embed(embedder: Any, text: str, method: str) -> List[float]:
+    """Call the embedder using the pre-resolved method."""
+    if method == "__call__":
+        result = embedder([text])
+    elif method == "embed_query":
+        result = embedder.embed_query(text)
+    elif method == "encode":
+        result = embedder.encode(text)
+    else:
+        return []
+
+    if hasattr(result, "tolist"):
+        result = result.tolist()
+    if isinstance(result, (list, tuple)):
+        if result and isinstance(result[0], (list, tuple)):
+            return list(result[0])
+        return list(result)
+    return []
 
 
 def embed_text(
@@ -126,30 +173,11 @@ def embed_text(
             except Exception:
                 pass
 
-    vector: List[float] = []
-    for method_name in ("embed_query", "encode", "__call__"):
-        try:
-            if method_name == "__call__":
-                fn = embedder
-                result = fn([text])
-            else:
-                fn = getattr(embedder, method_name, None)
-                if fn is None:
-                    continue
-                result = fn(text)
-            if hasattr(result, "tolist"):
-                result = result.tolist()
-            if isinstance(result, (list, tuple)):
-                if result and isinstance(result[0], (list, tuple)):
-                    vector = list(result[0])
-                else:
-                    vector = list(result)
-            else:
-                vector = list(result)
-            break
-        except Exception:
-            continue
+    method = _resolve_embed_method(embedder)
+    if method is None:
+        return []
 
+    vector = _call_embed(embedder, text, method)
     if vector:
         try:
             vector = [float(x) for x in vector]

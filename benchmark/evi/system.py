@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
-from collections import defaultdict
+import os
 from typing import Any, Dict, List, Optional
 
 from .extractor import extract_image_anchors
@@ -17,8 +17,8 @@ log = logging.getLogger(__name__)
 
 FINAL_ANSWER_SYSTEM_PROMPT = """You are answering a multimodal long-term memory benchmark question.
 Use the organized evidence groups, verified visual evidence, provenance, chronology, and images.
-For multiple-choice questions, answer with ONLY the option letter unless the question explicitly asks otherwise.
 Be concise and grounded in the retrieved evidence.
+If the question is multiple-choice, answer with ONLY the option letter.
 """
 
 
@@ -39,7 +39,6 @@ class EVISystem:
         self._round_session: Dict[str, str] = {}
         self._round_date: Dict[str, str] = {}
         self._round_text: Dict[str, str] = {}
-        self._round_images: Dict[str, List[str]] = defaultdict(list)
 
         self._raw_search_k = int(cfg.get("raw_search_k", 120))
         self._max_groups = int(cfg.get("max_groups", 6))
@@ -85,7 +84,9 @@ class EVISystem:
         if self._embedder.is_available:
             log.info("Embedder loaded: %s", embed_model)
         else:
-            log.warning("Embedder unavailable: %s", embed_model)
+            log.error("Embedder unavailable: %s — ALL evidence anchors will be EMPTY, "
+                       "answer_question() will return '' with no evidence. "
+                       "Check the embedding model name and dependencies.", embed_model)
             self._embedder = None
 
     def _embed(self, text: str) -> List[float]:
@@ -229,7 +230,9 @@ class EVISystem:
 
                 images = list(rp.get("images", []) or [])
                 for img_idx, image_path in enumerate(images):
-                    self._round_images[rid].append(image_path)
+                    if not os.path.isfile(image_path):
+                        log.warning("[INDEX] image file not found, skipping: %s", image_path)
+                        continue
                     raw_anchors = extract_image_anchors(
                         image_path=image_path,
                         round_text=round_text,
@@ -257,9 +260,10 @@ class EVISystem:
 
                 prior_rounds_text.append(round_text)
 
-        type_counts: Dict[str, int] = defaultdict(int)
+        type_counts: Dict[str, int] = {}
         for anchor in self._index.anchors:
-            type_counts[anchor.evidence_type] += 1
+            t = anchor.evidence_type
+            type_counts[t] = type_counts.get(t, 0) + 1
         log.info(
             "QDMO-EVI indexing done: %d anchors across %d rounds. Types: %s",
             len(self._index),
@@ -359,10 +363,18 @@ class EVISystem:
             "clue_rounds": (qa or {}).get("clue", []),
         })
 
+        if not self._index.anchors:
+            log.error("QDMO-EVI index is empty — the embedder may have failed during indexing. "
+                       "Falling back to question-only answer with raw images.")
+            images = self._as_image_list(question_images)
+            return self._vlm(FINAL_ANSWER_SYSTEM_PROMPT, question, images)
+
         query_vec = self._embed(question_stem)
         if not query_vec:
-            log.warning("QDMO-EVI query embedding is empty")
-            return ""
+            log.warning("QDMO-EVI query embedding is empty — cannot retrieve evidence, "
+                        "answering with question images only")
+            images = self._as_image_list(question_images)
+            return self._vlm(FINAL_ANSWER_SYSTEM_PROMPT, question, images)
 
         retrieved = self._index.search(query_vec, top_k=self._raw_search_k)
         trace_json(log, "retrieved_anchors", {

@@ -93,6 +93,35 @@ def _auto_label(seed: EvidenceAnchor, members: List[EvidenceAnchor]) -> str:
     return f"{seed.evidence_type} seed with {len(members)} anchors ({', '.join(types)}): {text}"
 
 
+def _generate_hypothesis(seed: EvidenceAnchor, members: List[EvidenceAnchor]) -> str:
+    """Generate a meaningful evidence-group hypothesis from the group content."""
+    types = sorted({a.evidence_type for a in members})
+    sessions = {a.session_id for a in members if a.session_id}
+    rounds = sorted({a.round_id for a in members})
+    has_images = any(a.image_path for a in members)
+
+    parts: list[str] = []
+    if len(rounds) > 1:
+        parts.append(f"evidence spanning {len(rounds)} rounds")
+    elif rounds:
+        parts.append("evidence from round " + rounds[0])
+
+    if len(sessions) > 1:
+        parts.append(f"across {len(sessions)} sessions")
+    elif sessions:
+        parts.append(f"in session {next(iter(sessions))}")
+
+    parts.append(f"types={{{','.join(types)}}}")
+    if has_images:
+        parts.append("with visual evidence")
+
+    seed_text = seed.text.strip().replace("\n", " ")[:100]
+    parts.append(f'seed: "{seed_text}"')
+
+    hypothesis = " | ".join(parts)
+    return f"This group contains {hypothesis}."
+
+
 def _visual_checks(group: EvidenceGroup) -> List[str]:
     types = {anchor.evidence_type for anchor in group.anchors}
     checks: List[str] = []
@@ -151,7 +180,7 @@ def organize_evidence(
             image_paths=_collect_images(members, max_group_images),
         )
         group.group_label = _auto_label(seed, members)
-        group.group_hypothesis = "This group contains evidence dynamically organized around the seed memory for the current question."
+        group.group_hypothesis = _generate_hypothesis(seed, members)
         group.needed_visual_checks = _visual_checks(group)
         groups.append(group)
         used_seeds.add(seed.id)
