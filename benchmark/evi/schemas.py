@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import List, Optional
@@ -25,18 +25,32 @@ class EvidenceAnchor:
 
 
 @dataclass
-class EvidenceGroup:
-    """A query-conditioned group of mutually supporting evidence anchors."""
+class MemoryCandidate:
+    """A non-overlapping candidate episodic memory assembled from retrieved anchors."""
 
     id: str
-    seed_anchor_id: str
+    session_id: str
+    round_id: str
+    date: str
+    image_path: Optional[str]
+    image_paths: List[str]
+    round_text: str
     anchors: List[EvidenceAnchor]
     score: float
-    group_label: str = ""
-    group_hypothesis: str = ""
-    needed_visual_checks: List[str] = field(default_factory=list)
-    verified_evidence: List[str] = field(default_factory=list)
-    contradictions: List[str] = field(default_factory=list)
-    missing_evidence: List[str] = field(default_factory=list)
-    image_paths: List[str] = field(default_factory=list)
+    selected_anchors: List[EvidenceAnchor] = field(default_factory=list)
+
+
+@dataclass
+class MemoryBrief:
+    """A query-conditioned natural-language brief for one memory candidate."""
+
+    candidate_id: str
+    session_id: str
+    round_id: str
+    date: str
+    image_paths: List[str]
+    relevance: str
+    brief: str
+    key_evidence: List[str] = field(default_factory=list)
     confidence: float = 0.0
+    score: float = 0.0

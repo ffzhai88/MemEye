@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import hashlib
 import json
@@ -72,10 +72,11 @@ def _cache_dir() -> str:
     return _CACHE_DIR
 
 
-def _cache_key(image_path: str, round_text: str, prior_rounds_text: str) -> str:
+def _cache_key(image_path: str, round_text: str, prior_rounds_text: str, cache_namespace: str) -> str:
     raw = json.dumps(
         {
             "version": _PROMPT_VERSION,
+            "cache_namespace": cache_namespace,
             "image_path": image_path,
             "round_text": round_text,
             "prior_rounds_text": prior_rounds_text[-4000:],
@@ -84,7 +85,6 @@ def _cache_key(image_path: str, round_text: str, prior_rounds_text: str) -> str:
         sort_keys=True,
     )
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:40]
-
 
 
 def _context_text(round_text: str, prior_rounds_text: str) -> str:
@@ -128,9 +128,10 @@ def extract_image_anchors(
     prior_rounds_text: str,
     vlm_callable: "VLMCallable",
     use_cache: bool = True,
+    cache_namespace: str = "default",
 ) -> List[Dict[str, Any]]:
     """Extract task-agnostic retrieval anchors from one image."""
-    key = _cache_key(image_path, round_text, prior_rounds_text)
+    key = _cache_key(image_path, round_text, prior_rounds_text, cache_namespace)
     cache_file = Path(_cache_dir()) / f"{key}.json"
     if use_cache and cache_file.exists():
         try:
@@ -159,6 +160,7 @@ def extract_image_anchors(
                 json.dumps(
                     {
                         "version": _PROMPT_VERSION,
+                        "cache_namespace": cache_namespace,
                         "image_path": image_path,
                         "anchors": anchors,
                     },

@@ -5,25 +5,26 @@ import logging
 import os
 from typing import Any, Dict, List, Optional
 
+from .briefs import generate_memory_briefs
+from .candidates import consolidate_candidates
 from .extractor import extract_image_anchors
 from .indexes import EvidenceIndex, embed_text, normalize_type
-from .organizer import organize_evidence
-from .schemas import EvidenceAnchor, EvidenceGroup
-from .trace import anchors_summary, groups_summary, setup_evi_debug_logging, trace_json
-from .verifier import verify_group
+from .schemas import EvidenceAnchor, MemoryBrief
+from .trace import anchors_summary, briefs_summary, candidates_summary, setup_evi_debug_logging, trace_json
 from .vlm import VLMCallable, make_vlm_callable
 
 log = logging.getLogger(__name__)
 
-FINAL_ANSWER_SYSTEM_PROMPT = """You are answering a multimodal long-term memory benchmark question.
-Use the organized evidence groups, verified visual evidence, provenance, chronology, and images.
-Be concise and grounded in the retrieved evidence.
+FINAL_ANSWER_SYSTEM_PROMPT = """You are answering a multimodal long-term memory question.
+Use the organized memory briefs as the primary evidence. The briefs are compressed candidate memories, not a table.
+Excluded memories should not be counted as supporting evidence. Use attached images only to resolve uncertainty.
+Be concise and grounded in the memory briefs.
 If the question is multiple-choice, answer with ONLY the option letter.
 """
 
 
 class EVISystem:
-    """QDMO-EVI: typed evidence anchors with query-driven memory organization."""
+    """QDMO-EVI: typed evidence anchors with candidate-centric memory briefs."""
 
     def __init__(self, config: Optional[Dict[str, Any]] = None) -> None:
         cfg = config or {}
@@ -41,16 +42,18 @@ class EVISystem:
         self._round_text: Dict[str, str] = {}
 
         self._raw_search_k = int(cfg.get("raw_search_k", 120))
-        self._max_groups = int(cfg.get("max_groups", 6))
-        self._max_group_size = int(cfg.get("max_group_size", 12))
-        self._max_group_images = int(cfg.get("max_group_images", 4))
-        self._max_answer_images = int(cfg.get("max_answer_images", 20))
-        self._use_group_verification = self._as_bool(cfg.get("use_group_verification"), True)
+        self._max_candidates = int(cfg.get("max_candidates", 16))
+        self._max_candidate_anchors = int(cfg.get("max_candidate_anchors", 8))
+        self._max_final_briefs = int(cfg.get("max_final_briefs", 10))
+        self._max_excluded_briefs = int(cfg.get("max_excluded_briefs", 3))
+        self._max_answer_images = int(cfg.get("max_answer_images", 12))
         self._use_dataset_captions = self._as_bool(cfg.get("use_dataset_captions"), False)
+        self._use_embedding_cache = self._as_bool(cfg.get("use_embedding_cache"), True)
+        self._use_memory_brief_cache = self._as_bool(cfg.get("use_memory_brief_cache"), True)
         self._debug_top_k = int(cfg.get("evi_debug_top_k", 20))
         self._debug_prompt_chars = int(cfg.get("evi_debug_prompt_chars", 12000))
-        self._use_embedding_cache = self._as_bool(cfg.get("use_embedding_cache"), True)
         self._embed_cache_namespace = "uninitialized"
+        self._vlm_result_namespace = "uninitialized"
 
         self._initialized = False
         if self._debug_log_path:
@@ -65,6 +68,17 @@ class EVISystem:
             vlm_cfg["max_new_tokens"] = int(self._cfg.get("vlm_max_new_tokens"))
         if self._cfg.get("vlm_timeout"):
             vlm_cfg["timeout"] = int(self._cfg.get("vlm_timeout"))
+        self._vlm_result_namespace = json.dumps(
+            {
+                "provider": vlm_cfg.get("provider", "openai_api"),
+                "model": vlm_cfg.get("model", "gpt-4o"),
+                "base_url": vlm_cfg.get("base_url", "https://api.openai.com/v1"),
+                "max_new_tokens": int(vlm_cfg.get("max_new_tokens", 1024) or 1024),
+                "timeout": int(vlm_cfg.get("timeout", 90) or 90),
+            },
+            sort_keys=True,
+            default=str,
+        )
         self._vlm = make_vlm_callable(vlm_cfg)
 
         from ..embeddings import TextEmbedder
@@ -79,14 +93,19 @@ class EVISystem:
             or self._model_cfg.get("text_embedding_kwargs")
             or {}
         )
-        self._embed_cache_namespace = json.dumps({"model": embed_model, "kwargs": embed_kwargs}, sort_keys=True, default=str)
+        self._embed_cache_namespace = json.dumps(
+            {"model": embed_model, "kwargs": embed_kwargs},
+            sort_keys=True,
+            default=str,
+        )
         self._embedder = TextEmbedder(embed_model, **embed_kwargs)
         if self._embedder.is_available:
             log.info("Embedder loaded: %s", embed_model)
         else:
-            log.error("Embedder unavailable: %s — ALL evidence anchors will be EMPTY, "
-                       "answer_question() will return '' with no evidence. "
-                       "Check the embedding model name and dependencies.", embed_model)
+            log.error(
+                "Embedder unavailable: %s. Evidence anchors will be empty; check embedding dependencies.",
+                embed_model,
+            )
             self._embedder = None
 
     def _embed(self, text: str) -> List[float]:
@@ -168,13 +187,13 @@ class EVISystem:
         log.info("Processing sessions for QDMO-EVI evidence anchors ...")
         trace_json(log, "indexing_start", {
             "raw_search_k": self._raw_search_k,
-            "max_groups": self._max_groups,
-            "max_group_size": self._max_group_size,
-            "max_group_images": self._max_group_images,
+            "max_candidates": self._max_candidates,
+            "max_candidate_anchors": self._max_candidate_anchors,
+            "max_final_briefs": self._max_final_briefs,
             "max_answer_images": self._max_answer_images,
-            "use_group_verification": self._use_group_verification,
             "use_dataset_captions": self._use_dataset_captions,
             "use_embedding_cache": self._use_embedding_cache,
+            "use_memory_brief_cache": self._use_memory_brief_cache,
         })
 
         for sid in dataset.session_order():
@@ -238,6 +257,7 @@ class EVISystem:
                         round_text=round_text,
                         prior_rounds_text="\n---\n".join(prior_rounds_text),
                         vlm_callable=self._vlm,
+                        cache_namespace=self._vlm_result_namespace,
                     )
                     log.debug("[INDEX] round=%s image=%s extracted_anchors=%d", rid, image_path, len(raw_anchors))
                     for aidx, raw_anchor in enumerate(raw_anchors):
@@ -262,8 +282,7 @@ class EVISystem:
 
         type_counts: Dict[str, int] = {}
         for anchor in self._index.anchors:
-            t = anchor.evidence_type
-            type_counts[t] = type_counts.get(t, 0) + 1
+            type_counts[anchor.evidence_type] = type_counts.get(anchor.evidence_type, 0) + 1
         log.info(
             "QDMO-EVI indexing done: %d anchors across %d rounds. Types: %s",
             len(self._index),
@@ -277,67 +296,57 @@ class EVISystem:
             "sample_anchors": anchors_summary(self._index.anchors, max_items=self._debug_top_k),
         })
 
-    def _verify_groups(self, question_stem: str, groups: List[EvidenceGroup]) -> List[EvidenceGroup]:
-        if not self._use_group_verification or self._vlm is None:
-            return groups
-        verified: List[EvidenceGroup] = []
-        for group in groups:
-            verified.append(verify_group(question_stem, group, self._vlm))
-        return verified
+    def _select_final_briefs(self, briefs: List[MemoryBrief]) -> List[MemoryBrief]:
+        relevant = [b for b in briefs if b.relevance == "relevant"]
+        uncertain = [b for b in briefs if b.relevance == "uncertain"]
+        excluded = [b for b in briefs if b.relevance == "excluded"]
+        relevant.sort(key=lambda b: (b.confidence, b.score), reverse=True)
+        uncertain.sort(key=lambda b: (b.confidence, b.score), reverse=True)
+        excluded.sort(key=lambda b: (b.confidence, b.score), reverse=True)
 
-    def _build_final_prompt(
-        self,
-        question: str,
-        groups: List[EvidenceGroup],
-    ) -> str:
+        selected = (relevant + uncertain)[: self._max_final_briefs]
+        remaining = max(0, self._max_final_briefs - len(selected))
+        excluded_budget = min(self._max_excluded_briefs, remaining)
+        if excluded_budget:
+            selected.extend(excluded[:excluded_budget])
+        return selected
+
+    def _build_final_prompt(self, question: str, briefs: List[MemoryBrief]) -> str:
         lines: List[str] = []
-        lines.append("Query-driven organized evidence groups:")
-        for group in groups:
-            lines.append(f"=== {group.id} score={group.score:.4f} confidence={group.confidence:.2f} ===")
-            lines.append(f"Label: {group.group_label}")
-            lines.append(f"Hypothesis: {group.group_hypothesis}")
-            if group.needed_visual_checks:
-                lines.append("Visual checks:")
-                for check in group.needed_visual_checks:
-                    lines.append(f"- {check}")
-            lines.append("Anchors:")
-            for anchor in group.anchors[:16]:
-                loc = f" region={anchor.region}" if anchor.region else ""
-                lines.append(
-                    f"- id={anchor.id} session={anchor.session_id} round={anchor.round_id} "
-                    f"date={anchor.date} type={anchor.evidence_type}{loc}: {anchor.text}"
-                )
-            if group.verified_evidence:
-                lines.append("Verified visual evidence:")
-                for item in group.verified_evidence:
-                    lines.append(f"- {item}")
-            if group.contradictions:
-                lines.append("Contradictions:")
-                for item in group.contradictions:
-                    lines.append(f"- {item}")
-            if group.missing_evidence:
-                lines.append("Missing or uncertain evidence:")
-                for item in group.missing_evidence:
+        lines.append("Organized memory briefs:")
+        if not briefs:
+            lines.append("No reliable memory brief was produced. Answer from the question and attached images only if possible.")
+        for idx, brief in enumerate(briefs, start=1):
+            header = (
+                f"Memory brief {idx} from {brief.round_id} on {brief.date} "
+                f"(relevance={brief.relevance}, confidence={brief.confidence:.2f})"
+            )
+            lines.append(header + ":")
+            lines.append(brief.brief.strip())
+            if brief.key_evidence:
+                lines.append("Key evidence:")
+                for item in brief.key_evidence[:5]:
                     lines.append(f"- {item}")
             lines.append("")
-
         lines.append("Question:")
-        lines.append(question)
+        lines.append(str(question or ""))
+        lines.append("")
+        lines.append("Use the memory briefs as the main evidence. Do not count memories marked excluded as support.")
         return "\n".join(lines)
 
-    def _answer_images(
-        self,
-        groups: List[EvidenceGroup],
-        question_images: Optional[List[str]],
-    ) -> List[str]:
+    def _answer_images(self, briefs: List[MemoryBrief], question_images: Optional[List[str]]) -> List[str]:
         images: List[str] = []
         seen: set[str] = set()
         for path in self._as_image_list(question_images):
             if path not in seen:
                 images.append(path)
                 seen.add(path)
-        for group in sorted(groups, key=lambda g: g.score, reverse=True):
-            for path in group.image_paths:
+            if len(images) >= self._max_answer_images:
+                return images
+        for brief in briefs:
+            if brief.relevance == "excluded":
+                continue
+            for path in brief.image_paths:
                 if path and path not in seen:
                     images.append(path)
                     seen.add(path)
@@ -351,21 +360,10 @@ class EVISystem:
         qa: Optional[Dict[str, Any]] = None,
         question_images: Optional[List[str]] = None,
     ) -> str:
-        """
-        回答单个问题的主流程。
-
-        该函数负责：
-          1. 提取问题干并构造 Trace 信息；
-          2. 检查 index 是否可用，并在失败时回退到仅使用问题图像；
-          3. 计算问题 embedding，用于检索相关 evidence anchors；
-          4. 对检索结果进行 evidence 组织、校验和 prompt 构造；
-          5. 调用 VLM 生成最终回答。
-        """
         self._ensure()
         if self._vlm is None:
             raise RuntimeError("VLM not initialized")
 
-        # 优先使用 QA 中的标准问题文本作为 query，如果没有则退回到原始 question。
         question_stem = str((qa or {}).get("question", "")).strip() or str(question or "")
         trace_json(log, "answer_start", {
             "question_stem": question_stem,
@@ -375,33 +373,28 @@ class EVISystem:
             "clue_rounds": (qa or {}).get("clue", []),
         })
 
-        # 如果 index 为空，说明 indexing 过程出现问题，此时直接回退到只用问题图像的回答。
         if not self._index.anchors:
-            log.error("QDMO-EVI index is empty — the embedder may have failed during indexing. "
-                       "Falling back to question-only answer with raw images.")
-            images = self._as_image_list(question_images)
+            log.error("QDMO-EVI index is empty; falling back to question-only answer with raw images.")
+            images = self._as_image_list(question_images)[: self._max_answer_images]
             return self._vlm(FINAL_ANSWER_SYSTEM_PROMPT, question, images)
 
-        # 生成问题向量，用于检索与问题最相关的证据 anchors。
         query_vec = self._embed(question_stem)
         if not query_vec:
-            log.warning("QDMO-EVI query embedding is empty — cannot retrieve evidence, "
-                        "answering with question images only")
-            images = self._as_image_list(question_images)
+            log.warning("QDMO-EVI query embedding is empty; answering with question images only")
+            images = self._as_image_list(question_images)[: self._max_answer_images]
             return self._vlm(FINAL_ANSWER_SYSTEM_PROMPT, question, images)
 
-        # 检索 top_k 个与问题最相关的 evidence anchors。
         retrieved = self._index.search(query_vec, top_k=self._raw_search_k)
         log.info("QDMO-EVI retrieved anchors=%d", len(retrieved))
         for idx, anchor in enumerate(retrieved[: self._debug_top_k]):
             log.info(
-                "  [%02d] id=%s round=%s type=%s score=%.4f text=%s",
+                "  anchor[%02d] id=%s round=%s type=%s score=%.4f text=%s",
                 idx + 1,
                 anchor.id,
                 anchor.round_id,
                 anchor.evidence_type,
                 anchor.score or 0.0,
-                anchor.text.replace("\n", " ")[:120],
+                anchor.text.replace("\n", " ")[:160],
             )
         if len(retrieved) > self._debug_top_k:
             log.info("  ... and %d more retrieved anchors", len(retrieved) - self._debug_top_k)
@@ -410,85 +403,66 @@ class EVISystem:
             "top_anchors": anchors_summary(retrieved, max_items=min(self._debug_top_k, len(retrieved))),
         })
 
-        # 将检索到的 anchors 组织成若干个 evidence group，便于后续模型在回答时
-        # 参考结构化证据而不是无序大堆 raw anchors。
-        groups = organize_evidence(
-            question=question_stem,
-            query_vec=query_vec,
-            anchors=retrieved,
-            round_order=self._round_order,
-            max_groups=self._max_groups,
-            max_group_size=self._max_group_size,
-            max_group_images=self._max_group_images,
+        candidates = consolidate_candidates(
+            retrieved,
+            round_text=self._round_text,
+            max_candidates=self._max_candidates,
+            max_candidate_anchors=self._max_candidate_anchors,
         )
-        log.info(
-            "QDMO-EVI answer: retrieved=%d anchors, groups=%d",
-            len(retrieved),
-            len(groups),
-        )
-        log.info("QDMO-EVI organized groups count=%d", len(groups))
-        for group in groups:
-            log.info(
-                "  %s score=%.4f members=%d images=%d label=%s",
-                group.id,
-                group.score,
-                len(group.anchors),
-                len(group.image_paths),
-                group.group_label.replace("\n", " ")[:100],
-            )
-            log.info("    hypothesis=%s", group.group_hypothesis.replace("\n", " ")[:200])
-        trace_json(log, "organized_groups", {
-            "num_groups": len(groups),
-            "groups": groups_summary(groups, max_groups=self._max_groups),
+        trace_json(log, "candidate_pool", {
+            "num_candidates": len(candidates),
+            "candidates": candidates_summary(candidates, max_items=self._max_candidates),
         })
 
-        # 如果 QA 提供 clue 轮次，则检查组织后的 groups 是否覆盖了这些 clue。
         clue_rounds = (qa or {}).get("clue", [])
         if clue_rounds:
-            group_rounds = {anchor.round_id for group in groups for anchor in group.anchors}
-            hits = [rid for rid in clue_rounds if rid in group_rounds]
+            candidate_rounds = {candidate.round_id for candidate in candidates}
+            hits = [rid for rid in clue_rounds if rid in candidate_rounds]
             misses = [rid for rid in clue_rounds if rid not in set(hits)]
             log.info(
-                "QDMO-EVI clue coverage: %d/%d hits=%s misses=%s",
+                "QDMO-EVI candidate clue coverage: %d/%d hits=%s misses=%s",
                 len(hits),
                 len(clue_rounds),
                 hits,
                 misses,
             )
-            trace_json(log, "clue_coverage", {
+            trace_json(log, "candidate_clue_coverage", {
                 "num_hits": len(hits),
                 "num_clues": len(clue_rounds),
                 "hits": hits,
                 "misses": misses,
             })
 
-        # 对组织后的 evidence groups 进行视觉验证，补充 verified_evidence/contradictions/missing_evidence。
-        verified_groups = self._verify_groups(question_stem, groups)
-        if verified_groups is not groups:
-            log.info("QDMO-EVI verified groups changed after verification")
-        log.info("QDMO-EVI verified groups count=%d", len(verified_groups))
-        for group in verified_groups:
-            log.info(
-                "  verified %s score=%.4f members=%d images=%d",
-                group.id,
-                group.score,
-                len(group.anchors),
-                len(group.image_paths),
-            )
-            if group.verified_evidence:
-                log.info("    verified_evidence=%s", group.verified_evidence)
-            if group.contradictions:
-                log.info("    contradictions=%s", group.contradictions)
-            if group.missing_evidence:
-                log.info("    missing_evidence=%s", group.missing_evidence)
-        trace_json(log, "verified_groups", {
-            "num_groups": len(verified_groups),
-            "groups": groups_summary(verified_groups, max_groups=self._max_groups),
+        briefs = generate_memory_briefs(
+            question_stem,
+            candidates,
+            self._vlm,
+            use_cache=self._use_memory_brief_cache,
+            cache_namespace=self._vlm_result_namespace,
+        )
+        trace_json(log, "memory_briefs", {
+            "num_briefs": len(briefs),
+            "briefs": briefs_summary(briefs, max_items=self._max_candidates),
         })
 
-        # 根据验证后的 groups 构造最终 prompt 和 answer images。
-        prompt = self._build_final_prompt(question, verified_groups)
-        images = self._answer_images(verified_groups, question_images)
+        final_briefs = self._select_final_briefs(briefs)
+        log.info("QDMO-EVI selected final briefs=%d", len(final_briefs))
+        for idx, brief in enumerate(final_briefs, start=1):
+            log.info(
+                "  final_brief[%02d] candidate=%s relevance=%s confidence=%.2f round=%s",
+                idx,
+                brief.candidate_id,
+                brief.relevance,
+                brief.confidence,
+                brief.round_id,
+            )
+        trace_json(log, "selected_memory_briefs", {
+            "num_selected": len(final_briefs),
+            "briefs": briefs_summary(final_briefs, max_items=self._max_final_briefs),
+        })
+
+        prompt = self._build_final_prompt(question, final_briefs)
+        images = self._answer_images(final_briefs, question_images)
         prompt_preview = prompt[:self._debug_prompt_chars]
         if len(prompt) > self._debug_prompt_chars:
             prompt_preview = f"{prompt_preview}\n... [truncated with {len(prompt) - self._debug_prompt_chars} more chars]"
@@ -501,7 +475,6 @@ class EVISystem:
         }, max_chars=self._debug_prompt_chars + 4000)
         log.info("QDMO-EVI final prompt=%d chars, images=%d", len(prompt), len(images))
 
-        # 最终调用 VLM 得到回答，并记录返回内容。
         answer = self._vlm(FINAL_ANSWER_SYSTEM_PROMPT, prompt, images)
         trace_json(log, "answer_done", {"answer": answer})
         log.info("QDMO-EVI answer returned length=%d", len(str(answer)))

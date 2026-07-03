@@ -5,30 +5,29 @@ modality: multimodal
 
 # Text embedding backend used for task-agnostic evidence-anchor retrieval.
 # Safer default for local compile/smoke tests is all-MiniLM-L6-v2; use NV-Embed-v2 for full experiments if available.
-#text_embedding_model: all-MiniLM-L6-v2
+# text_embedding_model: all-MiniLM-L6-v2
 text_embedding_model: nvidia/NV-Embed-v2
 # text_embedding_kwargs:
 #   max_length: 16384
 #   batch_size: 8
 
-# VLM budget for offline anchor extraction, group verification, and final answering.
+# VLM budget for offline anchor extraction, memory brief generation, and final answering.
 vlm_max_new_tokens: 1024
 vlm_timeout: 90
 
-# Broad retrieval over evidence anchors before query-driven organization.
+# Broad retrieval over evidence anchors before candidate consolidation.
 raw_search_k: 120
 
-# Query-driven memory organization budget. This is not a benchmark-specific task planner;
-# groups are built from semantic affinity, provenance, evidence type compatibility, and chronology.
-max_groups: 6
-max_group_size: 12
-max_group_images: 4
+# Candidate-centric memory briefing budget.
+# Anchors are first collapsed into non-overlapping memory candidates by round/image,
+# then each candidate is rewritten into a compact query-conditioned memory brief.
+max_candidates: 16
+max_candidate_anchors: 8
+max_final_briefs: 10
+max_excluded_briefs: 3
 
-# Group-level visual verification checks retrieved image evidence without generating LLM group descriptions.
-use_group_verification: true
-
-# Images included in the final VLM answer call.
-max_answer_images: 20
+# Images included in the final VLM answer call, selected from non-excluded briefs.
+max_answer_images: 12
 
 # Important for fair multimodal experiments:
 # false = do not index MemEye-provided image_caption fields; rely on image-derived anchors.
@@ -37,9 +36,14 @@ use_dataset_captions: false
 
 # Cache text embeddings for dialogue anchors, visual anchors, and questions.
 use_embedding_cache: true
-# EVI debug trace. The file records indexing, retrieval, grouping, verification,
-# final prompt preview, selected images, and model answer for bug/effect debugging.
+
+# Cache candidate memory briefs generated from candidate images and selected anchors.
+use_memory_brief_cache: true
+
+# EVI debug trace. The file records indexing, retrieval, candidate consolidation,
+# memory briefs, final prompt preview, selected images, and model answer.
 evi_debug: true
+evi_debug_console: true
 evi_debug_log_path: logs/evi_debug.log
 evi_debug_append: true
 evi_debug_top_k: 20
