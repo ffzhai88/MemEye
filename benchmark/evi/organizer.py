@@ -1,9 +1,12 @@
 ﻿from __future__ import annotations
 
+import logging
 from typing import Dict, List, Set
 
 from .indexes import cosine
 from .schemas import EvidenceAnchor, EvidenceGroup
+
+log = logging.getLogger(__name__)
 
 
 def _pair_key(a: str, b: str) -> tuple[str, str]:
@@ -65,6 +68,28 @@ def interaction_score(
     b: EvidenceAnchor,
     round_order: List[str],
 ) -> float:
+    """
+    计算两个 anchor 之间的交互得分。
+
+    这个分数用于衡量一个 anchor 是否适合作为另一个 seed 的支持证据。
+    它结合了三个核心部分：
+      1. query 相关性：a 和 b 各自与问题向量的相似度，保证两者都与查询有关；
+      2. 语义相似度：a 和 b 之间的 embedding 相似度，表示它们是否在语义上互补；
+      3. provenance 与类型兼容性：考虑同轮、同图、同会话、时间接近以及证据类型之间的
+         兼容性，奖励更可靠的组合。
+
+    最终得分公式：
+      query_rel_a * query_rel_b * (0.65 * semantic + provenance + type_bonus)
+
+    解释：
+      - query_rel_a 和 query_rel_b 是两个 anchor 各自与问题的相关度，保证这组证据整体与问题相关；
+      - semantic 是 anchor 之间的内容相似度；
+      - provenance 提高来自相近上下文的证据对的权重；
+      - type_bonus 提高语义类型兼容的证据对的权重。
+
+    这样设计的目的是：只有当两个 anchor 都与问题相关且它们之间有较强语义/上下文关联时，
+    它们才会得到高交互分。
+    """
     query_rel_a = max(0.0, a.score or cosine(query_vec, a.vector))
     query_rel_b = max(0.0, b.score or cosine(query_vec, b.vector))
     semantic = max(0.0, cosine(a.vector, b.vector))
@@ -149,10 +174,47 @@ def organize_evidence(
     max_group_size: int = 12,
     max_group_images: int = 4,
 ) -> List[EvidenceGroup]:
-    """Greedy query-driven memory organization over retrieved anchors."""
+    """
+    基于查询驱动的贪心 evidence 组织函数。
+
+    这个函数接收检索到的 evidence anchors，并把它们组织成若干个
+    相互支持的 evidence group，方便后续生成回答时按主题聚合证据。
+
+    组织流程:
+    1. 选取候选 seed：按 anchor 与查询的相关度得分排序，取前 `max_groups * 2`
+       个最相关的 anchor 作为 seed 候选。
+    2. 对每个 seed，计算它与其他 anchor 的交互得分 `interaction_score`，
+       交互得分综合考虑：
+         - seed 与 query 的关系强度
+         - other 与 query 的关系强度
+         - seed 与 other 之间的语义相似度
+         - provenance 奖励（同一轮、同一图像、同一会话、时间临近）
+         - 类型兼容性奖励
+    3. 选取和 seed 交互得分最高的若干 anchors，构成该 seed 的 group 成员。
+       最多选取 `max_group_size - 1` 个 supporting anchors，加上 seed 自身。
+    4. 如果组里只有一个弱 seed（score<=0），则认为该组支持不足并直接丢弃。
+    5. 组分数由 seed score 和成员交互得分平均值组成，表示该 evidence group 的
+       质量和相关性。
+    6. 为每个组生成元信息：label、hypothesis、visual checks，以及图片路径列表。
+    7. 使用贪心策略：每个 seed 只能构成一个 group，且最多返回 `max_groups` 个组。
+    8. 最终按组分数降序返回 group 列表。
+
+    参数:
+        question: 问题文本，主要用于语义上下文，当前函数本身不直接使用。
+        query_vec: 问题的 embedding 向量。
+        anchors: 已检索到的 evidence anchors，通常按 query 相关度排序。
+        round_order: 对话轮次的时间顺序，用于计算 temporal provenance。
+        max_groups: 最多保留多少个 evidence group。
+        max_group_size: 每个 group 最多包含多少个 anchor。
+        max_group_images: group 中最多保留多少张图片路径。
+
+    返回:
+        按组分数降序排序的 EvidenceGroup 列表。
+    """
     if not anchors:
         return []
 
+    # Seed candidate 由与 query 最相关的 anchor 组成，允许的数量为 max_groups * 2。
     seeds = sorted(anchors, key=lambda a: a.score, reverse=True)[: max_groups * 2]
     used_seeds: Set[str] = set()
     groups: List[EvidenceGroup] = []
@@ -160,6 +222,8 @@ def organize_evidence(
     for seed in seeds:
         if seed.id in used_seeds:
             continue
+
+        # 计算该 seed 与所有其他 anchor 的交互得分。
         candidates: List[tuple[float, EvidenceAnchor]] = []
         for other in anchors:
             if other.id == seed.id:
@@ -167,11 +231,18 @@ def organize_evidence(
             score = interaction_score(query_vec, seed, other, round_order)
             if score > 0:
                 candidates.append((score, other))
+
+        # 选取交互得分最高的支持 anchor 作为 group 成员。
         candidates.sort(key=lambda item: item[0], reverse=True)
         members = [seed] + [a for _, a in candidates[: max(0, max_group_size - 1)]]
+
+        # 如果组里只有一个 anchor 且 seed 相关度不高，则认为该组不足以构成有价值的 evidence。
         if len(members) == 1 and seed.score <= 0:
             continue
+
+        # 组得分等于 seed 得分加上 supporting anchor 平均交互得分。
         group_score = seed.score + sum(s for s, _ in candidates[: max(0, max_group_size - 1)]) / max(1, len(members))
+
         group = EvidenceGroup(
             id=f"group_{len(groups)}",
             seed_anchor_id=seed.id,

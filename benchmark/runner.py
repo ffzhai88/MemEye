@@ -487,6 +487,7 @@ def run_benchmark(
                     f"  [ROT {rot_answer}][{i}] choice={choice} gt={rot_answer} "
                     f"em={em:.0f} latency_ms={latency_ms}"
                 )
+                break
 
             # 把所有旋转版本的 EM 求平均，得到去偏后的整体得分。
             debiased_em = sum(r["em"] for r in rotation_results) / n_rot

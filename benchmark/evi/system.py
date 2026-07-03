@@ -181,7 +181,7 @@ class EVISystem:
             session = dataset.get_session(sid)
             date = str(session.get("date", "")).strip() or "unknown"
             prior_rounds_text: List[str] = []
-            log.debug(
+            log.info(
                 "[INDEX] session=%s date=%s rounds=%d",
                 sid,
                 date,
@@ -351,9 +351,21 @@ class EVISystem:
         qa: Optional[Dict[str, Any]] = None,
         question_images: Optional[List[str]] = None,
     ) -> str:
+        """
+        回答单个问题的主流程。
+
+        该函数负责：
+          1. 提取问题干并构造 Trace 信息；
+          2. 检查 index 是否可用，并在失败时回退到仅使用问题图像；
+          3. 计算问题 embedding，用于检索相关 evidence anchors；
+          4. 对检索结果进行 evidence 组织、校验和 prompt 构造；
+          5. 调用 VLM 生成最终回答。
+        """
         self._ensure()
         if self._vlm is None:
             raise RuntimeError("VLM not initialized")
+
+        # 优先使用 QA 中的标准问题文本作为 query，如果没有则退回到原始 question。
         question_stem = str((qa or {}).get("question", "")).strip() or str(question or "")
         trace_json(log, "answer_start", {
             "question_stem": question_stem,
@@ -363,12 +375,14 @@ class EVISystem:
             "clue_rounds": (qa or {}).get("clue", []),
         })
 
+        # 如果 index 为空，说明 indexing 过程出现问题，此时直接回退到只用问题图像的回答。
         if not self._index.anchors:
             log.error("QDMO-EVI index is empty — the embedder may have failed during indexing. "
                        "Falling back to question-only answer with raw images.")
             images = self._as_image_list(question_images)
             return self._vlm(FINAL_ANSWER_SYSTEM_PROMPT, question, images)
 
+        # 生成问题向量，用于检索与问题最相关的证据 anchors。
         query_vec = self._embed(question_stem)
         if not query_vec:
             log.warning("QDMO-EVI query embedding is empty — cannot retrieve evidence, "
@@ -376,12 +390,28 @@ class EVISystem:
             images = self._as_image_list(question_images)
             return self._vlm(FINAL_ANSWER_SYSTEM_PROMPT, question, images)
 
+        # 检索 top_k 个与问题最相关的 evidence anchors。
         retrieved = self._index.search(query_vec, top_k=self._raw_search_k)
+        log.info("QDMO-EVI retrieved anchors=%d", len(retrieved))
+        for idx, anchor in enumerate(retrieved[: self._debug_top_k]):
+            log.info(
+                "  [%02d] id=%s round=%s type=%s score=%.4f text=%s",
+                idx + 1,
+                anchor.id,
+                anchor.round_id,
+                anchor.evidence_type,
+                anchor.score or 0.0,
+                anchor.text.replace("\n", " ")[:120],
+            )
+        if len(retrieved) > self._debug_top_k:
+            log.info("  ... and %d more retrieved anchors", len(retrieved) - self._debug_top_k)
         trace_json(log, "retrieved_anchors", {
             "num_retrieved": len(retrieved),
-            "top_anchors": anchors_summary(retrieved, max_items=self._debug_top_k),
+            "top_anchors": anchors_summary(retrieved, max_items=min(self._debug_top_k, len(retrieved))),
         })
 
+        # 将检索到的 anchors 组织成若干个 evidence group，便于后续模型在回答时
+        # 参考结构化证据而不是无序大堆 raw anchors。
         groups = organize_evidence(
             question=question_stem,
             query_vec=query_vec,
@@ -396,40 +426,85 @@ class EVISystem:
             len(retrieved),
             len(groups),
         )
+        log.info("QDMO-EVI organized groups count=%d", len(groups))
+        for group in groups:
+            log.info(
+                "  %s score=%.4f members=%d images=%d label=%s",
+                group.id,
+                group.score,
+                len(group.anchors),
+                len(group.image_paths),
+                group.group_label.replace("\n", " ")[:100],
+            )
+            log.info("    hypothesis=%s", group.group_hypothesis.replace("\n", " ")[:200])
         trace_json(log, "organized_groups", {
             "num_groups": len(groups),
             "groups": groups_summary(groups, max_groups=self._max_groups),
         })
 
+        # 如果 QA 提供 clue 轮次，则检查组织后的 groups 是否覆盖了这些 clue。
         clue_rounds = (qa or {}).get("clue", [])
         if clue_rounds:
             group_rounds = {anchor.round_id for group in groups for anchor in group.anchors}
             hits = [rid for rid in clue_rounds if rid in group_rounds]
-            log.info("QDMO-EVI clue coverage: %d/%d %s", len(hits), len(clue_rounds), hits)
+            misses = [rid for rid in clue_rounds if rid not in set(hits)]
+            log.info(
+                "QDMO-EVI clue coverage: %d/%d hits=%s misses=%s",
+                len(hits),
+                len(clue_rounds),
+                hits,
+                misses,
+            )
             trace_json(log, "clue_coverage", {
                 "num_hits": len(hits),
                 "num_clues": len(clue_rounds),
                 "hits": hits,
-                "misses": [rid for rid in clue_rounds if rid not in set(hits)],
+                "misses": misses,
             })
 
-        groups = self._verify_groups(question_stem, groups)
+        # 对组织后的 evidence groups 进行视觉验证，补充 verified_evidence/contradictions/missing_evidence。
+        verified_groups = self._verify_groups(question_stem, groups)
+        if verified_groups is not groups:
+            log.info("QDMO-EVI verified groups changed after verification")
+        log.info("QDMO-EVI verified groups count=%d", len(verified_groups))
+        for group in verified_groups:
+            log.info(
+                "  verified %s score=%.4f members=%d images=%d",
+                group.id,
+                group.score,
+                len(group.anchors),
+                len(group.image_paths),
+            )
+            if group.verified_evidence:
+                log.info("    verified_evidence=%s", group.verified_evidence)
+            if group.contradictions:
+                log.info("    contradictions=%s", group.contradictions)
+            if group.missing_evidence:
+                log.info("    missing_evidence=%s", group.missing_evidence)
         trace_json(log, "verified_groups", {
-            "num_groups": len(groups),
-            "groups": groups_summary(groups, max_groups=self._max_groups),
+            "num_groups": len(verified_groups),
+            "groups": groups_summary(verified_groups, max_groups=self._max_groups),
         })
 
-        prompt = self._build_final_prompt(question, groups)
-        images = self._answer_images(groups, question_images)
+        # 根据验证后的 groups 构造最终 prompt 和 answer images。
+        prompt = self._build_final_prompt(question, verified_groups)
+        images = self._answer_images(verified_groups, question_images)
+        prompt_preview = prompt[:self._debug_prompt_chars]
+        if len(prompt) > self._debug_prompt_chars:
+            prompt_preview = f"{prompt_preview}\n... [truncated with {len(prompt) - self._debug_prompt_chars} more chars]"
+        log.info("QDMO-EVI final prompt preview:\n%s", prompt_preview)
+        log.info("QDMO-EVI answer images=%s", images)
         trace_json(log, "final_answer_call", {
             "prompt_chars": len(prompt),
-            "prompt_preview": prompt[:self._debug_prompt_chars],
+            "prompt_preview": prompt_preview,
             "images": images,
         }, max_chars=self._debug_prompt_chars + 4000)
         log.info("QDMO-EVI final prompt=%d chars, images=%d", len(prompt), len(images))
 
+        # 最终调用 VLM 得到回答，并记录返回内容。
         answer = self._vlm(FINAL_ANSWER_SYSTEM_PROMPT, prompt, images)
         trace_json(log, "answer_done", {"answer": answer})
+        log.info("QDMO-EVI answer returned length=%d", len(str(answer)))
         return answer
 
     @property
