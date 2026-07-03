@@ -16,9 +16,10 @@ from .vlm import VLMCallable, make_vlm_callable
 log = logging.getLogger(__name__)
 
 FINAL_ANSWER_SYSTEM_PROMPT = """You are answering a multimodal long-term memory question.
-Use the organized memory briefs as the primary evidence. The briefs are compressed candidate memories, not a table.
-Excluded memories should not be counted as supporting evidence. Use attached images only to resolve uncertainty.
-Be concise and grounded in the memory briefs.
+Use the evidence assertions as the primary evidence.
+The assertions are selected factual observations, not reasoning traces.
+Use attached images only to resolve uncertainty.
+Be concise and grounded in the assertions.
 If the question is multiple-choice, answer with ONLY the option letter.
 """
 
@@ -299,41 +300,30 @@ class EVISystem:
     def _select_final_briefs(self, briefs: List[MemoryBrief]) -> List[MemoryBrief]:
         relevant = [b for b in briefs if b.relevance == "relevant"]
         uncertain = [b for b in briefs if b.relevance == "uncertain"]
-        excluded = [b for b in briefs if b.relevance == "excluded"]
         relevant.sort(key=lambda b: (b.confidence, b.score), reverse=True)
         uncertain.sort(key=lambda b: (b.confidence, b.score), reverse=True)
-        excluded.sort(key=lambda b: (b.confidence, b.score), reverse=True)
 
-        selected = (relevant + uncertain)[: self._max_final_briefs]
-        remaining = max(0, self._max_final_briefs - len(selected))
-        excluded_budget = min(self._max_excluded_briefs, remaining)
-        if excluded_budget:
-            selected.extend(excluded[:excluded_budget])
-        return selected
-
+        selected = relevant[: self._max_final_briefs]
+        if selected:
+            return selected
+        return uncertain[: self._max_final_briefs]
     def _build_final_prompt(self, question: str, briefs: List[MemoryBrief]) -> str:
         lines: List[str] = []
-        lines.append("Organized memory briefs:")
+        lines.append("Evidence assertions:")
         if not briefs:
-            lines.append("No reliable memory brief was produced. Answer from the question and attached images only if possible.")
+            lines.append("No selected memory evidence was available.")
         for idx, brief in enumerate(briefs, start=1):
-            header = (
-                f"Memory brief {idx} from {brief.round_id} on {brief.date} "
-                f"(relevance={brief.relevance}, confidence={brief.confidence:.2f})"
-            )
-            lines.append(header + ":")
-            lines.append(brief.brief.strip())
-            if brief.key_evidence:
-                lines.append("Key evidence:")
-                for item in brief.key_evidence[:5]:
-                    lines.append(f"- {item}")
-            lines.append("")
+            assertion = " ".join(str(brief.brief or "").split())
+            lines.append(f"{idx}. Memory from {brief.round_id} on {brief.date}: {assertion}")
+            facts = [" ".join(str(item).split()) for item in brief.key_evidence if str(item).strip()]
+            if facts:
+                lines.append("   Observed facts: " + "; ".join(facts[:3]))
+        lines.append("")
         lines.append("Question:")
         lines.append(str(question or ""))
         lines.append("")
-        lines.append("Use the memory briefs as the main evidence. Do not count memories marked excluded as support.")
+        lines.append("Answer using only the evidence assertions and attached images. Do not use excluded or unselected memories.")
         return "\n".join(lines)
-
     def _answer_images(self, briefs: List[MemoryBrief], question_images: Optional[List[str]]) -> List[str]:
         images: List[str] = []
         seen: set[str] = set()
@@ -446,19 +436,19 @@ class EVISystem:
         })
 
         final_briefs = self._select_final_briefs(briefs)
-        log.info("QDMO-EVI selected final briefs=%d", len(final_briefs))
+        log.info("QDMO-EVI selected final evidence assertions=%d", len(final_briefs))
         for idx, brief in enumerate(final_briefs, start=1):
             log.info(
-                "  final_brief[%02d] candidate=%s relevance=%s confidence=%.2f round=%s",
+                "  final_assertion[%02d] candidate=%s relevance=%s confidence=%.2f round=%s",
                 idx,
                 brief.candidate_id,
                 brief.relevance,
                 brief.confidence,
                 brief.round_id,
             )
-        trace_json(log, "selected_memory_briefs", {
+        trace_json(log, "selected_memory_assertions", {
             "num_selected": len(final_briefs),
-            "briefs": briefs_summary(final_briefs, max_items=self._max_final_briefs),
+            "assertions": briefs_summary(final_briefs, max_items=self._max_final_briefs),
         })
 
         prompt = self._build_final_prompt(question, final_briefs)

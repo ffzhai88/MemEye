@@ -15,28 +15,29 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
-_PROMPT_VERSION = "memory_brief_v1"
+_PROMPT_VERSION = "memory_assertion_v2"
 _CACHE_DIR: Optional[str] = None
 
-MEMORY_BRIEF_SYSTEM_PROMPT = """You are organizing long-term multimodal memory for a reasoning agent.
+MEMORY_ASSERTION_SYSTEM_PROMPT = """You are converting one retrieved multimodal memory into a clean evidence assertion.
 
-Given one candidate memory and the current question, write a concise natural-language memory brief.
+Given one candidate memory and the current question, decide whether the memory should be used, then write a factual assertion about what the memory itself shows or says.
 Do not answer the final question. Do not choose a multiple-choice option.
-Focus only on what this single memory contributes to the current question.
+Do not explain how the evidence supports the answer.
 
 Return ONLY valid JSON:
 {
   "relevance": "relevant|excluded|uncertain",
-  "brief": "one concise paragraph explaining this memory's role for the question",
-  "key_evidence": ["short evidence item grounded in anchors or image"],
+  "brief": "one concise factual assertion about this memory, without reasoning about the final answer",
+  "key_evidence": ["short visible or textual fact grounded in this memory"],
   "confidence": 0.0
 }
 
 Guidelines:
-- Mark relevance="excluded" when this memory matches some surface words but is not actually about the queried entity, condition, time, or relation.
+- The brief is an evidence assertion, not a rationale. Avoid phrases like "contributes to the count", "supports the answer", "irrelevant to the question", or "therefore".
+- For relevant memories, state only the observed facts needed later, such as identity, attributes, count, spatial relation, date, or change.
+- For excluded memories, still keep the brief factual: state the observed mismatch, not why it helps answer.
+- Mark relevance="excluded" when this memory matches surface words but is not actually about the queried entity, condition, time, or relation.
 - Mark relevance="uncertain" when the memory may matter but the evidence is insufficient or visually ambiguous.
-- The brief must compress evidence; do not copy every anchor.
-- Mention contradictions or exclusion reasons directly in the brief.
 - Ground claims in the provided anchors and attached image when available.
 """
 
@@ -137,8 +138,8 @@ def make_fallback_brief(question_stem: str, candidate: MemoryCandidate, reason: 
     evidence = [anchor.text for anchor in candidate.selected_anchors[:4]]
     anchor_text = "; ".join(evidence) if evidence else "no selected evidence anchors"
     brief = (
-        f"This candidate memory from {candidate.round_id} could not be fully briefed because {reason}. "
-        f"The strongest available anchors are: {anchor_text}. Treat this memory as uncertain for the current question."
+        f"This memory from {candidate.round_id} has uncertain usable evidence because {reason}. "
+        f"Available observed facts: {anchor_text}."
     )
     return MemoryBrief(
         candidate_id=candidate.id,
@@ -170,7 +171,7 @@ def generate_memory_brief(
                 data = json.loads(cache_file.read_text(encoding="utf-8"))
                 brief = str(data.get("brief", "")).strip()
                 if brief:
-                    log.info("  [BRIEF CACHE] HIT candidate=%s", candidate.id)
+                    log.info("  [ASSERTION CACHE] HIT candidate=%s", candidate.id)
                     return MemoryBrief(
                         candidate_id=candidate.id,
                         session_id=candidate.session_id,
@@ -184,31 +185,31 @@ def generate_memory_brief(
                         score=candidate.score,
                     )
             except Exception as exc:
-                log.warning("  [BRIEF CACHE] read failed candidate=%s error=%s", candidate.id, exc)
+                log.warning("  [ASSERTION CACHE] read failed candidate=%s error=%s", candidate.id, exc)
 
     user_text = _candidate_prompt(question_stem, candidate)
     log.info(
-        "  [BRIEF] candidate=%s round=%s anchors=%d images=%d",
+        "  [ASSERTION] candidate=%s round=%s anchors=%d images=%d",
         candidate.id,
         candidate.round_id,
         len(candidate.selected_anchors),
         len(candidate.image_paths),
     )
-    log.debug("[BRIEF PROMPT] candidate=%s\n%s", candidate.id, _shorten(user_text, 8000))
+    log.debug("[ASSERTION PROMPT] candidate=%s\n%s", candidate.id, _shorten(user_text, 8000))
     raw = retry_vlm_call(
-        lambda: vlm_callable(MEMORY_BRIEF_SYSTEM_PROMPT, user_text, candidate.image_paths),
-        label=f"memory-brief {candidate.id}",
+        lambda: vlm_callable(MEMORY_ASSERTION_SYSTEM_PROMPT, user_text, candidate.image_paths),
+        label=f"memory-assertion {candidate.id}",
     )
-    log.debug("[BRIEF RAW] candidate=%s\n%s", candidate.id, _shorten(raw, 8000))
+    log.debug("[ASSERTION RAW] candidate=%s\n%s", candidate.id, _shorten(raw, 8000))
     if not raw:
-        log.warning("  [BRIEF] empty response candidate=%s", candidate.id)
+        log.warning("  [ASSERTION] empty response candidate=%s", candidate.id)
         return make_fallback_brief(question_stem, candidate, "the brief model returned an empty response")
 
     parsed = extract_json(raw) or {}
-    log.debug("[BRIEF PARSED] candidate=%s data=%s", candidate.id, _shorten(parsed, 4000))
+    log.debug("[ASSERTION PARSED] candidate=%s data=%s", candidate.id, _shorten(parsed, 4000))
     brief_text = str(parsed.get("brief", "")).strip()
     if not brief_text:
-        log.warning("  [BRIEF] invalid JSON/empty brief candidate=%s", candidate.id)
+        log.warning("  [ASSERTION] invalid JSON/empty brief candidate=%s", candidate.id)
         return make_fallback_brief(question_stem, candidate, "the brief model did not return a usable brief")
 
     try:
@@ -247,7 +248,7 @@ def generate_memory_brief(
                 encoding="utf-8",
             )
         except Exception as exc:
-            log.warning("  [BRIEF] Cache write failed: %s", exc)
+            log.warning("  [ASSERTION] Cache write failed: %s", exc)
     return brief
 
 
@@ -269,10 +270,10 @@ def generate_memory_briefs(
                 cache_namespace=cache_namespace,
             )
         )
-    log.info("EVI memory briefs generated: %d", len(briefs))
+    log.info("EVI memory assertions generated: %d", len(briefs))
     for idx, brief in enumerate(briefs):
         log.info(
-            "  brief[%02d] candidate=%s relevance=%s confidence=%.2f round=%s",
+            "  assertion[%02d] candidate=%s relevance=%s confidence=%.2f round=%s",
             idx + 1,
             brief.candidate_id,
             brief.relevance,
