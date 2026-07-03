@@ -1,0 +1,371 @@
+sk-vutycwckjxdohudkuuvlixqpuyzrjrhgtgptdjsikngrjiok
+[INFO] QA 1/1 point=[['X1'], ['Y2']] method=evi mode=mcq rotations=4 history_turns=0
+[EVI] EVI debug log: /home/zhaifeifei/rag/MemEye/logs/evi_debug.log
+[EVI] Processing 42 session(s)...
+[EVI] VLM adapter: openai_api model=qwen/qwen3-vl-8b-instruct base_url=https://api.siliconflow.cn/v1
+[TextEmbedder] NV-Embed-v2 mode: model=nvidia/NV-Embed-v2, max_length=32768, batch_size=16, dtype=auto
+/home/zhaifeifei/miniconda3/envs/memeye/lib/python3.10/site-packages/torch/cuda/__init__.py:1074: UserWarning: Can't initialize NVML
+  raw_cnt = _raw_device_count_nvml()
+Loading checkpoint shards:   0%|          | 0/4 [00:00<?, ?it/s]Loading checkpoint shards:  25%|██▌       | 1/4 [00:01<00:03,  1.10s/it]Loading checkpoint shards:  50%|█████     | 2/4 [00:02<00:02,  1.09s/it]Loading checkpoint shards:  75%|███████▌  | 3/4 [00:03<00:01,  1.09s/it]Loading checkpoint shards: 100%|██████████| 4/4 [00:03<00:00,  1.30it/s]Loading checkpoint shards: 100%|██████████| 4/4 [00:03<00:00,  1.12it/s]
+[TextEmbedder] Loaded NV-Embed-v2: nvidia/NV-Embed-v2 (4096-dim) on cuda
+[EVI] Embedder loaded: nvidia/NV-Embed-v2
+[EVI] Processing sessions for QDMO-EVI evidence anchors ...
+[EVI] [INDEX] session=BRAND_S1 date=2024-01-05 rounds=2
+[EVI]   [ANCHORS] Cache HIT for /home/zhaifeifei/rag/MemEye/data/image/Brand_Memory_Test/CocaCola_1.png (14 anchors)
+[EVI] [INDEX] session=BRAND_S2 date=2024-01-08 rounds=2
+[EVI]   [ANCHORS] Cache HIT for /home/zhaifeifei/rag/MemEye/data/image/Brand_Memory_Test/BurgerKing_1.png (12 anchors)
+[EVI] [INDEX] session=BRAND_S3 date=2024-01-12 rounds=2
+[EVI]   [ANCHORS] Cache HIT for /home/zhaifeifei/rag/MemEye/data/image/Brand_Memory_Test/Dunkin_1.png (18 anchors)
+[EVI] [INDEX] session=BRAND_S4 date=2024-01-14 rounds=2
+[EVI]   [ANCHORS] Cache HIT for /home/zhaifeifei/rag/MemEye/data/image/Brand_Memory_Test/McDonalds_1.png (15 anchors)
+[EVI] [INDEX] session=BRAND_S5 date=2024-01-16 rounds=1
+[EVI] [INDEX] session=BRAND_S6 date=2024-01-20 rounds=2
+[EVI]   [ANCHORS] Cache HIT for /home/zhaifeifei/rag/MemEye/data/image/Brand_Memory_Test/Pepsi_1.png (12 anchors)
+[EVI] [INDEX] session=BRAND_S7 date=2024-01-22 rounds=2
+[EVI]   [ANCHORS] Cache HIT for /home/zhaifeifei/rag/MemEye/data/image/Brand_Memory_Test/Starbucks_1.png (12 anchors)
+[EVI] [INDEX] session=BRAND_S8 date=2024-01-24 rounds=1
+[EVI] [INDEX] session=BRAND_S9 date=2024-02-02 rounds=2
+[EVI]   [ANCHORS] Cache HIT for /home/zhaifeifei/rag/MemEye/data/image/Brand_Memory_Test/CocaCola_2.png (14 anchors)
+[EVI] [INDEX] session=BRAND_S10 date=2024-02-05 rounds=2
+[EVI]   [ANCHORS] Cache HIT for /home/zhaifeifei/rag/MemEye/data/image/Brand_Memory_Test/Dunkin_2.png (10 anchors)
+[EVI] [INDEX] session=BRAND_S11 date=2024-02-08 rounds=2
+[EVI]   [ANCHORS] Cache HIT for /home/zhaifeifei/rag/MemEye/data/image/Brand_Memory_Test/McDonalds_2.png (14 anchors)
+[EVI] [INDEX] session=BRAND_S12 date=2024-02-10 rounds=1
+[EVI] [INDEX] session=BRAND_S13 date=2024-02-14 rounds=2
+[EVI]   [ANCHORS] Cache HIT for /home/zhaifeifei/rag/MemEye/data/image/Brand_Memory_Test/BurgerKing_2.png (11 anchors)
+[EVI] [INDEX] session=BRAND_S14 date=2024-02-17 rounds=2
+[EVI]   [ANCHORS] Cache HIT for /home/zhaifeifei/rag/MemEye/data/image/Brand_Memory_Test/Pepsi_2.png (12 anchors)
+[EVI] [INDEX] session=BRAND_S15 date=2024-02-20 rounds=2
+[EVI]   [ANCHORS] Cache HIT for /home/zhaifeifei/rag/MemEye/data/image/Brand_Memory_Test/Starbucks_2.png (11 anchors)
+[EVI] [INDEX] session=BRAND_S16 date=2024-02-22 rounds=1
+[EVI] [INDEX] session=BRAND_S17 date=2024-03-01 rounds=2
+[EVI]   [ANCHORS] Cache HIT for /home/zhaifeifei/rag/MemEye/data/image/Brand_Memory_Test/CocaCola_3.png (13 anchors)
+[EVI] [INDEX] session=BRAND_S18 date=2024-03-05 rounds=2
+[EVI]   [ANCHORS] Cache HIT for /home/zhaifeifei/rag/MemEye/data/image/Brand_Memory_Test/McDonalds_3.png (11 anchors)
+[EVI] [INDEX] session=BRAND_S19 date=2024-03-09 rounds=2
+[EVI]   [ANCHORS] Cache HIT for /home/zhaifeifei/rag/MemEye/data/image/Brand_Memory_Test/Dunkin_3.png (12 anchors)
+[EVI] [INDEX] session=BRAND_S20 date=2024-03-11 rounds=1
+[EVI] [INDEX] session=BRAND_S21 date=2024-03-15 rounds=2
+[EVI]   [ANCHORS] Cache HIT for /home/zhaifeifei/rag/MemEye/data/image/Brand_Memory_Test/Pepsi_3.png (8 anchors)
+[EVI] [INDEX] session=BRAND_S22 date=2024-03-18 rounds=2
+[EVI]   [ANCHORS] Cache HIT for /home/zhaifeifei/rag/MemEye/data/image/Brand_Memory_Test/BurgerKing_3.png (13 anchors)
+[EVI] [INDEX] session=BRAND_S23 date=2024-03-22 rounds=2
+[EVI]   [ANCHORS] Cache HIT for /home/zhaifeifei/rag/MemEye/data/image/Brand_Memory_Test/Starbucks_3.png (10 anchors)
+[EVI] [INDEX] session=BRAND_S24 date=2024-03-24 rounds=1
+[EVI] [INDEX] session=BRAND_S25 date=2024-03-25 rounds=1
+[EVI] [INDEX] session=BRAND_S26 date=2024-04-01 rounds=2
+[EVI]   [ANCHORS] Cache HIT for /home/zhaifeifei/rag/MemEye/data/image/Brand_Memory_Test/CocaCola_4.png (14 anchors)
+[EVI] [INDEX] session=BRAND_S27 date=2024-04-04 rounds=2
+[EVI]   [ANCHORS] Cache HIT for /home/zhaifeifei/rag/MemEye/data/image/Brand_Memory_Test/Dunkin_4.png (9 anchors)
+[EVI] [INDEX] session=BRAND_S28 date=2024-04-08 rounds=2
+[EVI]   [ANCHORS] Cache HIT for /home/zhaifeifei/rag/MemEye/data/image/Brand_Memory_Test/McDonalds_4.png (9 anchors)
+[EVI] [INDEX] session=BRAND_S29 date=2024-04-10 rounds=1
+[EVI] [INDEX] session=BRAND_S30 date=2024-04-15 rounds=2
+[EVI]   [ANCHORS] Cache HIT for /home/zhaifeifei/rag/MemEye/data/image/Brand_Memory_Test/Pepsi_4.png (12 anchors)
+[EVI] [INDEX] session=BRAND_S31 date=2024-04-19 rounds=2
+[EVI]   [ANCHORS] Cache HIT for /home/zhaifeifei/rag/MemEye/data/image/Brand_Memory_Test/Starbucks_4.png (14 anchors)
+[EVI] [INDEX] session=BRAND_S32 date=2024-04-23 rounds=2
+[EVI]   [ANCHORS] Cache HIT for /home/zhaifeifei/rag/MemEye/data/image/Brand_Memory_Test/BurgerKing_4.png (11 anchors)
+[EVI] [INDEX] session=BRAND_S33 date=2024-04-26 rounds=1
+[EVI] [INDEX] session=BRAND_S34 date=2024-05-02 rounds=2
+[EVI]   [ANCHORS] Cache HIT for /home/zhaifeifei/rag/MemEye/data/image/Brand_Memory_Test/CocaCola_5.png (14 anchors)
+[EVI] [INDEX] session=BRAND_S35 date=2024-05-04 rounds=1
+[EVI] [INDEX] session=BRAND_S36 date=2024-05-06 rounds=2
+[EVI]   [ANCHORS] Cache HIT for /home/zhaifeifei/rag/MemEye/data/image/Brand_Memory_Test/McDonalds_5.png (12 anchors)
+[EVI] [INDEX] session=BRAND_S37 date=2024-05-10 rounds=2
+[EVI]   [ANCHORS] Cache HIT for /home/zhaifeifei/rag/MemEye/data/image/Brand_Memory_Test/Dunkin_5.png (13 anchors)
+[EVI] [INDEX] session=BRAND_S38 date=2024-05-13 rounds=1
+[EVI] [INDEX] session=BRAND_S39 date=2024-05-18 rounds=2
+[EVI]   [ANCHORS] Cache HIT for /home/zhaifeifei/rag/MemEye/data/image/Brand_Memory_Test/Pepsi_5.png (10 anchors)
+[EVI] [INDEX] session=BRAND_S40 date=2024-05-22 rounds=2
+[EVI]   [ANCHORS] Cache HIT for /home/zhaifeifei/rag/MemEye/data/image/Brand_Memory_Test/Starbucks_5.png (12 anchors)
+[EVI] [INDEX] session=BRAND_S41 date=2024-05-26 rounds=2
+[EVI]   [ANCHORS] Cache HIT for /home/zhaifeifei/rag/MemEye/data/image/Brand_Memory_Test/BurgerKing_5.png (12 anchors)
+[EVI] [INDEX] session=BRAND_S42 date=2024-05-30 rounds=1
+[EVI] QDMO-EVI indexing done: 436 anchors across 72 rounds. Types: attribute:52, entity:74, identity:23, relation:22, scene:25, spatial:24, structured_visual:18, temporal:91, text:107
+[EVI] Done: 436 vectors indexed.
+[EVI] QDMO-EVI retrieved anchors=120
+[EVI]   [01] id=BRAND_S34:R1:scene:359:img0_10 round=BRAND_S34:R1 type=scene score=0.7187 text=Coca-Cola variant lineup advertisement on red background
+[EVI]   [02] id=BRAND_S36:R1:attribute:370:img0_4 round=BRAND_S36:R1 type=attribute score=0.6700 text=Solid red background
+[EVI]   [03] id=BRAND_S36:R1:scene:369:img0_3 round=BRAND_S36:R1 type=scene score=0.6344 text=Minimalist red background advertisement
+[EVI]   [04] id=BRAND_S4:R1:attribute:57:img0_6 round=BRAND_S4:R1 type=attribute score=0.6225 text=red background
+[EVI]   [05] id=BRAND_S22:R1:attribute:242:img0_5 round=BRAND_S22:R1 type=attribute score=0.6225 text=red background
+[EVI]   [06] id=BRAND_S26:R1:attribute:272:img0_6 round=BRAND_S26:R1 type=attribute score=0.6225 text=red background
+[EVI]   [07] id=BRAND_S17:R1:scene:184:img0_0 round=BRAND_S17:R1 type=scene score=0.5812 text=Coca-Cola advertisement featuring a smiling couple sharing a bottle of Coke against a red background with white bubbles
+[EVI]   [08] id=BRAND_S26:R1:text:266:img0_0 round=BRAND_S26:R1 type=text score=0.5786 text=Coca-Cola
+[EVI]   [09] id=BRAND_S17:R1:spatial:195:img0_11 round=BRAND_S17:R1 type=spatial score=0.5639 text=Coca-Cola logo positioned in top-right corner
+[EVI]   [10] id=BRAND_S1:R1:entity:3:img0_2 round=BRAND_S1:R1 type=entity score=0.5620 text=Coca-Cola logo
+[EVI]   [11] id=BRAND_S17:R1:entity:187:img0_3 round=BRAND_S17:R1 type=entity score=0.5620 text=Coca-Cola logo
+[EVI]   [12] id=BRAND_S17:R1:attribute:189:img0_5 round=BRAND_S17:R1 type=attribute score=0.5524 text=red background with white bubble outlines
+[EVI]   [13] id=BRAND_S1:R1:spatial:13:img0_12 round=BRAND_S1:R1 type=spatial score=0.5419 text=Coca-Cola branding is secondary to Citi branding
+[EVI]   [14] id=BRAND_S39:R1:scene:402:img0_6 round=BRAND_S39:R1 type=scene score=0.5282 text=Pepsi advertisement with splash background
+[EVI]   [15] id=BRAND_S22:R1:spatial:245:img0_8 round=BRAND_S22:R1 type=spatial score=0.5213 text=burger centered on red background
+[EVI]   [16] id=BRAND_S34:R1:identity:360:img0_11 round=BRAND_S34:R1 type=identity score=0.5122 text=Coca-Cola brand identity with consistent logo and bottle shape
+[EVI]   [17] id=BRAND_S26:R1:text:278:img0_12 round=BRAND_S26:R1 type=text score=0.5086 text=©2010 The Coca-Cola Company All Rights Reserved
+[EVI]   [18] id=BRAND_S1:R1:relation:14:img0_13 round=BRAND_S1:R1 type=relation score=0.5083 text=Coca-Cola and Citi co-branded sponsorship
+[EVI]   [19] id=BRAND_S6:R1:attribute:71:img0_2 round=BRAND_S6:R1 type=attribute score=0.5043 text=blue background
+[EVI]   [20] id=BRAND_S14:R1:attribute:158:img0_2 round=BRAND_S14:R1 type=attribute score=0.5043 text=blue background
+[EVI]   ... and 100 more retrieved anchors
+[EVI] EVI group created group_0 seed=BRAND_S34:R1:scene:359:img0_10 score=1.0186 members=12 images=4
+[EVI]   member[0] id=BRAND_S34:R1:scene:359:img0_10 round=BRAND_S34:R1 type=scene score=0.7187 text=Coca-Cola variant lineup advertisement on red background
+[EVI]   member[1] id=BRAND_S34:R1:entity:356:img0_7 round=BRAND_S34:R1 type=entity score=0.4763 text=four Coca-Cola variant bottles
+[EVI]   member[2] id=BRAND_S34:R1:identity:360:img0_11 round=BRAND_S34:R1 type=identity score=0.5122 text=Coca-Cola brand identity with consistent logo and bottle shape
+[EVI]   member[3] id=BRAND_S34:R1:attribute:357:img0_8 round=BRAND_S34:R1 type=attribute score=0.4943 text=classic Coca-Cola contour bottle shape
+[EVI]   member[4] id=BRAND_S34:R1:text:352:img0_3 round=BRAND_S34:R1 type=text score=0.4863 text=Coca-Cola life
+[EVI]   member[5] id=BRAND_S34:R1:text:354:img0_5 round=BRAND_S34:R1 type=text score=0.4558 text=Diet Coke
+[EVI]   member[6] id=BRAND_S34:R1:structured_visual:361:img0_12 round=BRAND_S34:R1 type=structured_visual score=0.4378 text=ad layout with product lineup on left and slogan on right
+[EVI]   member[7] id=BRAND_S34:R1:temporal:362:img0_13 round=BRAND_S34:R1 type=temporal score=0.4380 text=ad dated 03/03/2015
+[EVI]   member[8] id=BRAND_S36:R1:scene:369:img0_3 round=BRAND_S36:R1 type=scene score=0.6344 text=Minimalist red background advertisement
+[EVI]   member[9] id=BRAND_S1:R1:entity:3:img0_2 round=BRAND_S1:R1 type=entity score=0.5620 text=Coca-Cola logo
+[EVI]   member[10] id=BRAND_S17:R1:entity:187:img0_3 round=BRAND_S17:R1 type=entity score=0.5620 text=Coca-Cola logo
+[EVI]   member[11] id=BRAND_S17:R1:spatial:195:img0_11 round=BRAND_S17:R1 type=spatial score=0.5639 text=Coca-Cola logo positioned in top-right corner
+[EVI] EVI group created group_1 seed=BRAND_S36:R1:attribute:370:img0_4 score=0.9278 members=12 images=4
+[EVI]   member[0] id=BRAND_S36:R1:attribute:370:img0_4 round=BRAND_S36:R1 type=attribute score=0.6700 text=Solid red background
+[EVI]   member[1] id=BRAND_S36:R1:scene:369:img0_3 round=BRAND_S36:R1 type=scene score=0.6344 text=Minimalist red background advertisement
+[EVI]   member[2] id=BRAND_S36:R1:identity:372:img0_6 round=BRAND_S36:R1 type=identity score=0.3874 text=McDonald's brand identity
+[EVI]   member[3] id=BRAND_S36:R1:temporal:374:img0_8 round=BRAND_S36:R1 type=temporal score=0.4170 text=Service-oriented advertising
+[EVI]   member[4] id=BRAND_S36:R1:entity:368:img0_2 round=BRAND_S36:R1 type=entity score=0.3779 text=McDonald's golden arches logo
+[EVI]   member[5] id=BRAND_S4:R1:attribute:57:img0_6 round=BRAND_S4:R1 type=attribute score=0.6225 text=red background
+[EVI]   member[6] id=BRAND_S22:R1:attribute:242:img0_5 round=BRAND_S22:R1 type=attribute score=0.6225 text=red background
+[EVI]   member[7] id=BRAND_S26:R1:attribute:272:img0_6 round=BRAND_S26:R1 type=attribute score=0.6225 text=red background
+[EVI]   member[8] id=BRAND_S34:R1:scene:359:img0_10 round=BRAND_S34:R1 type=scene score=0.7187 text=Coca-Cola variant lineup advertisement on red background
+[EVI]   member[9] id=BRAND_S17:R1:attribute:189:img0_5 round=BRAND_S17:R1 type=attribute score=0.5524 text=red background with white bubble outlines
+[EVI]   member[10] id=BRAND_S26:R1:text:266:img0_0 round=BRAND_S26:R1 type=text score=0.5786 text=Coca-Cola
+[EVI]   member[11] id=BRAND_S6:R1:attribute:71:img0_2 round=BRAND_S6:R1 type=attribute score=0.5043 text=blue background
+[EVI] EVI group created group_2 seed=BRAND_S36:R1:scene:369:img0_3 score=0.8666 members=12 images=4
+[EVI]   member[0] id=BRAND_S36:R1:scene:369:img0_3 round=BRAND_S36:R1 type=scene score=0.6344 text=Minimalist red background advertisement
+[EVI]   member[1] id=BRAND_S36:R1:attribute:370:img0_4 round=BRAND_S36:R1 type=attribute score=0.6700 text=Solid red background
+[EVI]   member[2] id=BRAND_S36:R1:temporal:374:img0_8 round=BRAND_S36:R1 type=temporal score=0.4170 text=Service-oriented advertising
+[EVI]   member[3] id=BRAND_S36:R1:entity:368:img0_2 round=BRAND_S36:R1 type=entity score=0.3779 text=McDonald's golden arches logo
+[EVI]   member[4] id=BRAND_S34:R1:scene:359:img0_10 round=BRAND_S34:R1 type=scene score=0.7187 text=Coca-Cola variant lineup advertisement on red background
+[EVI]   member[5] id=BRAND_S36:R1:identity:372:img0_6 round=BRAND_S36:R1 type=identity score=0.3874 text=McDonald's brand identity
+[EVI]   member[6] id=BRAND_S4:R1:attribute:57:img0_6 round=BRAND_S4:R1 type=attribute score=0.6225 text=red background
+[EVI]   member[7] id=BRAND_S22:R1:attribute:242:img0_5 round=BRAND_S22:R1 type=attribute score=0.6225 text=red background
+[EVI]   member[8] id=BRAND_S26:R1:attribute:272:img0_6 round=BRAND_S26:R1 type=attribute score=0.6225 text=red background
+[EVI]   member[9] id=BRAND_S14:R1:scene:164:img0_8 round=BRAND_S14:R1 type=scene score=0.4660 text=minimalist advertising poster
+[EVI]   member[10] id=BRAND_S22:R1:spatial:245:img0_8 round=BRAND_S22:R1 type=spatial score=0.5213 text=burger centered on red background
+[EVI]   member[11] id=BRAND_S1:R1:entity:3:img0_2 round=BRAND_S1:R1 type=entity score=0.5620 text=Coca-Cola logo
+[EVI] EVI group created group_3 seed=BRAND_S4:R1:attribute:57:img0_6 score=0.8336 members=12 images=4
+[EVI]   member[0] id=BRAND_S4:R1:attribute:57:img0_6 round=BRAND_S4:R1 type=attribute score=0.6225 text=red background
+[EVI]   member[1] id=BRAND_S36:R1:attribute:370:img0_4 round=BRAND_S36:R1 type=attribute score=0.6700 text=Solid red background
+[EVI]   member[2] id=BRAND_S22:R1:attribute:242:img0_5 round=BRAND_S22:R1 type=attribute score=0.6225 text=red background
+[EVI]   member[3] id=BRAND_S26:R1:attribute:272:img0_6 round=BRAND_S26:R1 type=attribute score=0.6225 text=red background
+[EVI]   member[4] id=BRAND_S4:R1:entity:61:img0_10 round=BRAND_S4:R1 type=entity score=0.3779 text=McDonald's golden arches logo
+[EVI]   member[5] id=BRAND_S17:R1:attribute:189:img0_5 round=BRAND_S17:R1 type=attribute score=0.5524 text=red background with white bubble outlines
+[EVI]   member[6] id=BRAND_S6:R1:attribute:71:img0_2 round=BRAND_S6:R1 type=attribute score=0.5043 text=blue background
+[EVI]   member[7] id=BRAND_S36:R1:scene:369:img0_3 round=BRAND_S36:R1 type=scene score=0.6344 text=Minimalist red background advertisement
+[EVI]   member[8] id=BRAND_S14:R1:attribute:158:img0_2 round=BRAND_S14:R1 type=attribute score=0.5043 text=blue background
+[EVI]   member[9] id=BRAND_S34:R1:scene:359:img0_10 round=BRAND_S34:R1 type=scene score=0.7187 text=Coca-Cola variant lineup advertisement on red background
+[EVI]   member[10] id=BRAND_S26:R1:text:266:img0_0 round=BRAND_S26:R1 type=text score=0.5786 text=Coca-Cola
+[EVI]   member[11] id=BRAND_S13:R1:attribute:148:img0_5 round=BRAND_S13:R1 type=attribute score=0.4987 text=yellow background
+[EVI] EVI group created group_4 seed=BRAND_S22:R1:attribute:242:img0_5 score=0.8456 members=12 images=4
+[EVI]   member[0] id=BRAND_S22:R1:attribute:242:img0_5 round=BRAND_S22:R1 type=attribute score=0.6225 text=red background
+[EVI]   member[1] id=BRAND_S22:R1:spatial:245:img0_8 round=BRAND_S22:R1 type=spatial score=0.5213 text=burger centered on red background
+[EVI]   member[2] id=BRAND_S36:R1:attribute:370:img0_4 round=BRAND_S36:R1 type=attribute score=0.6700 text=Solid red background
+[EVI]   member[3] id=BRAND_S4:R1:attribute:57:img0_6 round=BRAND_S4:R1 type=attribute score=0.6225 text=red background
+[EVI]   member[4] id=BRAND_S26:R1:attribute:272:img0_6 round=BRAND_S26:R1 type=attribute score=0.6225 text=red background
+[EVI]   member[5] id=BRAND_S22:R1:scene:247:img0_10 round=BRAND_S22:R1 type=scene score=0.3806 text=Brazilian regional advertising poster
+[EVI]   member[6] id=BRAND_S17:R1:attribute:189:img0_5 round=BRAND_S17:R1 type=attribute score=0.5524 text=red background with white bubble outlines
+[EVI]   member[7] id=BRAND_S36:R1:scene:369:img0_3 round=BRAND_S36:R1 type=scene score=0.6344 text=Minimalist red background advertisement
+[EVI]   member[8] id=BRAND_S6:R1:attribute:71:img0_2 round=BRAND_S6:R1 type=attribute score=0.5043 text=blue background
+[EVI]   member[9] id=BRAND_S14:R1:attribute:158:img0_2 round=BRAND_S14:R1 type=attribute score=0.5043 text=blue background
+[EVI]   member[10] id=BRAND_S34:R1:scene:359:img0_10 round=BRAND_S34:R1 type=scene score=0.7187 text=Coca-Cola variant lineup advertisement on red background
+[EVI]   member[11] id=BRAND_S26:R1:text:266:img0_0 round=BRAND_S26:R1 type=text score=0.5786 text=Coca-Cola
+[EVI] EVI group created group_5 seed=BRAND_S26:R1:attribute:272:img0_6 score=0.8977 members=12 images=4
+[EVI]   member[0] id=BRAND_S26:R1:attribute:272:img0_6 round=BRAND_S26:R1 type=attribute score=0.6225 text=red background
+[EVI]   member[1] id=BRAND_S26:R1:text:266:img0_0 round=BRAND_S26:R1 type=text score=0.5786 text=Coca-Cola
+[EVI]   member[2] id=BRAND_S26:R1:identity:275:img0_9 round=BRAND_S26:R1 type=identity score=0.5005 text=Coca-Cola bottle with classic logo
+[EVI]   member[3] id=BRAND_S26:R1:text:278:img0_12 round=BRAND_S26:R1 type=text score=0.5086 text=©2010 The Coca-Cola Company All Rights Reserved
+[EVI]   member[4] id=BRAND_S26:R1:entity:271:img0_5 round=BRAND_S26:R1 type=entity score=0.4470 text=Coca-Cola bottle with condensation
+[EVI]   member[5] id=BRAND_S26:R1:structured_visual:276:img0_10 round=BRAND_S26:R1 type=structured_visual score=0.4356 text=ad layout with text and image elements
+[EVI]   member[6] id=BRAND_S26:R1:text:279:img0_13 round=BRAND_S26:R1 type=text score=0.4303 text=IP/2011 CocaColaBottlingCo.blogspot.com
+[EVI]   member[7] id=BRAND_S36:R1:attribute:370:img0_4 round=BRAND_S36:R1 type=attribute score=0.6700 text=Solid red background
+[EVI]   member[8] id=BRAND_S4:R1:attribute:57:img0_6 round=BRAND_S4:R1 type=attribute score=0.6225 text=red background
+[EVI]   member[9] id=BRAND_S22:R1:attribute:242:img0_5 round=BRAND_S22:R1 type=attribute score=0.6225 text=red background
+[EVI]   member[10] id=BRAND_S17:R1:attribute:189:img0_5 round=BRAND_S17:R1 type=attribute score=0.5524 text=red background with white bubble outlines
+[EVI]   member[11] id=BRAND_S36:R1:scene:369:img0_3 round=BRAND_S36:R1 type=scene score=0.6344 text=Minimalist red background advertisement
+[EVI] QDMO-EVI answer: retrieved=120 anchors, groups=6
+[EVI] QDMO-EVI organized groups count=6
+[EVI]   group_0 score=1.0186 members=12 images=4 label=scene seed with 12 anchors (attribute, entity, identity, scene, spatial, structured_visual, temporal
+[EVI]     hypothesis=This group contains evidence spanning 4 rounds | across 4 sessions | types={attribute,entity,identity,scene,spatial,structured_visual,temporal,text} | with visu
+[EVI]   group_1 score=0.9278 members=12 images=4 label=attribute seed with 12 anchors (attribute, entity, identity, scene, temporal, text): Solid red backg
+[EVI]     hypothesis=This group contains evidence spanning 7 rounds | across 7 sessions | types={attribute,entity,identity,scene,temporal,text} | with visual evidence | seed: "Solid
+[EVI]   group_5 score=0.8977 members=12 images=4 label=attribute seed with 12 anchors (attribute, entity, identity, scene, structured_visual, text): red ba
+[EVI]     hypothesis=This group contains evidence spanning 5 rounds | across 5 sessions | types={attribute,entity,identity,scene,structured_visual,text} | with visual evidence | see
+[EVI]   group_2 score=0.8666 members=12 images=4 label=scene seed with 12 anchors (attribute, entity, identity, scene, spatial, temporal): Minimalist red b
+[EVI]     hypothesis=This group contains evidence spanning 7 rounds | across 7 sessions | types={attribute,entity,identity,scene,spatial,temporal} | with visual evidence | seed: "Mi
+[EVI]   group_4 score=0.8456 members=12 images=4 label=attribute seed with 12 anchors (attribute, scene, spatial, text): red background
+[EVI]     hypothesis=This group contains evidence spanning 8 rounds | across 8 sessions | types={attribute,scene,spatial,text} | with visual evidence | seed: "red background".
+[EVI]   group_3 score=0.8336 members=12 images=4 label=attribute seed with 12 anchors (attribute, entity, scene, text): red background
+[EVI]     hypothesis=This group contains evidence spanning 9 rounds | across 9 sessions | types={attribute,entity,scene,text} | with visual evidence | seed: "red background".
+[EVI] QDMO-EVI clue coverage: 4/5 ['BRAND_S1:R1', 'BRAND_S17:R1', 'BRAND_S26:R1', 'BRAND_S34:R1']
+[EVI]   [GROUP VERIFY] group_1 images=4 anchors=12
+[EVI]   [VLM CALL] sending (2151 chars, 4 images) ...
+[EVI]   [RETRY] vlm qwen/qwen3-vl-8b-instruct retrying in 2.0s ...
+[EVI]   [RETRY] vlm qwen/qwen3-vl-8b-instruct retrying in 4.0s ...
+[EVI]   [RETRY] vlm qwen/qwen3-vl-8b-instruct retrying in 8.0s ...
+[EVI]   [RETRY] vlm qwen/qwen3-vl-8b-instruct exhausted 3 retries, giving up
+[EVI]   [VLM CALL] done (0 chars response)
+[EVI]   [VLM CACHE] skip empty response
+[EVI]   [RETRY] group-verify group_1 retrying in 2.0s ...
+[EVI]   [VLM CALL] sending (2151 chars, 4 images) ...
+[EVI]   [RETRY] vlm qwen/qwen3-vl-8b-instruct retrying in 2.0s ...
+[EVI]   [RETRY] vlm qwen/qwen3-vl-8b-instruct retrying in 4.0s ...
+[EVI]   [RETRY] vlm qwen/qwen3-vl-8b-instruct retrying in 8.0s ...
+[EVI]   [RETRY] vlm qwen/qwen3-vl-8b-instruct exhausted 3 retries, giving up
+[EVI]   [VLM CALL] done (0 chars response)
+[EVI]   [VLM CACHE] skip empty response
+[EVI]   [RETRY] group-verify group_1 retrying in 4.0s ...
+[EVI]   [VLM CALL] sending (2151 chars, 4 images) ...
+[EVI]   [RETRY] vlm qwen/qwen3-vl-8b-instruct retrying in 2.0s ...
+[EVI]   [RETRY] vlm qwen/qwen3-vl-8b-instruct retrying in 4.0s ...
+[EVI]   [RETRY] vlm qwen/qwen3-vl-8b-instruct retrying in 8.0s ...
+[EVI]   [RETRY] vlm qwen/qwen3-vl-8b-instruct exhausted 3 retries, giving up
+[EVI]   [VLM CALL] done (0 chars response)
+[EVI]   [VLM CACHE] skip empty response
+[EVI]   [RETRY] group-verify group_1 retrying in 8.0s ...
+[EVI]   [VLM CALL] sending (2151 chars, 4 images) ...
+[EVI]   [RETRY] vlm qwen/qwen3-vl-8b-instruct retrying in 2.0s ...
+[EVI]   [RETRY] vlm qwen/qwen3-vl-8b-instruct retrying in 4.0s ...
+[EVI]   [RETRY] vlm qwen/qwen3-vl-8b-instruct retrying in 8.0s ...
+[EVI]   [RETRY] vlm qwen/qwen3-vl-8b-instruct exhausted 3 retries, giving up
+[EVI]   [VLM CALL] done (0 chars response)
+[EVI]   [VLM CACHE] skip empty response
+[EVI]   [RETRY] group-verify group_1 exhausted 3 retries, giving up
+[EVI]   [GROUP VERIFY] group_5 images=4 anchors=12
+[EVI]   [VLM CALL] sending (2159 chars, 4 images) ...
+[EVI]   [VLM CALL] done (112 chars response)
+[EVI]   [GROUP VERIFY] group_2 images=4 anchors=12
+[EVI]   [VLM CALL] sending (2165 chars, 4 images) ...
+[EVI]   [VLM CALL] done (100 chars response)
+[EVI]   [GROUP VERIFY] group_4 images=4 anchors=12
+[EVI]   [VLM CALL] sending (2065 chars, 4 images) ...
+[EVI]   [VLM CALL] done (112 chars response)
+[EVI]   [GROUP VERIFY] group_3 images=4 anchors=12
+[EVI]   [VLM CALL] sending (1961 chars, 4 images) ...
+[EVI]   [VLM CALL] done (100 chars response)
+[EVI] QDMO-EVI verified groups changed after verification
+[EVI] QDMO-EVI verified groups count=6
+[EVI]   verified group_0 score=1.0186 members=12 images=4
+[EVI]   verified group_1 score=0.9278 members=12 images=4
+[EVI]   verified group_5 score=0.8977 members=12 images=4
+[EVI]   verified group_2 score=0.8666 members=12 images=4
+[EVI]   verified group_4 score=0.8456 members=12 images=4
+[EVI]   verified group_3 score=0.8336 members=12 images=4
+[EVI] QDMO-EVI final prompt preview:
+Query-driven organized evidence groups:
+=== group_0 score=1.0186 confidence=0.00 ===
+Label: scene seed with 12 anchors (attribute, entity, identity, scene, spatial, structured_visual, temporal, text): Coca-Cola variant lineup advertisement on red background
+Hypothesis: This group contains evidence spanning 4 rounds | across 4 sessions | types={attribute,entity,identity,scene,spatial,structured_visual,temporal,text} | with visual evidence | seed: "Coca-Cola variant lineup advertisement on red background".
+Visual checks:
+- verify readable text, symbols, numbers, labels, and organized visual information represented by this group
+- verify spatial positions and entity/layout relationships represented by this group
+- verify entity presence, counts, colors, material, shape, and fine visual attributes represented by this group
+- verify stable identity cues and whether visually similar entities are same or distinct
+- verify state, change, or sequence evidence represented by this group
+Anchors:
+- id=BRAND_S34:R1:scene:359:img0_10 session=BRAND_S34 round=BRAND_S34:R1 date=2024-05-02 type=scene region=entire image: Coca-Cola variant lineup advertisement on red background
+- id=BRAND_S34:R1:entity:356:img0_7 session=BRAND_S34 round=BRAND_S34:R1 date=2024-05-02 type=entity region=left-center: four Coca-Cola variant bottles
+- id=BRAND_S34:R1:identity:360:img0_11 session=BRAND_S34 round=BRAND_S34:R1 date=2024-05-02 type=identity region=left-center: Coca-Cola brand identity with consistent logo and bottle shape
+- id=BRAND_S34:R1:attribute:357:img0_8 session=BRAND_S34 round=BRAND_S34:R1 date=2024-05-02 type=attribute region=left-center: classic Coca-Cola contour bottle shape
+- id=BRAND_S34:R1:text:352:img0_3 session=BRAND_S34 round=BRAND_S34:R1 date=2024-05-02 type=text region=center-left: Coca-Cola life
+- id=BRAND_S34:R1:text:354:img0_5 session=BRAND_S34 round=BRAND_S34:R1 date=2024-05-02 type=text region=center-right: Diet Coke
+- id=BRAND_S34:R1:structured_visual:361:img0_12 session=BRAND_S34 round=BRAND_S34:R1 date=2024-05-02 type=structured_visual region=entire image: ad layout with product lineup on left and slogan on right
+- id=BRAND_S34:R1:temporal:362:img0_13 session=BRAND_S34 round=BRAND_S34:R1 date=2024-05-02 type=temporal region=bottom-right: ad dated 03/03/2015
+- id=BRAND_S36:R1:scene:369:img0_3 session=BRAND_S36 round=BRAND_S36:R1 date=2024-05-06 type=scene: Minimalist red background advertisement
+- id=BRAND_S1:R1:entity:3:img0_2 session=BRAND_S1 round=BRAND_S1:R1 date=2024-01-05 type=entity region=bottom-center: Coca-Cola logo
+- id=BRAND_S17:R1:entity:187:img0_3 session=BRAND_S17 round=BRAND_S17:R1 date=2024-03-01 type=entity region=top-right: Coca-Cola logo
+- id=BRAND_S17:R1:spatial:195:img0_11 session=BRAND_S17 round=BRAND_S17:R1 date=2024-03-01 type=spatial region=top-right: Coca-Cola logo positioned in top-right corner
+
+=== group_1 score=0.9278 confidence=0.00 ===
+Label: attribute seed with 12 anchors (attribute, entity, identity, scene, temporal, text): Solid red background
+Hypothesis: This group contains evidence spanning 7 rounds | across 7 sessions | types={attribute,entity,identity,scene,temporal,text} | with visual evidence | seed: "Solid red background".
+Visual checks:
+- verify readable text, symbols, numbers, labels, and organized visual information represented by this group
+- verify entity presence, counts, colors, material, shape, and fine visual attributes represented by this group
+- verify stable identity cues and whether visually similar entities are same or distinct
+- verify state, change, or sequence evidence represented by this group
+Anchors:
+- id=BRAND_S36:R1:attribute:370:img0_4 session=BRAND_S36 round=BRAND_S36:R1 date=2024-05-06 type=attribute: Solid red background
+- id=BRAND_S36:R1:scene:369:img0_3 session=BRAND_S36 round=BRAND_S36:R1 date=2024-05-06 type=scene: Minimalist red background advertisement
+- id=BRAND_S36:R1:identity:372:img0_6 session=BRAND_S36 round=BRAND_S36:R1 date=2024-05-06 type=identity: McDonald's brand identity
+- id=BRAND_S36:R1:temporal:374:img0_8 session=BRAND_S36 round=BRAND_S36:R1 date=2024-05-06 type=temporal: Service-oriented advertising
+- id=BRAND_S36:R1:entity:368:img0_2 session=BRAND_S36 round=BRAND_S36:R1 date=2024-05-06 type=entity region=lower-right: McDonald's golden arches logo
+- id=BRAND_S4:R1:attribute:57:img0_6 session=BRAND_S4 round=BRAND_S4:R1 date=2024-01-14 type=attribute region=full: red background
+- id=BRAND_S22:R1:attribute:242:img0_5 session=BRAND_S22 round=BRAND_S22:R1 date=2024-03-18 type=attribute region=entire background: red background
+- id=BRAND_S26:R1:attribute:272:img0_6 session=BRAND_S26 round=BRAND_S26:R1 date=2024-04-01 type=attribute region=entire image: red background
+- id=BRAND_S34:R1:scene:359:img0_10 session=BRAND_S34 round=BRAND_S34:R1 date=2024-05-02 type=scene region=entire image: Coca-Cola variant lineup advertisement on red background
+- id=BRAND_S17:R1:attribute:189:img0_5 session=BRAND_S17 round=BRAND_S17:R1 date=2024-03-01 type=attribute region=background: red background with white bubble outlines
+- id=BRAND_S26:R1:text:266:img0_0 session=BRAND_S26 round=BRAND_S26:R1 date=2024-04-01 type=text region=top-left: Coca-Cola
+- id=BRAND_S6:R1:attribute:71:img0_2 session=BRAND_S6 round=BRAND_S6:R1 date=2024-01-20 type=attribute region=entire background: blue background
+Missing or uncertain evidence:
+- Group verification returned an empty response.
+
+=== group_5 score=0.8977 confidence=0.00 ===
+Label: attribute seed with 12 anchors (attribute, entity, identity, scene, structured_visual, text): red background
+Hypothesis: This group contains evidence spanning 5 rounds | across 5 sessions | types={attribute,entity,identity,scene,structured_visual,text} | with visual evidence | seed: "red background".
+Visual checks:
+- verify readable text, symbols, numbers, labels, and organized visual information represented by this group
+- verify entity presence, counts, colors, material, shape, and fine visual attributes represented by this group
+- verify stable identity cues and whether visually similar entities are same or distinct
+Anchors:
+- id=BRAND_S26:R1:attribute:272:img0_6 session=BRAND_S26 round=BRAND_S26:R1 date=2024-04-01 type=attribute region=entire image: red background
+- id=BRAND_S26:R1:text:266:img0_0 session=BRAND_S26 round=BRAND_S26:R1 date=2024-04-01 type=text region=top-left: Coca-Cola
+- id=BRAND_S26:R1:identity:275:img0_9 session=BRAND_S26 round=BRAND_S26:R1 date=2024-04-01 type=identity region=center: Coca-Cola bottle with classic logo
+- id=BRAND_S26:R1:text:278:img0_12 session=BRAND_S26 round=BRAND_S26:R1 date=2024-04-01 type=text region=bottom-right: ©2010 The Coca-Cola Company All Rights Reserved
+- id=BRAND_S26:R1:entity:271:img0_5 session=BRAND_S26 round=BRAND_S26:R1 date=2024-04-01 type=entity region=center: Coca-Cola bottle with condensation
+- id=BRAND_S26:R1:structured_visual:276:img0_10 session=BRAND_S26 round=BRAND_S26:R1 date=2024-04-01 type=structured_visual region=entire image: ad layout with text and image elements
+- id=BRAND_S26:R1:text:279:img0_13 session=BRAND_S26 round=BRAND_S26:R1 date=2024-04-01 type=text region=bottom-left: IP/2011 CocaColaBottlingCo.blogspot.com
+- id=BRAND_S36:R1:attribute:370:img0_4 session=BRAND_S36 round=BRAND_S36:R1 date=2024-05-06 type=attribute: Solid red background
+- id=BRAND_S4:R1:attribute:57:img0_6 session=BRAND_S4 round=BRAND_S4:R1 date=2024-01-14 type=attribute region=full: red background
+- id=BRAND_S22:R1:attribute:242:img0_5 session=BRAND_S22 round=BRAND_S22:R1 date=2024-03-18 type=attribute region=entire background: red background
+- id=BRAND_S17:R1:attribute:189:img0_5 session=BRAND_S17 round=BRAND_S17:R1 date=2024-03-01 type=attribute region=background: red background with white bubble outlines
+- id=BRAND_S36:R1:scene:369:img0_3 session=BRAND_S36 round=BRAND_S36:R1 date=2024-05-06 type=scene: Minimalist red background advertisement
+
+=== group_2 score=0.8666 confidence=0.00 ===
+Label: scene seed with 12 anchors (attribute, entity, identity, scene, spatial, temporal): Minimalist red background advertisement
+Hypothesis: This group contains evidence spanning 7 rounds | across 7 sessions | types={attribute,entity,identity,scene,spatial,temporal} | with visual evidence | seed: "Minimalist red background advertisement".
+Visual checks:
+- verify spatial positions and entity/layout relationships represented by this group
+- verify entity presence, counts, colors, material, shape, and fine visual attributes represented by this group
+- verify stable identity cues and whether visually similar entities are same or distinct
+- verify state, change, or sequence evidence represented by this group
+Anchors:
+- id=BRAND_S36:R1:scene:369:img0_3 session=BRAND_S36 round=BRAND_S36:R1 date=2024-05-06 type=scene: Minimalist red background advertisement
+- id=BRAND_S36:R1:attribute:370:img0_4 session=BRAND_S36 round=BRAND_S36:R1 date=2024-05-06 type=attribute: Solid red background
+- id=BRAND_S36:R1:temporal:374:img0_8 session=BRAND_S36 round=BRAND_S36:R1 date=2024-05-06 type=temporal: Service-oriented advertising
+- id=BRAND_S36:R1:entity:368:img0_2 session=BRAND_S36 round=BRAND_S36:R1 date=2024-05-06 type=entity region=lower-right: McDonald's golden arches logo
+- id=BRAND_S34:R1:scene:359:img0_10 session=BRAND_S34 round=BRAND_S34:R1 date=2024-05-02 type=scene region=entire image: Coca-Cola variant lineup advertisement on red background
+- id=BRAND_S36:R1:identity:372:img0_6 session=BRAND_S36 round=BRAND_S36:R1 date=2024-05-06 type=identity: McDonald's brand identity
+- id=BRAND_S4:R1:attribute:57:img0_6 session=BRAND_S4 round=BRAND_S4:R1 date=2024-01-14 type=attribute region=full: red background
+- id=BRAND_S22:R1:attribute:242:img0_5 session=BRAND_S22 round=BRAND_S22:R1 date=2024-03-18 type=attribute region=entire background: red background
+- id=BRAND_S26:R1:attribute:272:img0_6 session=BRAND_S26 round=BRAND_S26:R1 date=2024-04-01 type=attribute region=entire image: red background
+- id=BRAND_S14:R1:scene:164:img0_8 session=BRAND_S14 round=BRAND_S14:R1 date=2024-02-17 type=scene region=entire image: minimalist advertising poster
+- id=BRAND_S22:R1:spatial:245:img0_8 session=BRAND_S22 round=BRAND_S22:R1 date=2024-03-18 type=spatial region=center: burger centered on red background
+- id=BRAND_S1:R1:entity:3:img0_2 session=BRAND_S1 round=BRAND_S1:R1 date=2024-01-05 type=entity region=bottom-center: Coca-Cola logo
+
+=== group_4 score=0.8456 confidence=0.00 ===
+Label: attribute seed with 12 anchors (attribute, scene, spatial, text): red background
+Hypothesis: This group contains evidence spanning 8 rounds | across 8 sessions | types={attribute,scene,spatial,text} | with visual evidence | seed: "red background".
+Visual checks:
+- verify readable text, symbols, numbers, labels, and organized visual information represented by this group
+- verify spatial positions and entity/layout relationships represented by this group
+- verify entity presence, counts, colors, material, shape, and fine visual attributes represented by this group
+Anchors:
+- id=BRAND_S22:R1:attribute:242:img0_5 session=BRAND_S22 round=BRAND_S22:R1 date=2024-03-18 type=attribute region=entire background: red background
+- id=BRAND_S22:R1:spatial:245:img0_8 session=BRAND_S22 round=BRAND_S22:R1 date=2024-03-18 type=spatial region=center: burger centered on red background
+- id=BRAND_S36:R1:attribute:370:img0_4 session=BRAND_S36 round=BRAND_S36:R1 date=2024-05-06 type=attribute: Solid red background
+- id=BRAND_S4:R1:attribute:57:img0_6 session=BRAND_S4 round=BRAND_S4:R1 date=2024-01-14 type=attribute region=full: red background
+- id=BRAND_S26:R1:attribute:272:img0_6 session=BRAND_S26 round=BRAND_S26:R1 date=2024-04-01 type=attribute region=entire image: red background
+- id=BRAND_S22:R1:scene:247:img0_10 session=BRAND_S22 round=BRAND_S22:R1 date=2024-03-18 type=scene region=entire image: Brazilian regional advertising poster
+- id=BRAND_S17:R1:attribute:189:img0_5 session=BRAND_S17 round=BRAND_S17:R1 date=2024-03-01 type=att
+... [truncated with 3249 more chars]
+[EVI] QDMO-EVI answer images=['/home/zhaifeifei/rag/MemEye/data/image/Brand_Memory_Test/CocaCola_5.png', '/home/zhaifeifei/rag/MemEye/data/image/Brand_Memory_Test/McDonalds_5.png', '/home/zhaifeifei/rag/MemEye/data/image/Brand_Memory_Test/CocaCola_1.png', '/home/zhaifeifei/rag/MemEye/data/image/Brand_Memory_Test/CocaCola_3.png', '/home/zhaifeifei/rag/MemEye/data/image/Brand_Memory_Test/McDonalds_1.png', '/home/zhaifeifei/rag/MemEye/data/image/Brand_Memory_Test/BurgerKing_3.png', '/home/zhaifeifei/rag/MemEye/data/image/Brand_Memory_Test/CocaCola_4.png']
+[EVI] QDMO-EVI final prompt=15249 chars, images=7
+[EVI]   [VLM CALL] sending (15249 chars, 7 images) ...
+[EVI]   [VLM CALL] done (2 chars response)
+[EVI] QDMO-EVI answer returned length=2
+  [ROT A][1] choice=C gt=A em=0 latency_ms=835889
+[MCQ][1] debiased_em=0.00 position_bias={'C': 1} total_latency=835889ms
+[INFO] Saved run artifacts: /home/zhaifeifei/rag/MemEye/runs/debug/20260703_110040_qwen3_vl_8b_openrouter_evi__multimodal
+[INFO] Saved output summary: /home/zhaifeifei/rag/MemEye/output/debug/debug__qwen3_vl_8b_openrouter__evi__multimodal.json
