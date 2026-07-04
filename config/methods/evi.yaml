@@ -25,7 +25,8 @@ raw_search_k: 120
 
 # Episodic-state pipeline budget.
 # Retrieved anchors are grouped by session and round order into local memory sets.
-max_memory_sets: 4
+# Keep this moderately high on route-like data because similar sessions can otherwise crowd out the correct episode.
+max_memory_sets: 8
 memory_set_window_before: 1
 memory_set_window_after: 1
 max_rounds_per_memory_set: 5

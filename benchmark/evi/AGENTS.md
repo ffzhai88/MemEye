@@ -77,7 +77,7 @@ Important keys:
 - `evi_pipeline`: `episodic_state` by default; set `candidate_assertion` for the legacy pipeline.
 - `text_embedding_model`: anchor retrieval embedding model.
 - `raw_search_k`: broad anchor retrieval size before memory organization.
-- `max_memory_sets`: maximum episodic sets read per question.
+- `max_memory_sets`: maximum episodic sets read per question. Keep this moderately high when many sessions share generic visual cues, because top-k set selection can otherwise crowd out the correct episode.
 - `memory_set_window_before` / `memory_set_window_after`: local round window around retrieved hits.
 - `max_rounds_per_memory_set`: cap on merged set length.
 - `max_state_anchors_per_round`: cap on anchors shown per round during state readout.
@@ -99,6 +99,7 @@ The default debug trace is `logs/evi_debug.log`. It records structured `[TRACE]`
 - `indexing_done`
 - `answer_start`
 - `retrieved_anchors`
+- `raw_retrieval_clue_coverage` when QA clue metadata exists
 - `episodic_memory_sets`
 - `episodic_set_clue_coverage` when QA clue metadata exists
 - `episodic_states`

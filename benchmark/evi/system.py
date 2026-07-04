@@ -66,7 +66,7 @@ class EVISystem:
         self._use_dataset_captions = self._as_bool(cfg.get("use_dataset_captions"), False)
         self._use_embedding_cache = self._as_bool(cfg.get("use_embedding_cache"), True)
         self._use_memory_brief_cache = self._as_bool(cfg.get("use_memory_brief_cache"), True)
-        self._max_memory_sets = int(cfg.get("max_memory_sets", 4))
+        self._max_memory_sets = int(cfg.get("max_memory_sets", 8))
         self._memory_set_window_before = int(cfg.get("memory_set_window_before", 1))
         self._memory_set_window_after = int(cfg.get("memory_set_window_after", 1))
         self._max_rounds_per_memory_set = int(cfg.get("max_rounds_per_memory_set", 5))
@@ -390,6 +390,33 @@ class EVISystem:
                     return images
         return images
 
+    def _log_raw_clue_coverage(self, qa: Optional[Dict[str, Any]], retrieved: List[EvidenceAnchor]) -> None:
+        clue_rounds = (qa or {}).get("clue", [])
+        if not clue_rounds:
+            return
+        retrieved_rounds = {anchor.round_id for anchor in retrieved}
+        hits = [rid for rid in clue_rounds if rid in retrieved_rounds]
+        misses = [rid for rid in clue_rounds if rid not in set(hits)]
+        ranks: Dict[str, int] = {}
+        for idx, anchor in enumerate(retrieved, start=1):
+            ranks.setdefault(anchor.round_id, idx)
+        hit_ranks = {rid: ranks.get(rid) for rid in hits}
+        log.info(
+            "QDMO-EVI raw retrieval clue coverage: %d/%d hits=%s misses=%s ranks=%s",
+            len(hits),
+            len(clue_rounds),
+            hits,
+            misses,
+            hit_ranks,
+        )
+        trace_json(log, "raw_retrieval_clue_coverage", {
+            "num_hits": len(hits),
+            "num_clues": len(clue_rounds),
+            "hits": hits,
+            "misses": misses,
+            "hit_ranks": hit_ranks,
+        })
+
     def answer_question(
         self,
         question: str,
@@ -440,6 +467,7 @@ class EVISystem:
             "num_retrieved": len(retrieved),
             "top_anchors": anchors_summary(retrieved, max_items=min(self._debug_top_k, len(retrieved))),
         })
+        self._log_raw_clue_coverage(qa, retrieved)
 
         if self._pipeline == "candidate_assertion":
             return self._answer_with_candidate_assertions(question, question_stem, qa, question_images, retrieved)
@@ -518,8 +546,8 @@ class EVISystem:
     def _select_final_states(self, states: List[EpisodicState]) -> List[EpisodicState]:
         relevant = [state for state in states if state.relevance == "relevant"]
         uncertain = [state for state in states if state.relevance == "uncertain"]
-        relevant.sort(key=lambda s: (s.confidence, s.score), reverse=True)
-        uncertain.sort(key=lambda s: (s.confidence, s.score), reverse=True)
+        relevant.sort(key=lambda s: (s.score, s.confidence), reverse=True)
+        uncertain.sort(key=lambda s: (s.score, s.confidence), reverse=True)
         selected = relevant[: self._max_final_states]
         if selected:
             return selected

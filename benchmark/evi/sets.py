@@ -131,8 +131,18 @@ def build_episodic_memory_sets(
                 rid: _select_round_anchors(rid, retrieved_by_round, round_anchors, max_anchors_per_round)
                 for rid in set_rounds
             }
-            top_scores = sorted((a.score or 0.0 for a in set_retrieved), reverse=True)[:6]
-            score = sum(top_scores) / max(1, len(top_scores)) + 0.03 * len(set_rounds)
+            ordered_scores = sorted((a.score or 0.0 for a in set_retrieved), reverse=True)
+            top3 = ordered_scores[:3]
+            max_score = ordered_scores[0] if ordered_scores else 0.0
+            top3_mean = sum(top3) / max(1, len(top3))
+            hit_round_count = len({anchor.round_id for anchor in set_retrieved})
+            type_diversity = len({anchor.evidence_type for anchor in set_retrieved})
+            score = (
+                1.20 * max_score
+                + 0.50 * top3_mean
+                + 0.035 * hit_round_count
+                + 0.01 * min(type_diversity, 6)
+            )
             date = set_retrieved[0].date if set_retrieved else ""
             set_id = f"episode::{sid}::{set_rounds[0]}..{set_rounds[-1]}"
             sets.append(
