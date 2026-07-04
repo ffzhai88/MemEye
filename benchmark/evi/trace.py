@@ -6,7 +6,7 @@ import os
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
-from .schemas import EvidenceAnchor, MemoryBrief, MemoryCandidate
+from .schemas import EvidenceAnchor, EpisodicMemorySet, EpisodicState, MemoryBrief, MemoryCandidate
 
 _DEFAULT_LOG_PATH = "logs/evi_debug.log"
 _HANDLER_MARK = "_evi_debug_file"
@@ -121,6 +121,50 @@ def brief_summary(brief: MemoryBrief, max_text_chars: int = 900) -> Dict[str, An
     }
 
 
+def memory_set_summary(memory_set: EpisodicMemorySet, max_anchors_per_round: int = 6) -> Dict[str, Any]:
+    return {
+        "id": memory_set.id,
+        "score": round(float(memory_set.score or 0.0), 6),
+        "session_id": memory_set.session_id,
+        "date": memory_set.date,
+        "round_ids": list(memory_set.round_ids),
+        "retrieved_anchors": [anchor_summary(anchor) for anchor in memory_set.retrieved_anchors[:max_anchors_per_round]],
+        "rounds": [
+            {
+                "round_id": rid,
+                "round_text": _shorten(memory_set.round_text.get(rid, ""), 700),
+                "image_paths": list(memory_set.round_images.get(rid, [])),
+                "anchors": [
+                    anchor_summary(anchor)
+                    for anchor in memory_set.round_anchors.get(rid, [])[:max_anchors_per_round]
+                ],
+            }
+            for rid in memory_set.round_ids
+        ],
+    }
+
+
+def state_summary(state: EpisodicState, max_text_chars: int = 900) -> Dict[str, Any]:
+    return {
+        "set_id": state.set_id,
+        "score": round(float(state.score or 0.0), 6),
+        "session_id": state.session_id,
+        "date": state.date,
+        "round_ids": list(state.round_ids),
+        "image_paths": list(state.image_paths),
+        "relevance": state.relevance,
+        "confidence": round(float(state.confidence or 0.0), 4),
+        "memory_items": [_shorten(item, max_text_chars) for item in state.memory_items],
+        "observations": [_shorten(item, max_text_chars) for item in state.observations],
+        "relations": [_shorten(item, max_text_chars) for item in state.relations],
+        "changes": [_shorten(item, max_text_chars) for item in state.changes],
+        "answer_relevant_facts": [_shorten(item, max_text_chars) for item in state.answer_relevant_facts],
+        "uncertainties": [_shorten(item, max_text_chars) for item in state.uncertainties],
+    }
+
+
+
+
 def anchors_summary(
     anchors: Iterable[EvidenceAnchor],
     max_items: int = 20,
@@ -141,6 +185,20 @@ def briefs_summary(
     max_items: int = 20,
 ) -> List[Dict[str, Any]]:
     return [brief_summary(brief) for brief in list(briefs)[:max_items]]
+
+
+def memory_sets_summary(
+    memory_sets: Iterable[EpisodicMemorySet],
+    max_items: int = 20,
+) -> List[Dict[str, Any]]:
+    return [memory_set_summary(memory_set) for memory_set in list(memory_sets)[:max_items]]
+
+
+def states_summary(
+    states: Iterable[EpisodicState],
+    max_items: int = 20,
+) -> List[Dict[str, Any]]:
+    return [state_summary(state) for state in list(states)[:max_items]]
 
 
 def trace_json(logger: logging.Logger, title: str, payload: Dict[str, Any], max_chars: int = 12000) -> None:

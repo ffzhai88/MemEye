@@ -1,34 +1,38 @@
-# QDMO-EVI Agent Guide
+﻿# QDMO-EVI Agent Guide
 
 ## Scope
 
 This directory implements `evi`, an agentic MemEye method registered in `benchmark/methods.py` as `EVIMethod`.
 
-The current implementation is a candidate-centric version of QDMO-EVI. It is benchmark-independent: no code branches on MemEye task names, answer types, question files, or dataset-specific file names. The method indexes generic multimodal evidence anchors, then organizes retrieved memories into natural-language candidate briefs at question time.
+The current default pipeline is episodic-state EVI. It keeps the task-agnostic anchor construction and retrieval stack, then replaces candidate-level assertion generation with ordered episodic memory sets and cached state readout. The legacy candidate assertion pipeline is retained for ablation via `evi_pipeline: candidate_assertion`.
+
+No code should branch on MemEye task names, question files, answer labels, or dataset-specific benchmark categories.
 
 ## Core Idea
 
-QDMO-EVI separates long-term memory into three stages:
+EVI separates long-term memory use into these stages:
 
 1. Offline evidence anchors: compact, typed, provenance-grounded anchors extracted from dialogue text and images.
-2. Online candidate consolidation: broad anchor retrieval is collapsed into mostly non-overlapping memory candidates by round/image provenance.
-3. Query-conditioned memory briefs: each candidate is rewritten into a concise natural-language brief before final answering.
+2. Broad retrieval: the question stem retrieves a large pool of relevant anchors.
+3. Episodic memory sets: retrieved rounds are grouped by session and round order, with small local windows around hits.
+4. Episodic state readout: each ordered memory set is converted into a clean, itemized state with per-round facts, relations, changes, and uncertainties.
+5. Final answer: the final prompt receives selected clean states, not raw anchor dumps, debug metadata, or table-like intermediate state.
 
-The final answer prompt receives organized memory briefs, not raw anchor dumps and not a table. This is meant to reduce repeated evidence, preserve visual provenance, and keep the final VLM focused on candidate memories that may support, contradict, or exclude an answer.
+This design is intended to preserve item-level evidence for counting while recovering temporal, spatial, comparative, and change relations that are lost by independent candidate assertions.
 
 ## Files
 
-- `system.py`: EVI orchestration: indexing, broad retrieval, candidate consolidation, memory briefing, final VLM answering, and debug tracing.
-- `schemas.py`: dataclasses for `EvidenceAnchor`, `MemoryCandidate`, and `MemoryBrief`.
+- `system.py`: EVI orchestration: indexing, broad retrieval, pipeline routing, episodic state answering, legacy candidate assertion answering, and debug tracing.
+- `schemas.py`: dataclasses for anchors, legacy candidates/briefs, episodic memory sets, and episodic states.
 - `extractor.py`: task-agnostic offline visual anchor extraction.
 - `indexes.py`: in-memory anchor vector index and type-aware retrieval scoring.
-- `candidates.py`: collapses retrieved anchors into candidate memories and selects compact candidate anchors.
-- `briefs.py`: cached VLM generation of natural-language memory briefs for each candidate.
+- `sets.py`: builds ordered local `EpisodicMemorySet` objects from retrieved anchors using session/round provenance.
+- `states.py`: cached VLM readout from an episodic memory set into itemized `EpisodicState` evidence.
+- `candidates.py`: legacy candidate consolidation for `evi_pipeline: candidate_assertion`.
+- `briefs.py`: legacy cached candidate assertion generation for `evi_pipeline: candidate_assertion`.
 - `vlm.py`: OpenAI-compatible VLM callable with model-aware disk cache.
 - `trace.py`: console/file debug logging and structured JSON trace helpers.
 - `_utils.py`: JSON extraction, retry wrappers, and image MIME helpers.
-
-The old overlapping candidate path has been removed. Keep future changes on the candidate-brief architecture unless explicitly requested.
 
 ## Lifecycle
 
@@ -41,37 +45,28 @@ Because EVI implements `answer(...)`, it bypasses the shared non-agentic `router
 
 ## Offline Memory Construction
 
-For each round, QDMO-EVI stores:
+For each round, EVI stores:
 
 - A dialogue/temporal anchor from user/assistant text.
 - Optional dataset-caption anchors when `use_dataset_captions: true`.
 - Image-derived anchors from `extractor.extract_image_anchors(...)`.
+- Round-level provenance maps: session id, date, round order, image paths, and anchors by round.
 
-Anchor types are generic and benchmark-independent:
+Anchor types are generic and benchmark-independent: `scene`, `text`, `entity`, `attribute`, `spatial`, `relation`, `identity`, `structured_visual`, and `temporal`.
 
-- `scene`
-- `text`
-- `entity`
-- `attribute`
-- `spatial`
-- `relation`
-- `identity`
-- `structured_visual`
-- `temporal`
-
-Every anchor keeps provenance: `session_id`, `round_id`, `date`, and optional `image_path`.
-
-## Question-Time Pipeline
+## Default Question-Time Pipeline
 
 1. Use `qa["question"]` as the retrieval stem when available, so rotated MCQ options do not dominate retrieval.
-2. Embed the question and retrieve a broad pool of evidence anchors from `EvidenceIndex`.
-3. Consolidate anchors into memory candidates with `candidates.consolidate_candidates(...)`.
-4. Fold same-round text-only anchors into image candidates instead of creating duplicate text candidates for that round.
-5. Select diverse candidate anchors with `select_candidate_anchors(...)`.
-6. Generate cached natural-language briefs with `briefs.generate_memory_briefs(...)`.
-7. Select relevant/uncertain briefs, optionally preserving a small number of excluded briefs as negative evidence.
-8. Build the final prompt from memory briefs, provenance, key evidence, and the original full question/options.
-9. Call the VLM with selected images from the question and non-excluded memory briefs.
+2. Embed the question stem and retrieve a broad pool of evidence anchors from `EvidenceIndex`.
+3. Build episodic memory sets with `sets.build_episodic_memory_sets(...)`:
+   - group by session,
+   - add before/after round windows around retrieved hits,
+   - merge nearby windows,
+   - keep ordered rounds and selected anchors per round.
+4. Read each set with `states.read_episodic_states(...)`.
+5. Select relevant states first, then uncertain states as fallback.
+6. Build a clean final prompt from `memory_items`, `observations`, `relations`, `changes`, `answer_relevant_facts`, and `uncertainties`.
+7. Call the VLM for the final answer. By default, memory images are not attached to the final answer call; images are consumed during state readout.
 
 ## Config
 
@@ -79,21 +74,22 @@ Main config: `config/methods/evi.yaml`.
 
 Important keys:
 
+- `evi_pipeline`: `episodic_state` by default; set `candidate_assertion` for the legacy pipeline.
 - `text_embedding_model`: anchor retrieval embedding model.
-- `raw_search_k`: broad anchor retrieval size before candidate consolidation.
-- `max_candidates`: maximum candidate memories briefed per question.
-- `max_candidate_anchors`: maximum selected anchors shown to the brief model per candidate.
-- `max_final_briefs`: maximum memory briefs shown to the final answer model.
-- `max_excluded_briefs`: maximum excluded briefs retained as negative evidence.
-- `max_answer_images`: number of images passed to final answer call.
+- `raw_search_k`: broad anchor retrieval size before memory organization.
+- `max_memory_sets`: maximum episodic sets read per question.
+- `memory_set_window_before` / `memory_set_window_after`: local round window around retrieved hits.
+- `max_rounds_per_memory_set`: cap on merged set length.
+- `max_state_anchors_per_round`: cap on anchors shown per round during state readout.
+- `max_final_states`: maximum selected states shown to the final answer model.
+- `use_state_cache`: enable disk cache for state readout.
+- `use_state_images`: attach set images to state readout calls.
+- `max_state_images_per_set`: cap images in each state readout call.
+- `use_final_memory_images`: attach selected memory images to the final answer call; default false.
 - `use_dataset_captions`: include benchmark-provided captions only for ablation/upper-information runs.
 - `use_embedding_cache`: enable disk cache for text embeddings.
-- `use_memory_brief_cache`: enable disk cache for candidate memory briefs.
-- `evi_debug`: enable or disable EVI debug trace logging.
-- `evi_debug_console`: print concise key-step logs to console.
-- `evi_debug_log_path`: debug trace output path, default `logs/evi_debug.log`.
-- `evi_debug_top_k`: number of retrieved anchors included in trace summaries.
-- `evi_debug_prompt_chars`: maximum final-prompt preview characters written to the trace.
+- `use_memory_brief_cache`: enable legacy candidate brief cache.
+- `evi_debug_*`: console/file debug tracing controls.
 
 ## Debug Trace
 
@@ -103,38 +99,39 @@ The default debug trace is `logs/evi_debug.log`. It records structured `[TRACE]`
 - `indexing_done`
 - `answer_start`
 - `retrieved_anchors`
-- `candidate_pool`
-- `candidate_clue_coverage` when QA clue metadata exists
-- `memory_briefs`
-- `selected_memory_briefs`
+- `episodic_memory_sets`
+- `episodic_set_clue_coverage` when QA clue metadata exists
+- `episodic_states`
+- `selected_episodic_states`
 - `final_answer_call`
 - `answer_done`
 
-The trace intentionally stores image paths, anchor/candidate/brief summaries, prompt previews, and raw brief-model text. It does not store base64 image payloads.
+Legacy pipeline traces include `candidate_pool`, `candidate_clue_coverage`, `memory_briefs`, and `selected_memory_assertions`.
 
 ## Caches
 
 - Anchor extraction: `EVI_ANCHOR_CACHE_DIR`, default `~/.cache/evi_anchors`.
 - Text embeddings: `EVI_EMBED_CACHE_DIR`, default `~/.cache/evi_embeddings`.
-- Candidate memory briefs: `EVI_MEMORY_BRIEF_CACHE_DIR`, default `~/.cache/evi_memory_briefs`.
+- Episodic state readout: `EVI_STATE_CACHE_DIR`, default `~/.cache/evi_states`.
+- Legacy candidate memory briefs: `EVI_MEMORY_BRIEF_CACHE_DIR`, default `~/.cache/evi_memory_briefs`.
 - Raw VLM calls: `EVI_VLM_CACHE_DIR`, default `~/.cache/evi_vlm`.
 
-Cache keys include prompt versions and relevant context. VLM cache keys include model namespace.
+State cache keys include prompt version, model namespace, question stem, memory set content, selected anchors, and image-use settings.
 
 ## Research Notes
 
-The clean paper story is:
+The paper-facing story should distinguish:
 
-- Long-term multimodal memory needs more than flat retrieval over captions or single-image summaries.
-- The final answering model should not receive an unfiltered pile of retrieved anchors.
-- QDMO-EVI uses task-agnostic anchors, then performs query-conditioned candidate briefing to convert retrieved memories into compact evidence units.
-- Candidate briefs can support, exclude, or mark uncertainty, which makes counting/comparison questions easier to debug than raw retrieval dumps.
+- Flat RAG: retrieve anchors/chunks and answer directly.
+- Legacy candidate assertion: judge each candidate independently.
+- Episodic-state EVI: retrieve anchors, reconstruct ordered local memory state, then answer from clean itemized states.
 
 Useful ablations:
 
-- Flat anchor retrieval without candidate briefing.
-- Candidate briefing without candidate images.
+- `evi_pipeline: candidate_assertion` vs `episodic_state`.
+- `use_state_images: true` vs `false`.
+- `use_final_memory_images: true` vs `false`.
+- Varying memory set window size and `max_state_anchors_per_round`.
 - `use_dataset_captions: true` vs `false`.
-- Varying `raw_search_k`, `max_candidates`, `max_candidate_anchors`, and `max_final_briefs`.
 
-Report answer accuracy together with candidate coverage, selected-brief traces, final prompt length, and selected image counts from EVI logs.
+Report answer accuracy together with retrieval clue coverage, memory-set coverage, state readout traces, final prompt length, and selected image counts from EVI logs.

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 
 @dataclass
@@ -52,5 +52,40 @@ class MemoryBrief:
     relevance: str
     brief: str
     key_evidence: List[str] = field(default_factory=list)
+    confidence: float = 0.0
+    score: float = 0.0
+
+
+@dataclass
+class EpisodicMemorySet:
+    """A local, ordered episode assembled from retrieved anchor hits."""
+
+    id: str
+    session_id: str
+    date: str
+    round_ids: List[str]
+    round_text: Dict[str, str]
+    round_images: Dict[str, List[str]]
+    round_anchors: Dict[str, List[EvidenceAnchor]]
+    retrieved_anchors: List[EvidenceAnchor]
+    score: float
+
+
+@dataclass
+class EpisodicState:
+    """A query-conditioned readout over one ordered episodic memory set."""
+
+    set_id: str
+    session_id: str
+    date: str
+    round_ids: List[str]
+    image_paths: List[str]
+    relevance: str
+    memory_items: List[str] = field(default_factory=list)
+    observations: List[str] = field(default_factory=list)
+    relations: List[str] = field(default_factory=list)
+    changes: List[str] = field(default_factory=list)
+    answer_relevant_facts: List[str] = field(default_factory=list)
+    uncertainties: List[str] = field(default_factory=list)
     confidence: float = 0.0
     score: float = 0.0
