@@ -1,4 +1,4 @@
-﻿# QDMO-EVI: Query-Driven Memory Organization with Evidence anchors
+# QDMO-EVI: Query-Driven Memory Organization with Evidence anchors
 method: evi
 name: evi
 modality: multimodal
@@ -62,10 +62,10 @@ use_embedding_cache: true
 use_memory_brief_cache: true
 
 # EVI debug trace. The file records indexing, retrieval, memory-set construction,
-# state readout, final prompt preview, selected images, and model answer.
+# state readout, clue coverage, final prompt preview, selected images, and model answer.
 evi_debug: true
 evi_debug_console: true
-evi_debug_log_path: logs/evi_debug.log
+# evi_debug_log_path: null  # Default: <run_dir>/evi_debug.log
 evi_debug_append: true
 evi_debug_top_k: 20
 evi_debug_prompt_chars: 12000

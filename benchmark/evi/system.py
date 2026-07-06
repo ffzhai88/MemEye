@@ -417,6 +417,33 @@ class EVISystem:
             "hit_ranks": hit_ranks,
         })
 
+    def _log_final_state_clue_coverage(self, qa: Optional[Dict[str, Any]], states: List[EpisodicState]) -> None:
+        clue_rounds = (qa or {}).get("clue", [])
+        if not clue_rounds:
+            return
+        state_rounds = {rid for state in states for rid in state.round_ids}
+        hits = [rid for rid in clue_rounds if rid in state_rounds]
+        misses = [rid for rid in clue_rounds if rid not in set(hits)]
+        per_state_rounds = {
+            state.set_id: list(state.round_ids)
+            for state in states
+        }
+        log.info(
+            "QDMO-EVI final state clue coverage: %d/%d hits=%s misses=%s state_rounds=%s",
+            len(hits),
+            len(clue_rounds),
+            hits,
+            misses,
+            per_state_rounds,
+        )
+        trace_json(log, "final_state_clue_coverage", {
+            "num_hits": len(hits),
+            "num_clues": len(clue_rounds),
+            "hits": hits,
+            "misses": misses,
+            "state_rounds": per_state_rounds,
+        })
+
     def answer_question(
         self,
         question: str,
@@ -682,6 +709,7 @@ class EVISystem:
                 state.confidence,
                 " -> ".join(state.round_ids),
             )
+        self._log_final_state_clue_coverage(qa, final_states)
         trace_json(log, "selected_episodic_states", {
             "num_selected": len(final_states),
             "states": states_summary(final_states, max_items=self._max_final_states),

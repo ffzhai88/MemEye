@@ -8,7 +8,7 @@ from typing import Any, Dict, Iterable, List, Optional
 
 from .schemas import EvidenceAnchor, EpisodicMemorySet, EpisodicState, MemoryBrief, MemoryCandidate
 
-_DEFAULT_LOG_PATH = "logs/evi_debug.log"
+_DEFAULT_LOG_NAME = "evi_debug.log"
 _HANDLER_MARK = "_evi_debug_file"
 _CONSOLE_MARK = "_evi_debug_console"
 
@@ -33,9 +33,12 @@ def setup_evi_debug_logging(config: Optional[Dict[str, Any]] = None) -> Optional
         cfg.get("evi_debug_log_path")
         or cfg.get("debug_log_path")
         or os.environ.get("EVI_DEBUG_LOG_PATH")
-        or _DEFAULT_LOG_PATH
     )
-    path = Path(str(raw_path)).expanduser()
+    if raw_path:
+        path = Path(str(raw_path)).expanduser()
+    else:
+        run_dir = (cfg.get("_runtime_paths") or {}).get("run_dir")
+        path = Path(str(run_dir)).expanduser() / _DEFAULT_LOG_NAME if run_dir else Path("logs") / _DEFAULT_LOG_NAME
     if not path.is_absolute():
         path = Path.cwd() / path
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -44,12 +47,16 @@ def setup_evi_debug_logging(config: Optional[Dict[str, Any]] = None) -> Optional
     logger.setLevel(logging.DEBUG)
     has_file_handler = False
     has_console_handler = False
-    for handler in logger.handlers:
-        if getattr(handler, _HANDLER_MARK, None) == str(path):
+    for handler in list(logger.handlers):
+        handler_path = getattr(handler, _HANDLER_MARK, None)
+        if handler_path and handler_path != str(path):
+            logger.removeHandler(handler)
+            handler.close()
+            continue
+        if handler_path == str(path):
             has_file_handler = True
         if getattr(handler, _CONSOLE_MARK, False):
             has_console_handler = True
-
     if not has_file_handler:
         mode = "a" if as_bool(cfg.get("evi_debug_append"), True) else "w"
         file_handler = logging.FileHandler(path, mode=mode, encoding="utf-8")
