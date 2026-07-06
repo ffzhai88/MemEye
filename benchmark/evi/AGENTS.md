@@ -1,4 +1,4 @@
-﻿# QDMO-EVI Agent Guide
+# QDMO-EVI Agent Guide
 
 ## Scope
 
@@ -13,7 +13,7 @@ No code should branch on MemEye task names, question files, answer labels, or da
 EVI separates long-term memory use into these stages:
 
 1. Offline evidence anchors: compact, typed, provenance-grounded anchors extracted from dialogue text and images.
-2. Broad retrieval: the question stem retrieves a large pool of relevant anchors.
+2. Broad retrieval: the question stem retrieves a large pool of relevant anchors, reweighted by query-agnostic collection-level IDF discriminativeness.
 3. Episodic memory sets: retrieved rounds are grouped by session and round order, with small local windows around hits.
 4. Episodic state readout: each ordered memory set is converted into a clean, itemized state with per-round facts, relations, changes, and uncertainties.
 5. Final answer: the final prompt receives selected clean states, not raw anchor dumps, debug metadata, or table-like intermediate state.
@@ -57,7 +57,7 @@ Anchor types are generic and benchmark-independent: `scene`, `text`, `entity`, `
 ## Default Question-Time Pipeline
 
 1. Use `qa["question"]` as the retrieval stem when available, so rotated MCQ options do not dominate retrieval.
-2. Embed the question stem and retrieve a broad pool of evidence anchors from `EvidenceIndex`.
+2. Embed the question stem and retrieve a broad pool of evidence anchors from `EvidenceIndex`; by default, cosine scores are multiplied by collection-level IDF discriminativeness weights.
 3. Build episodic memory sets with `sets.build_episodic_memory_sets(...)`:
    - group by session,
    - add before/after round windows around retrieved hits,
@@ -77,6 +77,7 @@ Important keys:
 - `evi_pipeline`: `episodic_state` by default; set `candidate_assertion` for the legacy pipeline.
 - `text_embedding_model`: anchor retrieval embedding model.
 - `raw_search_k`: broad anchor retrieval size before memory organization.
+- `use_anchor_quality_weighting`: apply query-agnostic collection-level IDF weights during anchor retrieval.
 - `max_memory_sets`: maximum episodic sets read per question. Keep this moderately high when many sessions share generic visual cues, because top-k set selection can otherwise crowd out the correct episode.
 - `memory_set_window_before` / `memory_set_window_after`: local round window around retrieved hits.
 - `max_rounds_per_memory_set`: cap on merged set length.

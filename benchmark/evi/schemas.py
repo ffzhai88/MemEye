@@ -22,6 +22,9 @@ class EvidenceAnchor:
     region: str = ""
     confidence: float = 1.0
     score: float = 0.0
+    raw_score: float = 0.0
+    quality_weight: float = 1.0
+    discriminativeness_weight: float = 1.0
 
 
 @dataclass

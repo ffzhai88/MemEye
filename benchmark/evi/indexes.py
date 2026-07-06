@@ -5,8 +5,9 @@ import json
 import logging
 import math
 import os
+import re
 from pathlib import Path
-from typing import Any, FrozenSet, Iterable, List, Optional, Tuple
+from typing import Any, Dict, FrozenSet, Iterable, List, Optional, Set, Tuple
 
 from .schemas import EvidenceAnchor
 
@@ -52,6 +53,20 @@ _VALID_TYPES = {
     "structured_visual",
     "temporal",
 }
+
+_TOKEN_RE = re.compile(r"[a-z0-9]+")
+
+
+def _clamp(value: float, low: float, high: float) -> float:
+    return max(low, min(high, value))
+
+
+def _content_tokens(text: str) -> List[str]:
+    return [
+        token
+        for token in _TOKEN_RE.findall(str(text or "").lower())
+        if token not in _STOP_WORDS and len(token) > 1
+    ]
 
 _EMBED_CACHE_DIR: Optional[str] = None
 _EMBED_METHOD_CACHE: dict[int, str] = {}  # id(embedder) -> method_name
@@ -198,12 +213,17 @@ def embed_text(
 class EvidenceIndex:
     """Simple in-memory vector index for EvidenceAnchor objects."""
 
-    def __init__(self) -> None:
+    def __init__(self, use_quality_weighting: bool = True) -> None:
         self._anchors: List[EvidenceAnchor] = []
+        self._use_quality_weighting = use_quality_weighting
+        self._finalized = False
+        self._idf: Dict[str, float] = {}
+        self._mean_anchor_idf = 1.0
 
     def add(self, anchor: EvidenceAnchor) -> None:
         anchor.evidence_type = normalize_type(anchor.evidence_type)
         self._anchors.append(anchor)
+        self._finalized = False
 
     def extend(self, anchors: Iterable[EvidenceAnchor]) -> None:
         for anchor in anchors:
@@ -216,25 +236,78 @@ class EvidenceIndex:
     def anchors(self) -> List[EvidenceAnchor]:
         return self._anchors
 
+    def _anchor_token_set(self, anchor: EvidenceAnchor) -> Set[str]:
+        parts = [anchor.text, anchor.subject, anchor.predicate, anchor.object, anchor.region]
+        return set(_content_tokens(" ".join(str(part or "") for part in parts)))
+
+    def finalize(self) -> None:
+        """Compute query-agnostic collection-level IDF weights for retrieval."""
+        if self._finalized:
+            return
+        token_sets = [self._anchor_token_set(anchor) for anchor in self._anchors]
+        doc_freq: Dict[str, int] = {}
+        for tokens in token_sets:
+            for token in tokens:
+                doc_freq[token] = doc_freq.get(token, 0) + 1
+
+        num_docs = max(1, len(token_sets))
+        self._idf = {
+            token: math.log((1.0 + num_docs) / (1.0 + freq)) + 1.0
+            for token, freq in doc_freq.items()
+        }
+        anchor_mean_idfs: List[float] = []
+        for tokens in token_sets:
+            if tokens:
+                anchor_mean_idfs.append(sum(self._idf.get(token, 1.0) for token in tokens) / len(tokens))
+        self._mean_anchor_idf = sum(anchor_mean_idfs) / len(anchor_mean_idfs) if anchor_mean_idfs else 1.0
+
+        for anchor, tokens in zip(self._anchors, token_sets):
+            if tokens:
+                mean_idf = sum(self._idf.get(token, 1.0) for token in tokens) / len(tokens)
+                discriminativeness = _clamp(mean_idf / max(self._mean_anchor_idf, 1e-6), 0.5, 1.5)
+            else:
+                discriminativeness = 0.5
+            anchor.discriminativeness_weight = discriminativeness
+            anchor.quality_weight = discriminativeness if self._use_quality_weighting else 1.0
+
+        weights = [anchor.quality_weight for anchor in self._anchors]
+        if weights:
+            log.info(
+                "EvidenceIndex finalized: anchors=%d quality_weight min=%.3f mean=%.3f max=%.3f use_weighting=%s",
+                len(weights),
+                min(weights),
+                sum(weights) / len(weights),
+                max(weights),
+                self._use_quality_weighting,
+            )
+        self._finalized = True
+
     def search(
         self,
         query_vec: List[float],
         top_k: int = 60,
         session_ids: Optional[set[str]] = None,
     ) -> List[EvidenceAnchor]:
-        results: List[Tuple[float, int]] = []
+        if not self._finalized:
+            self.finalize()
+        results: List[Tuple[float, int, float]] = []
         for idx, anchor in enumerate(self._anchors):
             if session_ids is not None and anchor.session_id not in session_ids:
                 continue
-            score = cosine(query_vec, anchor.vector)
+            raw_score = cosine(query_vec, anchor.vector)
+            if raw_score <= 0:
+                continue
+            weight = anchor.quality_weight if self._use_quality_weighting else 1.0
+            score = raw_score * weight
             if score <= 0:
                 continue
-            results.append((score, idx))
+            results.append((score, idx, raw_score))
         results.sort(key=lambda item: item[0], reverse=True)
 
         out: List[EvidenceAnchor] = []
-        for score, idx in results[:top_k]:
+        for score, idx, raw_score in results[:top_k]:
             anchor = self._anchors[idx]
+            anchor.raw_score = raw_score
             anchor.score = score
             out.append(anchor)
         return out

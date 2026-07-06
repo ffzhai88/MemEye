@@ -43,7 +43,8 @@ class EVISystem:
         self._model_cfg = dict(cfg.get("_model_cfg", {}))
         self._debug_log_path = setup_evi_debug_logging(cfg)
 
-        self._index = EvidenceIndex()
+        self._use_anchor_quality_weighting = self._as_bool(cfg.get("use_anchor_quality_weighting"), True)
+        self._index = EvidenceIndex(use_quality_weighting=self._use_anchor_quality_weighting)
         self._vlm: Optional[VLMCallable] = None
         self._embedder: Optional[Any] = None
 
@@ -218,6 +219,7 @@ class EVISystem:
         trace_json(log, "indexing_start", {
             "pipeline": self._pipeline,
             "raw_search_k": self._raw_search_k,
+            "use_anchor_quality_weighting": self._use_anchor_quality_weighting,
             "max_candidates": self._max_candidates,
             "max_candidate_anchors": self._max_candidate_anchors,
             "max_final_briefs": self._max_final_briefs,
@@ -324,6 +326,8 @@ class EVISystem:
                             self._add_anchor(anchor)
 
                 prior_rounds_text.append(round_text)
+
+        self._index.finalize()
 
         type_counts: Dict[str, int] = {}
         for anchor in self._index.anchors:
@@ -476,16 +480,19 @@ class EVISystem:
 
         for anchor in self._index.anchors:
             anchor.score = 0.0
+            anchor.raw_score = 0.0
         retrieved = self._index.search(query_vec, top_k=self._raw_search_k)
         log.info("QDMO-EVI retrieved anchors=%d", len(retrieved))
         for idx, anchor in enumerate(retrieved[: self._debug_top_k]):
             log.info(
-                "  anchor[%02d] id=%s round=%s type=%s score=%.4f text=%s",
+                "  anchor[%02d] id=%s round=%s type=%s score=%.4f raw=%.4f idf_w=%.3f text=%s",
                 idx + 1,
                 anchor.id,
                 anchor.round_id,
                 anchor.evidence_type,
                 anchor.score or 0.0,
+                anchor.raw_score or 0.0,
+                anchor.quality_weight or 1.0,
                 anchor.text.replace("\n", " ")[:160],
             )
         if len(retrieved) > self._debug_top_k:

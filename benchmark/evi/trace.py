@@ -87,6 +87,9 @@ def anchor_summary(anchor: EvidenceAnchor, max_text_chars: int = 260) -> Dict[st
     return {
         "id": anchor.id,
         "score": round(float(anchor.score or 0.0), 6),
+        "raw_score": round(float(anchor.raw_score or 0.0), 6),
+        "quality_weight": round(float(anchor.quality_weight or 1.0), 4),
+        "discriminativeness_weight": round(float(anchor.discriminativeness_weight or 1.0), 4),
         "session_id": anchor.session_id,
         "round_id": anchor.round_id,
         "date": anchor.date,
