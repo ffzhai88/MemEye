@@ -27,7 +27,9 @@ log = logging.getLogger(__name__)
 
 FINAL_ANSWER_SYSTEM_PROMPT = """You are answering a multimodal long-term memory question.
 Use the selected memory evidence as the primary evidence.
-The evidence may be question-relevant episodic evidence or selected factual assertions.
+The evidence may be question-aligned episodic evidence or selected factual assertions.
+Use each episode alignment to decide which facts belong to the memory object described by the question.
+Do not choose an option merely because similar wording appears in a mismatched episode.
 Use attached images only to resolve uncertainty.
 Be concise and grounded in the selected evidence.
 If the question is multiple-choice, answer with ONLY the option letter.
@@ -589,7 +591,7 @@ class EVISystem:
 
     def _build_state_final_prompt(self, question: str, states: List[EpisodicState]) -> str:
         lines: List[str] = []
-        lines.append("Question-relevant episodic evidence:")
+        lines.append("Question-aligned episodic evidence:")
         if not states:
             lines.append("No selected episodic evidence was available.")
         for idx, state in enumerate(states, start=1):
@@ -597,6 +599,8 @@ class EVISystem:
                 f"{idx}. Evidence from session {state.session_id} on {state.date}; "
                 f"rounds {' -> '.join(state.round_ids)}."
             )
+            alignment = " ".join(str(state.episode_alignment or "unspecified").split())
+            lines.append("   Episode alignment: " + alignment)
             facts = [" ".join(str(item).split()) for item in state.answer_relevant_facts if str(item).strip()]
             if facts:
                 for item in facts[:12]:
@@ -608,6 +612,8 @@ class EVISystem:
                 lines.append("   Uncertainties:")
                 for item in uncertainties[:3]:
                     lines.append("   - " + item)
+        lines.append("")
+        lines.append("Use episode alignment before using a fact. Ignore facts from episodes whose alignment does not match the object or event asked about.")
         lines.append("")
         lines.append("Question:")
         lines.append(str(question or ""))

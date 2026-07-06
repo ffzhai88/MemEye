@@ -15,29 +15,35 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
-_PROMPT_VERSION = "question_relevant_episode_evidence_v3"
+_PROMPT_VERSION = "question_aligned_episode_evidence_v4"
 _CACHE_DIR: Optional[str] = None
 
 EPISODIC_STATE_SYSTEM_PROMPT = """Inspect one ordered memory episode for a multimodal memory agent.
 
 Input: a question with options, several dialogue rounds, and attached images.
-Task: extract only concrete evidence from this episode that could help answer the question.
 Do not answer the question or choose an option.
+
+First decide how this episode aligns with the question's referring descriptions.
+Then extract concrete facts from this episode under that alignment.
 
 Return ONLY this JSON object:
 {
   "relevance": "relevant|uncertain|excluded",
+  "episode_alignment": "which object/event/episode in the question this memory set appears to match; use 'unmatched' if none",
   "evidence_facts": [
-    {"round_id": "...", "fact": "concrete visual/dialogue fact", "source": "image|dialogue|both"}
+    {"round_id": "...", "fact": "concrete visual/dialogue fact", "source": "image|dialogue|both", "role": "alignment|answer_evidence|context|uncertain"}
   ],
   "uncertainties": ["only if a relevant detail is ambiguous or missing"],
   "confidence": 0.0
 }
 
 Rules:
-- If the episode is unrelated, return relevance="excluded", evidence_facts=[], uncertainties=[], confidence=0.0.
+- Options clarify what information may matter, but they are not evidence.
+- Do not copy option wording as a fact unless that detail is directly visible or stated in this episode.
+- If the episode matches only a non-answer referent, contrast referent, or distractor, say that in episode_alignment.
+- Do not turn facts from a mismatched episode into answer_evidence.
+- Use relevance="excluded" when the episode is unrelated or only matches distractor wording.
 - If related, keep facts short, concrete, and separated by round.
-- Do not explain why the episode is relevant.
 - Use dialogue as context, but ground visual claims in images.
 """
 
@@ -76,10 +82,11 @@ def _evidence_fact_list(value: object) -> List[str]:
         if isinstance(item, dict):
             rid = str(item.get("round_id", "")).strip()
             source = str(item.get("source", "")).strip()
+            role = str(item.get("role", item.get("question_role", ""))).strip()
             fact = str(item.get("fact", "")).strip()
             if not fact:
                 continue
-            prefix_parts = [part for part in (rid, source) if part]
+            prefix_parts = [part for part in (rid, source, role) if part]
             prefix = "/".join(prefix_parts)
             out.append(f"{prefix}: {fact}" if prefix else fact)
         else:
@@ -184,6 +191,7 @@ def make_fallback_state(memory_set: EpisodicMemorySet, reason: str) -> EpisodicS
         round_ids=list(memory_set.round_ids),
         image_paths=state_image_paths(memory_set, 99),
         relevance="uncertain",
+        episode_alignment="unknown; readout unavailable",
         answer_relevant_facts=[],
         uncertainties=[f"Episode evidence readout was not available because {reason}."],
         confidence=0.0,
@@ -193,11 +201,12 @@ def make_fallback_state(memory_set: EpisodicMemorySet, reason: str) -> EpisodicS
 
 def _log_state_result(prefix: str, state: EpisodicState) -> None:
     log.info(
-        "%s set=%s relevance=%s confidence=%.2f rounds=%s facts=%d uncertainties=%d",
+        "%s set=%s relevance=%s confidence=%.2f alignment=%s rounds=%s facts=%d uncertainties=%d",
         prefix,
         state.set_id,
         state.relevance,
         state.confidence,
+        state.episode_alignment or "unspecified",
         " -> ".join(state.round_ids),
         len(state.answer_relevant_facts),
         len(state.uncertainties),
@@ -240,6 +249,7 @@ def read_episodic_state(
                     round_ids=list(memory_set.round_ids),
                     image_paths=list(images),
                     relevance=_clean_relevance(data.get("relevance")),
+                    episode_alignment=str(data.get("episode_alignment", "")).strip(),
                     answer_relevant_facts=_evidence_fact_list(data.get("evidence_facts", data.get("answer_relevant_facts", []))),
                     uncertainties=_as_str_list(data.get("uncertainties", [])),
                     confidence=max(0.0, min(1.0, float(data.get("confidence", 0.0) or 0.0))),
@@ -280,6 +290,7 @@ def read_episodic_state(
         round_ids=list(memory_set.round_ids),
         image_paths=list(images),
         relevance=_clean_relevance(parsed.get("relevance")),
+        episode_alignment=str(parsed.get("episode_alignment", "")).strip(),
         answer_relevant_facts=_evidence_fact_list(parsed.get("evidence_facts", parsed.get("answer_relevant_facts", []))),
         uncertainties=_as_str_list(parsed.get("uncertainties", [])),
         confidence=confidence,
@@ -307,6 +318,7 @@ def read_episodic_state(
                         "cache_namespace": cache_namespace,
                         "set_id": memory_set.id,
                         "relevance": state.relevance,
+                        "episode_alignment": state.episode_alignment,
                         "evidence_facts": state.answer_relevant_facts,
                         "uncertainties": state.uncertainties,
                         "confidence": state.confidence,
