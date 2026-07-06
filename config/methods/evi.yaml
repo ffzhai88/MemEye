@@ -69,5 +69,5 @@ evi_debug: true
 evi_debug_console: true
 # evi_debug_log_path: null  # Default: <run_dir>/evi_debug.log
 evi_debug_append: true
-evi_debug_top_k: 20
+evi_debug_top_k: 50
 evi_debug_prompt_chars: 12000
