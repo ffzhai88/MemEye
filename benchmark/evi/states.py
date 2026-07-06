@@ -15,37 +15,30 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
-_PROMPT_VERSION = "question_relevant_episode_evidence_v2"
+_PROMPT_VERSION = "question_relevant_episode_evidence_v3"
 _CACHE_DIR: Optional[str] = None
 
-EPISODIC_STATE_SYSTEM_PROMPT = """You are reading one ordered episodic memory set for a multimodal long-term memory agent.
+EPISODIC_STATE_SYSTEM_PROMPT = """Inspect one ordered memory episode for a multimodal memory agent.
 
-Given the user question, including answer options if provided, inspect only the provided round dialogue and attached images.
-Extract only information that could help answer the question later.
-Do not answer the final question. Do not choose a multiple-choice option.
-Do not write generic summaries, context labels, state descriptions, relations, changes, or debugging commentary unless they directly help answer the question.
-Keep evidence facts separate by round when the question may require counting, comparison, ordering, or verification.
+Input: a question with options, several dialogue rounds, and attached images.
+Task: extract only concrete evidence from this episode that could help answer the question.
+Do not answer the question or choose an option.
 
-Return ONLY valid JSON:
+Return ONLY this JSON object:
 {
   "relevance": "relevant|uncertain|excluded",
   "evidence_facts": [
-    {
-      "round_id": "round id from the prompt",
-      "fact": "question-relevant visual or dialogue evidence grounded in this round",
-      "source": "image|dialogue|both"
-    }
+    {"round_id": "...", "fact": "concrete visual/dialogue fact", "source": "image|dialogue|both"}
   ],
-  "uncertainties": ["missing, ambiguous, or visually uncertain detail relevant to the question"],
+  "uncertainties": ["only if a relevant detail is ambiguous or missing"],
   "confidence": 0.0
 }
 
-Guidelines:
-- evidence_facts must be concrete facts, not explanations of why the memory is relevant.
-- Prefer visible entities, attributes, text, landmarks, counts, spatial relations, and temporal order when they matter to the question.
-- Use dialogue only as context; do not let dialogue labels replace visible evidence.
-- Mark relevance="excluded" only when the memory set is clearly unrelated to the question and its options.
-- If the memory may contain useful evidence but details are incomplete or ambiguous, use relevance="uncertain".
+Rules:
+- If the episode is unrelated, return relevance="excluded", evidence_facts=[], uncertainties=[], confidence=0.0.
+- If related, keep facts short, concrete, and separated by round.
+- Do not explain why the episode is relevant.
+- Use dialogue as context, but ground visual claims in images.
 """
 
 
@@ -292,7 +285,7 @@ def read_episodic_state(
         confidence=confidence,
         score=memory_set.score,
     )
-    if not state.answer_relevant_facts and not state.uncertainties:
+    if not state.answer_relevant_facts and not state.uncertainties and state.relevance != "excluded":
         log.warning(
             "  [EVIDENCE READOUT] no usable fields set=%s parsed_keys=%s raw=%s",
             memory_set.id,

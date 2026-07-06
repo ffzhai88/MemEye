@@ -636,6 +636,19 @@ class EVISystem:
                     return images
         return images
 
+    def _readout_question_context(self, question: str, question_stem: str) -> str:
+        lines: List[str] = []
+        for line in str(question or question_stem or "").splitlines():
+            stripped = line.strip()
+            lowered = stripped.lower()
+            if lowered.startswith("answer with only"):
+                continue
+            if lowered in {"do not explain.", "do not explain"}:
+                continue
+            lines.append(line)
+        context = "\n".join(lines).strip()
+        return context or str(question_stem or question or "")
+
     def _answer_with_episodic_states(
         self,
         question: str,
@@ -689,7 +702,7 @@ class EVISystem:
             use_images=self._use_state_images,
             max_images=self._max_state_images_per_set,
             max_prompt_chars=self._debug_prompt_chars,
-            question_context=question,
+            question_context=self._readout_question_context(question, question_stem),
         )
         trace_json(log, "episodic_states", {
             "num_states": len(states),
