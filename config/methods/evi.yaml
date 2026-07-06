@@ -21,7 +21,9 @@ vlm_max_new_tokens: 1024
 vlm_timeout: 90
 
 # Broad retrieval over task-agnostic evidence anchors before online memory organization.
+# Quality weighting is query-agnostic: it reweights anchors by collection-level IDF discriminativeness.
 raw_search_k: 120
+use_anchor_quality_weighting: true
 
 # Episodic-state pipeline budget.
 # Retrieved anchors are grouped by session and round order into local memory sets.

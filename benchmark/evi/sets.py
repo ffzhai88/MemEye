@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import logging
 from typing import Dict, Iterable, List, Tuple
@@ -131,18 +131,16 @@ def build_episodic_memory_sets(
                 rid: _select_round_anchors(rid, retrieved_by_round, round_anchors, max_anchors_per_round)
                 for rid in set_rounds
             }
-            ordered_scores = sorted((a.score or 0.0 for a in set_retrieved), reverse=True)
-            top3 = ordered_scores[:3]
-            max_score = ordered_scores[0] if ordered_scores else 0.0
-            top3_mean = sum(top3) / max(1, len(top3))
-            hit_round_count = len({anchor.round_id for anchor in set_retrieved})
-            type_diversity = len({anchor.evidence_type for anchor in set_retrieved})
-            score = (
-                1.20 * max_score
-                + 0.50 * top3_mean
-                + 0.035 * hit_round_count
-                + 0.01 * min(type_diversity, 6)
-            )
+            best_score_by_round: Dict[str, float] = {}
+            for anchor in set_retrieved:
+                best_score_by_round[anchor.round_id] = max(
+                    best_score_by_round.get(anchor.round_id, 0.0),
+                    anchor.score or 0.0,
+                )
+            round_scores = list(best_score_by_round.values())
+            hit_round_count = len(round_scores)
+            max_anchor_score = max(round_scores, default=0.0)
+            score = sum(round_scores) / max(1, hit_round_count)
             date = set_retrieved[0].date if set_retrieved else ""
             set_id = f"episode::{sid}::{set_rounds[0]}..{set_rounds[-1]}"
             sets.append(
@@ -156,20 +154,24 @@ def build_episodic_memory_sets(
                     round_anchors=selected_by_round,
                     retrieved_anchors=_sort_anchors(set_retrieved),
                     score=score,
+                    hit_round_count=hit_round_count,
+                    max_anchor_score=max_anchor_score,
                 )
             )
 
-    sets.sort(key=lambda item: item.score, reverse=True)
+    sets.sort(key=lambda item: (item.hit_round_count, item.score, item.max_anchor_score), reverse=True)
     out = sets[:max_sets]
     log.info("EVI episodic memory sets built: retrieved=%d kept=%d", len(retrieved), len(out))
     for idx, memory_set in enumerate(out, start=1):
         log.info(
-            "  memory_set[%02d] id=%s session=%s rounds=%s score=%.4f retrieved=%d",
+            "  memory_set[%02d] id=%s session=%s rounds=%s score=%.4f max_anchor=%.4f hit_rounds=%d retrieved=%d",
             idx,
             memory_set.id,
             memory_set.session_id,
             " -> ".join(memory_set.round_ids),
             memory_set.score,
+            memory_set.max_anchor_score,
+            memory_set.hit_round_count,
             len(memory_set.retrieved_anchors),
         )
     return out

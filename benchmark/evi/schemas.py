@@ -72,6 +72,8 @@ class EpisodicMemorySet:
     round_anchors: Dict[str, List[EvidenceAnchor]]
     retrieved_anchors: List[EvidenceAnchor]
     score: float
+    hit_round_count: int = 0
+    max_anchor_score: float = 0.0
 
 
 @dataclass

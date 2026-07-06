@@ -62,7 +62,8 @@ Anchor types are generic and benchmark-independent: `scene`, `text`, `entity`, `
    - group by session,
    - add before/after round windows around retrieved hits,
    - merge nearby windows,
-   - keep ordered rounds and selected anchors per round.
+   - keep ordered rounds and selected anchors per round,
+   - rank memory sets lexicographically by hit-round count, mean best hit-round score, then max hit-anchor score.
 4. Read each set with `states.read_episodic_states(...)`.
 5. Select relevant states first, then uncertain states as fallback.
 6. Build a clean final prompt from `memory_items`, `observations`, `relations`, `changes`, `answer_relevant_facts`, and `uncertainties`.

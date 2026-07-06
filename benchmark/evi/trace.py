@@ -135,6 +135,8 @@ def memory_set_summary(memory_set: EpisodicMemorySet, max_anchors_per_round: int
     return {
         "id": memory_set.id,
         "score": round(float(memory_set.score or 0.0), 6),
+        "hit_round_count": int(memory_set.hit_round_count or 0),
+        "max_anchor_score": round(float(memory_set.max_anchor_score or 0.0), 6),
         "session_id": memory_set.session_id,
         "date": memory_set.date,
         "round_ids": list(memory_set.round_ids),
