@@ -90,6 +90,12 @@ def anchor_summary(anchor: EvidenceAnchor, max_text_chars: int = 260) -> Dict[st
         "raw_score": round(float(anchor.raw_score or 0.0), 6),
         "quality_weight": round(float(anchor.quality_weight or 1.0), 4),
         "discriminativeness_weight": round(float(anchor.discriminativeness_weight or 1.0), 4),
+        "retrieval_channels": list(getattr(anchor, "retrieval_channels", []) or []),
+        "channel_scores": {
+            key: round(float(value or 0.0), 6)
+            for key, value in (getattr(anchor, "channel_scores", {}) or {}).items()
+        },
+        "round_fused_score": round(float(getattr(anchor, "round_fused_score", 0.0) or 0.0), 6),
         "session_id": anchor.session_id,
         "round_id": anchor.round_id,
         "date": anchor.date,

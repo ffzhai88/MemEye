@@ -57,17 +57,18 @@ Anchor types are generic and benchmark-independent: `scene`, `text`, `entity`, `
 ## Default Question-Time Pipeline
 
 1. Use `qa["question"]` as the retrieval stem when available, so rotated MCQ options do not dominate retrieval.
-2. Embed the question stem and retrieve a broad pool of evidence anchors from `EvidenceIndex`; by default, cosine scores are multiplied by collection-level IDF discriminativeness weights.
-3. Build episodic memory sets with `sets.build_episodic_memory_sets(...)`:
+2. Extract short retrieval cues from the question stem, using the question's original words where possible.
+3. Run fixed-budget multi-channel retrieval over the whole question and each cue, then fuse hits at the round level. A round is strengthened when multiple channels retrieve anchors from it. The default method config currently disables IDF weighting so multi-channel effects are easier to inspect.
+4. Build episodic memory sets with `sets.build_episodic_memory_sets(...)`:
    - group by session,
    - add before/after round windows around retrieved hits,
    - merge nearby windows,
    - keep ordered rounds and selected anchors per round,
    - rank memory sets lexicographically by hit-round count, mean best hit-round score, then max hit-anchor score.
-4. Read each set with `states.read_episodic_states(...)`.
-5. Select relevant states first, then uncertain states as fallback.
-6. Build a clean final prompt from extracted `answer_relevant_facts` and `uncertainties` only.
-7. Call the VLM for the final answer. By default, memory images are not attached to the final answer call; images are consumed during state readout.
+5. Read each set with `states.read_episodic_states(...)`.
+6. Select relevant states first, then uncertain states as fallback.
+7. Build a clean final prompt from extracted `answer_relevant_facts` and `uncertainties` only.
+8. Call the VLM for the final answer. By default, memory images are not attached to the final answer call; images are consumed during state readout.
 
 ## Config
 
@@ -77,8 +78,10 @@ Important keys:
 
 - `evi_pipeline`: `episodic_state` by default; set `candidate_assertion` for the legacy pipeline.
 - `text_embedding_model`: anchor retrieval embedding model.
-- `raw_search_k`: broad anchor retrieval size before memory organization.
-- `use_anchor_quality_weighting`: apply query-agnostic collection-level IDF weights during anchor retrieval.
+- `raw_search_k`: total broad retrieval budget before memory organization; it is split uniformly across question/cue channels.
+- `use_anchor_quality_weighting`: apply query-agnostic collection-level IDF weights during anchor retrieval; default EVI config currently sets this false for multi-channel retrieval experiments.
+- `max_retrieval_cues`: maximum question-stem retrieval cues kept after cue extraction.
+- `use_retrieval_cue_cache`: enable disk cache for retrieval cue extraction.
 - `max_memory_sets`: maximum episodic sets read per question. Keep this moderately high when many sessions share generic visual cues, because top-k set selection can otherwise crowd out the correct episode.
 - `memory_set_window_before` / `memory_set_window_after`: local round window around retrieved hits.
 - `max_rounds_per_memory_set`: cap on merged set length.

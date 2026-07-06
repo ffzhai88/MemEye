@@ -3,10 +3,11 @@ from __future__ import annotations
 import json
 import logging
 import os
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set
 
 from .briefs import generate_memory_briefs
 from .candidates import consolidate_candidates
+from .cues import extract_retrieval_cues
 from .extractor import extract_image_anchors
 from .indexes import EvidenceIndex, embed_text, normalize_type
 from .schemas import EpisodicState, EvidenceAnchor, MemoryBrief
@@ -78,6 +79,8 @@ class EVISystem:
         self._use_state_cache = self._as_bool(cfg.get("use_state_cache"), True)
         self._use_state_images = self._as_bool(cfg.get("use_state_images"), True)
         self._max_state_images_per_set = int(cfg.get("max_state_images_per_set", 4))
+        self._max_retrieval_cues = int(cfg.get("max_retrieval_cues", 4))
+        self._use_retrieval_cue_cache = self._as_bool(cfg.get("use_retrieval_cue_cache"), True)
         self._debug_top_k = int(cfg.get("evi_debug_top_k", 20))
         self._debug_prompt_chars = int(cfg.get("evi_debug_prompt_chars", 12000))
         self._embed_cache_namespace = "uninitialized"
@@ -143,6 +146,260 @@ class EVISystem:
             cache_namespace=self._embed_cache_namespace,
             use_cache=self._use_embedding_cache,
         )
+
+    def _reset_retrieval_scores(self) -> None:
+        for anchor in self._index.anchors:
+            anchor.score = 0.0
+            anchor.raw_score = 0.0
+            anchor.retrieval_channels = []
+            anchor.channel_scores = {}
+            anchor.round_fused_score = 0.0
+
+    @staticmethod
+    def _fuse_channel_scores(scores: List[float]) -> float:
+        clean = sorted([float(score) for score in scores if float(score or 0.0) > 0.0], reverse=True)
+        if not clean:
+            return 0.0
+        if len(clean) == 1:
+            return clean[0]
+        max_score = clean[0]
+        non_max_mean = sum(clean[1:]) / max(1, len(clean) - 1)
+        return max_score + non_max_mean / len(clean)
+
+    def _log_channel_clue_coverage(
+        self,
+        qa: Optional[Dict[str, Any]],
+        channel_rounds: Dict[str, Set[str]],
+    ) -> None:
+        clue_rounds = (qa or {}).get("clue", [])
+        if not clue_rounds:
+            return
+        coverage: Dict[str, Dict[str, Any]] = {}
+        for channel_id, rounds in channel_rounds.items():
+            hits = [rid for rid in clue_rounds if rid in rounds]
+            misses = [rid for rid in clue_rounds if rid not in set(hits)]
+            coverage[channel_id] = {
+                "num_hits": len(hits),
+                "num_clues": len(clue_rounds),
+                "hits": hits,
+                "misses": misses,
+            }
+            log.info(
+                "QDMO-EVI channel clue coverage channel=%s: %d/%d hits=%s misses=%s",
+                channel_id,
+                len(hits),
+                len(clue_rounds),
+                hits,
+                misses,
+            )
+        cue_rounds: Set[str] = set()
+        for channel_id, rounds in channel_rounds.items():
+            if channel_id != "question":
+                cue_rounds.update(rounds)
+        if cue_rounds:
+            hits = [rid for rid in clue_rounds if rid in cue_rounds]
+            misses = [rid for rid in clue_rounds if rid not in set(hits)]
+            coverage["cue_channels_union"] = {
+                "num_hits": len(hits),
+                "num_clues": len(clue_rounds),
+                "hits": hits,
+                "misses": misses,
+            }
+            log.info(
+                "QDMO-EVI cue-channel union clue coverage: %d/%d hits=%s misses=%s",
+                len(hits),
+                len(clue_rounds),
+                hits,
+                misses,
+            )
+        trace_json(log, "multi_channel_clue_coverage", coverage)
+
+    def _multi_channel_retrieve(self, question_stem: str, qa: Optional[Dict[str, Any]]) -> List[EvidenceAnchor]:
+        cues = extract_retrieval_cues(
+            question_stem,
+            self._vlm,
+            max_cues=self._max_retrieval_cues,
+            use_cache=self._use_retrieval_cue_cache,
+            cache_namespace=self._vlm_result_namespace,
+        )
+        channels: List[Dict[str, str]] = [{"id": "question", "text": str(question_stem or "").strip()}]
+        seen_texts = {channels[0]["text"].lower()}
+        for idx, cue in enumerate(cues, start=1):
+            cue_text = " ".join(str(cue or "").split())
+            if not cue_text:
+                continue
+            key = cue_text.lower()
+            if key in seen_texts:
+                continue
+            channels.append({"id": f"cue_{idx}", "text": cue_text})
+            seen_texts.add(key)
+
+        channels = [channel for channel in channels if channel["text"]]
+        if not channels:
+            return []
+        per_channel_k = max(1, (self._raw_search_k + len(channels) - 1) // len(channels))
+        log.info(
+            "QDMO-EVI multi-channel retrieval: channels=%d per_channel_k=%d raw_search_k=%d cues=%s",
+            len(channels),
+            per_channel_k,
+            self._raw_search_k,
+            [channel["text"] for channel in channels if channel["id"] != "question"],
+        )
+
+        self._reset_retrieval_scores()
+        channel_order = {channel["id"]: idx for idx, channel in enumerate(channels)}
+        round_channel_best: Dict[str, Dict[str, float]] = {}
+        round_anchor_ids: Dict[str, Set[str]] = {}
+        anchor_by_id: Dict[str, EvidenceAnchor] = {}
+        anchor_channel_scores: Dict[str, Dict[str, float]] = {}
+        anchor_channel_raw_scores: Dict[str, Dict[str, float]] = {}
+        channel_rounds: Dict[str, Set[str]] = {}
+        channel_summaries: List[Dict[str, Any]] = []
+
+        for channel in channels:
+            channel_id = channel["id"]
+            channel_text = channel["text"]
+            query_vec = self._embed(channel_text)
+            if not query_vec:
+                log.warning("QDMO-EVI retrieval channel has empty embedding channel=%s text=%s", channel_id, channel_text)
+                channel_rounds[channel_id] = set()
+                continue
+            results = self._index.search(query_vec, top_k=per_channel_k)
+            channel_rounds[channel_id] = {anchor.round_id for anchor in results}
+            channel_summaries.append(
+                {
+                    "channel_id": channel_id,
+                    "channel_text": channel_text,
+                    "num_results": len(results),
+                    "top_anchors": anchors_summary(results, max_items=min(self._debug_top_k, len(results))),
+                }
+            )
+            log.info(
+                "QDMO-EVI channel=%s text=%s retrieved=%d",
+                channel_id,
+                channel_text,
+                len(results),
+            )
+            for idx, anchor in enumerate(results[: self._debug_top_k], start=1):
+                log.info(
+                    "  channel_anchor[%s:%02d] round=%s type=%s score=%.4f raw=%.4f text=%s",
+                    channel_id,
+                    idx,
+                    anchor.round_id,
+                    anchor.evidence_type,
+                    anchor.score or 0.0,
+                    anchor.raw_score or 0.0,
+                    anchor.text.replace("\n", " ")[:160],
+                )
+            for anchor in results:
+                score = float(anchor.score or 0.0)
+                if score <= 0.0:
+                    continue
+                raw_score = float(anchor.raw_score or 0.0)
+                anchor_by_id[anchor.id] = anchor
+                round_anchor_ids.setdefault(anchor.round_id, set()).add(anchor.id)
+                best_by_channel = round_channel_best.setdefault(anchor.round_id, {})
+                if score > best_by_channel.get(channel_id, 0.0):
+                    best_by_channel[channel_id] = score
+                per_anchor = anchor_channel_scores.setdefault(anchor.id, {})
+                if score > per_anchor.get(channel_id, 0.0):
+                    per_anchor[channel_id] = score
+                per_anchor_raw = anchor_channel_raw_scores.setdefault(anchor.id, {})
+                if raw_score > per_anchor_raw.get(channel_id, 0.0):
+                    per_anchor_raw[channel_id] = raw_score
+
+        self._log_channel_clue_coverage(qa, channel_rounds)
+        self._reset_retrieval_scores()
+
+        fused_rounds = []
+        for round_id, scores_by_channel in round_channel_best.items():
+            fused = self._fuse_channel_scores(list(scores_by_channel.values()))
+            fused_rounds.append((round_id, fused, scores_by_channel))
+        fused_rounds.sort(
+            key=lambda item: (item[1], len(item[2]), max(item[2].values()) if item[2] else 0.0),
+            reverse=True,
+        )
+
+        merged: List[EvidenceAnchor] = []
+        seen_anchor_ids: Set[str] = set()
+        fused_round_trace: List[Dict[str, Any]] = []
+        for round_id, fused_score, scores_by_channel in fused_rounds:
+            fused_round_trace.append(
+                {
+                    "round_id": round_id,
+                    "fused_score": round(float(fused_score), 6),
+                    "channels": {
+                        channel_id: round(float(score), 6)
+                        for channel_id, score in sorted(scores_by_channel.items(), key=lambda item: channel_order.get(item[0], 999))
+                    },
+                }
+            )
+            anchor_ids = list(round_anchor_ids.get(round_id, set()))
+            anchor_ids.sort(
+                key=lambda aid: (
+                    max(anchor_channel_scores.get(aid, {}).values(), default=0.0),
+                    len(anchor_channel_scores.get(aid, {})),
+                ),
+                reverse=True,
+            )
+            for anchor_id in anchor_ids[: self._max_state_anchors_per_round]:
+                if anchor_id in seen_anchor_ids:
+                    continue
+                anchor = anchor_by_id.get(anchor_id)
+                if anchor is None:
+                    continue
+                channel_raw_scores = anchor_channel_raw_scores.get(anchor_id, {})
+                anchor.score = fused_score
+                anchor.raw_score = max(channel_raw_scores.values(), default=0.0)
+                anchor.round_fused_score = fused_score
+                anchor.channel_scores = {
+                    channel_id: float(scores_by_channel[channel_id])
+                    for channel_id in sorted(scores_by_channel, key=lambda item: channel_order.get(item, 999))
+                }
+                anchor.retrieval_channels = list(anchor.channel_scores.keys())
+                merged.append(anchor)
+                seen_anchor_ids.add(anchor_id)
+                if len(merged) >= self._raw_search_k:
+                    break
+            if len(merged) >= self._raw_search_k:
+                break
+
+        merged.sort(
+            key=lambda anchor: (
+                anchor.score or 0.0,
+                len(anchor.retrieval_channels),
+                anchor.raw_score or 0.0,
+            ),
+            reverse=True,
+        )
+        log.info(
+            "QDMO-EVI multi-channel merged anchors=%d fused_rounds=%d",
+            len(merged),
+            len(fused_rounds),
+        )
+        for idx, anchor in enumerate(merged[: self._debug_top_k], start=1):
+            log.info(
+                "  merged_anchor[%02d] round=%s fused=%.4f raw=%.4f channels=%s channel_scores=%s text=%s",
+                idx,
+                anchor.round_id,
+                anchor.score or 0.0,
+                anchor.raw_score or 0.0,
+                anchor.retrieval_channels,
+                {key: round(value, 4) for key, value in anchor.channel_scores.items()},
+                anchor.text.replace("\n", " ")[:180],
+            )
+        trace_json(log, "multi_channel_retrieval", {
+            "question_stem": question_stem,
+            "retrieval_cues": cues,
+            "channels": channels,
+            "per_channel_k": per_channel_k,
+            "channel_results": channel_summaries,
+            "fused_rounds": fused_round_trace[: self._debug_top_k],
+            "num_fused_rounds": len(fused_rounds),
+            "num_merged_anchors": len(merged),
+            "merged_anchors": anchors_summary(merged, max_items=min(self._debug_top_k, len(merged))),
+        }, max_chars=self._debug_prompt_chars + 4000)
+        return merged[: self._raw_search_k]
 
     @staticmethod
     def _as_bool(value: Any, default: bool = False) -> bool:
@@ -239,6 +496,8 @@ class EVISystem:
             "use_state_cache": self._use_state_cache,
             "use_state_images": self._use_state_images,
             "max_state_images_per_set": self._max_state_images_per_set,
+            "max_retrieval_cues": self._max_retrieval_cues,
+            "use_retrieval_cue_cache": self._use_retrieval_cue_cache,
         })
 
         for sid in dataset.session_order():
@@ -474,27 +733,24 @@ class EVISystem:
             images = self._as_image_list(question_images)[: self._max_answer_images]
             return self._vlm(FINAL_ANSWER_SYSTEM_PROMPT, question, images)
 
-        query_vec = self._embed(question_stem)
-        if not query_vec:
-            log.warning("QDMO-EVI query embedding is empty; answering with question images only")
+        retrieved = self._multi_channel_retrieve(question_stem, qa)
+        if not retrieved:
+            log.warning("QDMO-EVI retrieval returned no anchors; answering with question images only")
             images = self._as_image_list(question_images)[: self._max_answer_images]
             return self._vlm(FINAL_ANSWER_SYSTEM_PROMPT, question, images)
 
-        for anchor in self._index.anchors:
-            anchor.score = 0.0
-            anchor.raw_score = 0.0
-        retrieved = self._index.search(query_vec, top_k=self._raw_search_k)
         log.info("QDMO-EVI retrieved anchors=%d", len(retrieved))
         for idx, anchor in enumerate(retrieved[: self._debug_top_k]):
             log.info(
-                "  anchor[%02d] id=%s round=%s type=%s score=%.4f raw=%.4f idf_w=%.3f text=%s",
+                "  anchor[%02d] id=%s round=%s type=%s fused=%.4f raw=%.4f channels=%s channel_scores=%s text=%s",
                 idx + 1,
                 anchor.id,
                 anchor.round_id,
                 anchor.evidence_type,
                 anchor.score or 0.0,
                 anchor.raw_score or 0.0,
-                anchor.quality_weight or 1.0,
+                getattr(anchor, "retrieval_channels", []),
+                {key: round(value, 4) for key, value in (getattr(anchor, "channel_scores", {}) or {}).items()},
                 anchor.text.replace("\n", " ")[:160],
             )
         if len(retrieved) > self._debug_top_k:
@@ -504,7 +760,6 @@ class EVISystem:
             "top_anchors": anchors_summary(retrieved, max_items=min(self._debug_top_k, len(retrieved))),
         })
         self._log_raw_clue_coverage(qa, retrieved)
-
         if self._pipeline == "candidate_assertion":
             return self._answer_with_candidate_assertions(question, question_stem, qa, question_images, retrieved)
         return self._answer_with_episodic_states(question, question_stem, qa, question_images, retrieved)

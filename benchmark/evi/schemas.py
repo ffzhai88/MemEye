@@ -25,6 +25,9 @@ class EvidenceAnchor:
     raw_score: float = 0.0
     quality_weight: float = 1.0
     discriminativeness_weight: float = 1.0
+    retrieval_channels: List[str] = field(default_factory=list)
+    channel_scores: Dict[str, float] = field(default_factory=dict)
+    round_fused_score: float = 0.0
 
 
 @dataclass
