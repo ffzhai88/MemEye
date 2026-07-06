@@ -134,6 +134,7 @@ class OpenAIAPIRouter(BaseRouter):
             }),
             "temperature": 0,
         }
+        print(f"[DEBUG] OpenAIAPIRouter.answer -> messages={payload['messages']}")
         response = post_json(
             url=f"{self.base_url}/chat/completions",
             headers={"Authorization": f"Bearer {self.api_key}"},

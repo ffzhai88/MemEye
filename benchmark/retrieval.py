@@ -347,6 +347,7 @@ class _DenseTextRetriever(_BaseRetriever):
         # 把当前问题转成文本 embedding，作为检索时的查询向量。
         # query_text 是问题文本，query_vec 是问题的向量表示；如果问题文本为空，就直接返回空结果。
         query_text = str(qa.get("question", "")).strip()
+        print(f"====== Dense Text Retrieving and embedding for question: {query_text} =======")
         # 如果问题为空，或者没有可检索的候选轮次，就直接返回空结果。
         if not query_text or not self.round_texts:
             return [], self._build_debug_info(qa, [], [], [])
@@ -460,6 +461,7 @@ class _DenseMultimodalRetriever(_BaseRetriever):
     def select(self, qa: Dict[str, Any]) -> Tuple[List[str], Dict[str, Any]]:
         # 先取出当前问题文本，作为文本和图像两种 embedding 的查询输入。
         query_text = str(qa.get("question", "")).strip()
+        print(f"====== Dense Multimodal retrieving for question: {query_text} =======")
         # 如果问题为空，或者没有可用的候选轮次，就直接返回空结果。
         if not query_text or not self.round_rows:
             return [], self._build_debug_info(qa, [], [], [])
@@ -470,14 +472,17 @@ class _DenseMultimodalRetriever(_BaseRetriever):
         # 只有在配置允许时，才生成文本 query 向量。
         if self.text_dense_weight > 0:
             text_query_vec = self.text_embedder.embed_query(query_text)
+            print(f"[DEBUG] text_dense_weight={self.text_dense_weight}, built text_query_vec len={len(text_query_vec) if text_query_vec else 0}")
         # 只有在配置允许时，才生成图像 query 向量。
         if self.image_dense_weight > 0:
             image_query_vec = self.mm_embedder.embed_text(query_text)
+            print(f"[DEBUG] image_dense_weight={self.image_dense_weight}, built image_query_vec len={len(image_query_vec) if image_query_vec else 0}")
 
         # 用于保存所有候选 round 的打分结果，后续按分数排序。
         scored: List[Tuple[float, str, Dict[str, Any]]] = []
         # 统计一共索引了多少张图像，用于 debug 信息。
         total_indexed_images = 0
+        print(f"[DEBUG] round_rows_count={len(self.round_rows)}, top_k={self.top_k}, neighbor_window={self.neighbor_window}")
         # 遍历每个候选 round，分别计算文本得分和图像得分。
         for round_id, text_vec, image_items in self.round_rows:
             # 计算文本相似度分数；如果没有文本向量，就用 0 分。
@@ -510,6 +515,9 @@ class _DenseMultimodalRetriever(_BaseRetriever):
             )
         # 按最终得分从高到低排序，取前 top_k 个作为初始候选种子。
         scored.sort(key=lambda item: (-item[0], item[1]))
+        # 打印 top 候选用于调试
+        top_preview = [(r[1], r[0]) for r in scored[: min(len(scored), max(5, self.top_k))]]
+        print(f"[DEBUG] top_candidates_preview={top_preview}")
         seed_round_ids = [round_id for _, round_id, _ in scored[: max(1, self.top_k)]]
         # 对种子轮次做邻居扩展，补充连续的上下文历史轮次。
         selected_round_ids = _expand_with_neighbors(
@@ -600,6 +608,8 @@ def select_round_ids_for_qa(
     retriever = _get_retriever(dataset, config)
     # 让检索器根据题目 q/a 选出候选 round_id。
     selected_round_ids, debug = retriever.select(qa)
+    # 打印检索后（含邻居扩展）的最终候选轮次，便于调试观察哪些轮次被选中
+    print(f"[DEBUG] select_round_ids_for_qa -> selected_round_ids={selected_round_ids}")
     # 如果调用方传入了 runtime_info，就把检索调试信息写进去，方便追踪。
     if runtime_info is not None:
         runtime_info.clear()
