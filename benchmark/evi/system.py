@@ -27,9 +27,9 @@ log = logging.getLogger(__name__)
 
 FINAL_ANSWER_SYSTEM_PROMPT = """You are answering a multimodal long-term memory question.
 Use the selected memory evidence as the primary evidence.
-The evidence may be question-aligned episodic evidence or selected factual assertions.
-Use each episode alignment to decide which facts belong to the memory object described by the question.
-Do not choose an option merely because similar wording appears in a mismatched episode.
+The evidence may be question-grounded episodic evidence or selected factual assertions.
+Use grounded question cues to decide which episode matches each description in the question.
+Do not choose an option merely because similar wording appears in an observed fact without a matching grounded cue.
 Use attached images only to resolve uncertainty.
 Be concise and grounded in the selected evidence.
 If the question is multiple-choice, answer with ONLY the option letter.
@@ -591,7 +591,7 @@ class EVISystem:
 
     def _build_state_final_prompt(self, question: str, states: List[EpisodicState]) -> str:
         lines: List[str] = []
-        lines.append("Question-aligned episodic evidence:")
+        lines.append("Question-grounded episodic evidence:")
         if not states:
             lines.append("No selected episodic evidence was available.")
         for idx, state in enumerate(states, start=1):
@@ -599,21 +599,27 @@ class EVISystem:
                 f"{idx}. Evidence from session {state.session_id} on {state.date}; "
                 f"rounds {' -> '.join(state.round_ids)}."
             )
-            alignment = " ".join(str(state.episode_alignment or "unspecified").split())
-            lines.append("   Episode alignment: " + alignment)
-            facts = [" ".join(str(item).split()) for item in state.answer_relevant_facts if str(item).strip()]
+            cues = [" ".join(str(item).split()) for item in state.grounded_cues if str(item).strip()]
+            if cues:
+                lines.append("   Grounded question cues:")
+                for item in cues[:8]:
+                    lines.append("   - " + item)
+            else:
+                lines.append("   Grounded question cues: none")
+            facts = [" ".join(str(item).split()) for item in state.observed_facts if str(item).strip()]
             if facts:
+                lines.append("   Observed facts:")
                 for item in facts[:12]:
                     lines.append("   - " + item)
             else:
-                lines.append("   - No concrete question-relevant evidence extracted from this episode.")
+                lines.append("   Observed facts: none")
             uncertainties = [" ".join(str(item).split()) for item in state.uncertainties if str(item).strip()]
             if uncertainties:
                 lines.append("   Uncertainties:")
                 for item in uncertainties[:3]:
                     lines.append("   - " + item)
         lines.append("")
-        lines.append("Use episode alignment before using a fact. Ignore facts from episodes whose alignment does not match the object or event asked about.")
+        lines.append("Use grounded question cues to decide which episode corresponds to each description in the question. Use observed facts from the matching episode to answer. Ignore observed facts from episodes without matching grounded cues.")
         lines.append("")
         lines.append("Question:")
         lines.append(str(question or ""))

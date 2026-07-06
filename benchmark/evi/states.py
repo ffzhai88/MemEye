@@ -15,7 +15,7 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
-_PROMPT_VERSION = "question_aligned_episode_evidence_v4"
+_PROMPT_VERSION = "question_grounded_cue_episode_evidence_v5"
 _CACHE_DIR: Optional[str] = None
 
 EPISODIC_STATE_SYSTEM_PROMPT = """Inspect one ordered memory episode for a multimodal memory agent.
@@ -23,15 +23,18 @@ EPISODIC_STATE_SYSTEM_PROMPT = """Inspect one ordered memory episode for a multi
 Input: a question with options, several dialogue rounds, and attached images.
 Do not answer the question or choose an option.
 
-First decide how this episode aligns with the question's referring descriptions.
-Then extract concrete facts from this episode under that alignment.
+Your job is not to label the whole episode. Instead:
+1. Ground question cues: identify short descriptive phrases from the question that are directly visible or explicitly stated in this episode.
+2. Record observed facts: list concrete visual/dialogue facts from this episode that may help answer later.
 
 Return ONLY this JSON object:
 {
   "relevance": "relevant|uncertain|excluded",
-  "episode_alignment": "which object/event/episode in the question this memory set appears to match; use 'unmatched' if none",
-  "evidence_facts": [
-    {"round_id": "...", "fact": "concrete visual/dialogue fact", "source": "image|dialogue|both", "role": "alignment|answer_evidence|context|uncertain"}
+  "grounded_cues": [
+    {"question_phrase": "phrase from the question", "round_id": "...", "evidence": "what in this episode grounds the phrase", "source": "image|dialogue|both"}
+  ],
+  "observed_facts": [
+    {"round_id": "...", "fact": "concrete fact visible/stated in this episode", "source": "image|dialogue|both"}
   ],
   "uncertainties": ["only if a relevant detail is ambiguous or missing"],
   "confidence": 0.0
@@ -39,12 +42,12 @@ Return ONLY this JSON object:
 
 Rules:
 - Options clarify what information may matter, but they are not evidence.
-- Do not copy option wording as a fact unless that detail is directly visible or stated in this episode.
-- If the episode matches only a non-answer referent, contrast referent, or distractor, say that in episode_alignment.
-- Do not turn facts from a mismatched episode into answer_evidence.
-- Use relevance="excluded" when the episode is unrelated or only matches distractor wording.
-- If related, keep facts short, concrete, and separated by round.
-- Use dialogue as context, but ground visual claims in images.
+- Do not copy an option as a fact unless that detail is directly visible or explicitly stated in this episode.
+- Do not infer that this episode is the target memory; only ground phrases and record facts.
+- A grounded cue must be tied to a specific round.
+- Observed facts must be grounded in this episode, not in the answer options.
+- Use relevance="excluded" when no question cue or useful observed fact is grounded in this episode.
+- Use relevance="uncertain" when grounding may be relevant but is visually ambiguous or incomplete.
 """
 
 
@@ -74,7 +77,32 @@ def _as_str_list(value: object) -> List[str]:
     return []
 
 
-def _evidence_fact_list(value: object) -> List[str]:
+def _grounded_cue_list(value: object) -> List[str]:
+    if not isinstance(value, list):
+        return _as_str_list(value)
+    out: List[str] = []
+    for item in value:
+        if isinstance(item, dict):
+            phrase = str(item.get("question_phrase", item.get("phrase", item.get("cue", "")))).strip()
+            rid = str(item.get("round_id", "")).strip()
+            source = str(item.get("source", "")).strip()
+            evidence = str(item.get("evidence", item.get("fact", item.get("text", "")))).strip()
+            if not evidence:
+                continue
+            prefix_parts = []
+            if phrase:
+                prefix_parts.append(f'cue="{phrase}"')
+            prefix_parts.extend(part for part in (rid, source) if part)
+            prefix = "/".join(prefix_parts)
+            out.append(f"{prefix}: {evidence}" if prefix else evidence)
+        else:
+            text = str(item).strip()
+            if text:
+                out.append(text)
+    return out
+
+
+def _observed_fact_list(value: object) -> List[str]:
     if not isinstance(value, list):
         return _as_str_list(value)
     out: List[str] = []
@@ -82,11 +110,10 @@ def _evidence_fact_list(value: object) -> List[str]:
         if isinstance(item, dict):
             rid = str(item.get("round_id", "")).strip()
             source = str(item.get("source", "")).strip()
-            role = str(item.get("role", item.get("question_role", ""))).strip()
-            fact = str(item.get("fact", "")).strip()
+            fact = str(item.get("fact", item.get("evidence", item.get("text", "")))).strip()
             if not fact:
                 continue
-            prefix_parts = [part for part in (rid, source, role) if part]
+            prefix_parts = [part for part in (rid, source) if part]
             prefix = "/".join(prefix_parts)
             out.append(f"{prefix}: {fact}" if prefix else fact)
         else:
@@ -105,7 +132,6 @@ def _clean_relevance(value: object) -> str:
     if raw in {"no", "irrelevant", "exclude"}:
         return "excluded"
     return "uncertain"
-
 
 
 def state_image_paths(memory_set: EpisodicMemorySet, max_images: int) -> List[str]:
@@ -191,7 +217,8 @@ def make_fallback_state(memory_set: EpisodicMemorySet, reason: str) -> EpisodicS
         round_ids=list(memory_set.round_ids),
         image_paths=state_image_paths(memory_set, 99),
         relevance="uncertain",
-        episode_alignment="unknown; readout unavailable",
+        grounded_cues=[],
+        observed_facts=[],
         answer_relevant_facts=[],
         uncertainties=[f"Episode evidence readout was not available because {reason}."],
         confidence=0.0,
@@ -199,20 +226,49 @@ def make_fallback_state(memory_set: EpisodicMemorySet, reason: str) -> EpisodicS
     )
 
 
+def _state_from_payload(
+    memory_set: EpisodicMemorySet,
+    payload: dict,
+    images: List[str],
+    confidence: float,
+) -> EpisodicState:
+    grounded_cues = _grounded_cue_list(payload.get("grounded_cues", []))
+    observed_facts = _observed_fact_list(payload.get("observed_facts", payload.get("evidence_facts", [])))
+    return EpisodicState(
+        set_id=memory_set.id,
+        session_id=memory_set.session_id,
+        date=memory_set.date,
+        round_ids=list(memory_set.round_ids),
+        image_paths=list(images),
+        relevance=_clean_relevance(payload.get("relevance")),
+        grounded_cues=grounded_cues,
+        observed_facts=observed_facts,
+        answer_relevant_facts=grounded_cues + observed_facts,
+        uncertainties=_as_str_list(payload.get("uncertainties", [])),
+        confidence=confidence,
+        score=memory_set.score,
+    )
+
+
 def _log_state_result(prefix: str, state: EpisodicState) -> None:
     log.info(
-        "%s set=%s relevance=%s confidence=%.2f alignment=%s rounds=%s facts=%d uncertainties=%d",
+        "%s set=%s relevance=%s confidence=%.2f rounds=%s cues=%d facts=%d uncertainties=%d",
         prefix,
         state.set_id,
         state.relevance,
         state.confidence,
-        state.episode_alignment or "unspecified",
         " -> ".join(state.round_ids),
-        len(state.answer_relevant_facts),
+        len(state.grounded_cues),
+        len(state.observed_facts),
         len(state.uncertainties),
     )
-    if state.answer_relevant_facts:
-        for idx, fact in enumerate(state.answer_relevant_facts, start=1):
+    if state.grounded_cues:
+        for idx, cue in enumerate(state.grounded_cues, start=1):
+            log.info("%s cue[%02d]: %s", prefix, idx, " ".join(str(cue).split()))
+    else:
+        log.info("%s cues: <none>", prefix)
+    if state.observed_facts:
+        for idx, fact in enumerate(state.observed_facts, start=1):
             log.info("%s fact[%02d]: %s", prefix, idx, " ".join(str(fact).split()))
     else:
         log.info("%s facts: <none>", prefix)
@@ -242,19 +298,11 @@ def read_episodic_state(
             try:
                 data = json.loads(cache_file.read_text(encoding="utf-8"))
                 log.info("  [STATE CACHE] HIT set=%s", memory_set.id)
-                state = EpisodicState(
-                    set_id=memory_set.id,
-                    session_id=memory_set.session_id,
-                    date=memory_set.date,
-                    round_ids=list(memory_set.round_ids),
-                    image_paths=list(images),
-                    relevance=_clean_relevance(data.get("relevance")),
-                    episode_alignment=str(data.get("episode_alignment", "")).strip(),
-                    answer_relevant_facts=_evidence_fact_list(data.get("evidence_facts", data.get("answer_relevant_facts", []))),
-                    uncertainties=_as_str_list(data.get("uncertainties", [])),
-                    confidence=max(0.0, min(1.0, float(data.get("confidence", 0.0) or 0.0))),
-                    score=memory_set.score,
-                )
+                try:
+                    cached_confidence = max(0.0, min(1.0, float(data.get("confidence", 0.0) or 0.0)))
+                except Exception:
+                    cached_confidence = 0.0
+                state = _state_from_payload(memory_set, data, images, cached_confidence)
                 _log_state_result("  [STATE CACHE RESULT]", state)
                 return state
             except Exception as exc:
@@ -283,20 +331,8 @@ def read_episodic_state(
         confidence = max(0.0, min(1.0, float(parsed.get("confidence", 0.0) or 0.0)))
     except Exception:
         confidence = 0.0
-    state = EpisodicState(
-        set_id=memory_set.id,
-        session_id=memory_set.session_id,
-        date=memory_set.date,
-        round_ids=list(memory_set.round_ids),
-        image_paths=list(images),
-        relevance=_clean_relevance(parsed.get("relevance")),
-        episode_alignment=str(parsed.get("episode_alignment", "")).strip(),
-        answer_relevant_facts=_evidence_fact_list(parsed.get("evidence_facts", parsed.get("answer_relevant_facts", []))),
-        uncertainties=_as_str_list(parsed.get("uncertainties", [])),
-        confidence=confidence,
-        score=memory_set.score,
-    )
-    if not state.answer_relevant_facts and not state.uncertainties and state.relevance != "excluded":
+    state = _state_from_payload(memory_set, parsed, images, confidence)
+    if not state.grounded_cues and not state.observed_facts and not state.uncertainties and state.relevance != "excluded":
         log.warning(
             "  [EVIDENCE READOUT] no usable fields set=%s parsed_keys=%s raw=%s",
             memory_set.id,
@@ -306,7 +342,8 @@ def read_episodic_state(
         state = make_fallback_state(memory_set, "the state model returned no usable state fields")
 
     is_fallback_state = (
-        not state.answer_relevant_facts
+        not state.grounded_cues
+        and not state.observed_facts
         and any("readout was not available" in item for item in state.uncertainties)
     )
     if use_cache and cache_file is not None and not is_fallback_state:
@@ -318,8 +355,8 @@ def read_episodic_state(
                         "cache_namespace": cache_namespace,
                         "set_id": memory_set.id,
                         "relevance": state.relevance,
-                        "episode_alignment": state.episode_alignment,
-                        "evidence_facts": state.answer_relevant_facts,
+                        "grounded_cues": state.grounded_cues,
+                        "observed_facts": state.observed_facts,
                         "uncertainties": state.uncertainties,
                         "confidence": state.confidence,
                     },
@@ -366,13 +403,14 @@ def read_episodic_states(
     log.info("EVI episodic evidence readouts generated: %d", len(states))
     for idx, state in enumerate(states, start=1):
         log.info(
-            "  evidence_readout[%02d] set=%s relevance=%s confidence=%.2f rounds=%s facts=%d uncertainties=%d",
+            "  evidence_readout[%02d] set=%s relevance=%s confidence=%.2f rounds=%s cues=%d facts=%d uncertainties=%d",
             idx,
             state.set_id,
             state.relevance,
             state.confidence,
             " -> ".join(state.round_ids),
-            len(state.answer_relevant_facts),
+            len(state.grounded_cues),
+            len(state.observed_facts),
             len(state.uncertainties),
         )
     return states

@@ -86,7 +86,8 @@ class EpisodicState:
     round_ids: List[str]
     image_paths: List[str]
     relevance: str
-    episode_alignment: str = ""
+    grounded_cues: List[str] = field(default_factory=list)
+    observed_facts: List[str] = field(default_factory=list)
     memory_items: List[str] = field(default_factory=list)
     observations: List[str] = field(default_factory=list)
     relations: List[str] = field(default_factory=list)
