@@ -39,7 +39,7 @@ max_final_states: 4
 # State cache keys include prompt version, model namespace, question stem, memory-set content, and state images.
 use_state_cache: true
 use_state_images: true
-max_state_images_per_set: 4
+max_state_images_per_set: 8
 
 # Legacy candidate-centric memory briefing budget. Used only when evi_pipeline: candidate_assertion.
 max_candidates: 16

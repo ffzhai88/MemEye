@@ -27,7 +27,7 @@ log = logging.getLogger(__name__)
 
 FINAL_ANSWER_SYSTEM_PROMPT = """You are answering a multimodal long-term memory question.
 Use the selected memory evidence as the primary evidence.
-The evidence may be reconstructed episodic states or selected factual assertions.
+The evidence may be question-relevant episodic evidence or selected factual assertions.
 Use attached images only to resolve uncertainty.
 Be concise and grounded in the selected evidence.
 If the question is multiple-choice, answer with ONLY the option letter.
@@ -589,39 +589,29 @@ class EVISystem:
 
     def _build_state_final_prompt(self, question: str, states: List[EpisodicState]) -> str:
         lines: List[str] = []
-        lines.append("Reconstructed episodic memory states:")
+        lines.append("Question-relevant episodic evidence:")
         if not states:
-            lines.append("No selected episodic memory state was available.")
+            lines.append("No selected episodic evidence was available.")
         for idx, state in enumerate(states, start=1):
             lines.append(
-                f"{idx}. Memory state from session {state.session_id} on {state.date}; "
+                f"{idx}. Evidence from session {state.session_id} on {state.date}; "
                 f"rounds {' -> '.join(state.round_ids)}."
             )
-            if state.memory_items:
-                lines.append("   Memory items:")
-                for item in state.memory_items[:12]:
-                    lines.append("   - " + " ".join(str(item).split()))
-            if state.observations:
-                lines.append("   Observations:")
-                for item in state.observations[:6]:
-                    lines.append("   - " + " ".join(str(item).split()))
-            if state.relations or state.changes:
-                lines.append("   Relations and changes:")
-                for item in (state.relations + state.changes)[:8]:
-                    lines.append("   - " + " ".join(str(item).split()))
-            if state.answer_relevant_facts:
-                lines.append("   Answer-relevant facts:")
-                for item in state.answer_relevant_facts[:8]:
-                    lines.append("   - " + " ".join(str(item).split()))
-            if state.uncertainties:
+            facts = [" ".join(str(item).split()) for item in state.answer_relevant_facts if str(item).strip()]
+            if facts:
+                for item in facts[:12]:
+                    lines.append("   - " + item)
+            else:
+                lines.append("   - No concrete question-relevant evidence extracted from this episode.")
+            uncertainties = [" ".join(str(item).split()) for item in state.uncertainties if str(item).strip()]
+            if uncertainties:
                 lines.append("   Uncertainties:")
-                for item in state.uncertainties[:4]:
-                    lines.append("   - " + " ".join(str(item).split()))
+                for item in uncertainties[:3]:
+                    lines.append("   - " + item)
         lines.append("")
         lines.append("Question:")
         lines.append(str(question or ""))
         lines.append("")
-        #lines.append("Answer using only the reconstructed memory states. If the question is multiple-choice, answer with only the option letter.")
         return "\n".join(lines)
 
     def _answer_images_for_states(self, states: List[EpisodicState], question_images: Optional[List[str]]) -> List[str]:

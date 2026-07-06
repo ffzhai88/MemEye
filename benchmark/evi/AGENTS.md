@@ -15,7 +15,7 @@ EVI separates long-term memory use into these stages:
 1. Offline evidence anchors: compact, typed, provenance-grounded anchors extracted from dialogue text and images.
 2. Broad retrieval: the question stem retrieves a large pool of relevant anchors, reweighted by query-agnostic collection-level IDF discriminativeness.
 3. Episodic memory sets: retrieved rounds are grouped by session and round order, with small local windows around hits.
-4. Episodic state readout: each ordered memory set is converted into a clean, itemized state with per-round facts, relations, changes, and uncertainties.
+4. Question-relevant evidence readout: each ordered memory set is inspected with its round dialogue and attached images, then converted into only answer-helpful evidence facts and uncertainties.
 5. Final answer: the final prompt receives selected clean states, not raw anchor dumps, debug metadata, or table-like intermediate state.
 
 This design is intended to preserve item-level evidence for counting while recovering temporal, spatial, comparative, and change relations that are lost by independent candidate assertions.
@@ -66,7 +66,7 @@ Anchor types are generic and benchmark-independent: `scene`, `text`, `entity`, `
    - rank memory sets lexicographically by hit-round count, mean best hit-round score, then max hit-anchor score.
 4. Read each set with `states.read_episodic_states(...)`.
 5. Select relevant states first, then uncertain states as fallback.
-6. Build a clean final prompt from `memory_items`, `observations`, `relations`, `changes`, `answer_relevant_facts`, and `uncertainties`.
+6. Build a clean final prompt from extracted `answer_relevant_facts` and `uncertainties` only.
 7. Call the VLM for the final answer. By default, memory images are not attached to the final answer call; images are consumed during state readout.
 
 ## Config
@@ -86,7 +86,7 @@ Important keys:
 - `max_final_states`: maximum selected states shown to the final answer model.
 - `use_state_cache`: enable disk cache for state readout.
 - `use_state_images`: attach set images to state readout calls.
-- `max_state_images_per_set`: cap images in each state readout call.
+- `max_state_images_per_set`: cap images in each question-relevant evidence readout call.
 - `use_final_memory_images`: attach selected memory images to the final answer call; default false.
 - `use_dataset_captions`: include benchmark-provided captions only for ablation/upper-information runs.
 - `use_embedding_cache`: enable disk cache for text embeddings.
@@ -127,7 +127,7 @@ The paper-facing story should distinguish:
 
 - Flat RAG: retrieve anchors/chunks and answer directly.
 - Legacy candidate assertion: judge each candidate independently.
-- Episodic-state EVI: retrieve anchors, reconstruct ordered local memory state, then answer from clean itemized states.
+- Episodic evidence EVI: retrieve anchors, organize local memory sets, extract question-relevant evidence from round dialogue/images, then answer from clean evidence facts.
 
 Useful ablations:
 
