@@ -689,6 +689,7 @@ class EVISystem:
             use_images=self._use_state_images,
             max_images=self._max_state_images_per_set,
             max_prompt_chars=self._debug_prompt_chars,
+            question_context=question,
         )
         trace_json(log, "episodic_states", {
             "num_states": len(states),
@@ -721,6 +722,7 @@ class EVISystem:
         if len(prompt) > self._debug_prompt_chars:
             prompt_preview = f"{prompt_preview}\n... [truncated with {len(prompt) - self._debug_prompt_chars} more chars]"
         log.info("QDMO-EVI final prompt preview:\n%s", prompt_preview)
+        log.info("QDMO-EVI final prompt full:\n%s", prompt)
         log.info(
             "QDMO-EVI answer images=%s use_final_memory_images=%s pipeline=%s",
             images,

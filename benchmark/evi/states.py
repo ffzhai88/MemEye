@@ -15,12 +15,12 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
-_PROMPT_VERSION = "question_relevant_episode_evidence_v1"
+_PROMPT_VERSION = "question_relevant_episode_evidence_v2"
 _CACHE_DIR: Optional[str] = None
 
 EPISODIC_STATE_SYSTEM_PROMPT = """You are reading one ordered episodic memory set for a multimodal long-term memory agent.
 
-Given the user question stem, inspect only the provided round dialogue and attached images.
+Given the user question, including answer options if provided, inspect only the provided round dialogue and attached images.
 Extract only information that could help answer the question later.
 Do not answer the final question. Do not choose a multiple-choice option.
 Do not write generic summaries, context labels, state descriptions, relations, changes, or debugging commentary unless they directly help answer the question.
@@ -44,7 +44,7 @@ Guidelines:
 - evidence_facts must be concrete facts, not explanations of why the memory is relevant.
 - Prefer visible entities, attributes, text, landmarks, counts, spatial relations, and temporal order when they matter to the question.
 - Use dialogue only as context; do not let dialogue labels replace visible evidence.
-- Mark relevance="excluded" only when the memory set is clearly unrelated to the question stem.
+- Mark relevance="excluded" only when the memory set is clearly unrelated to the question and its options.
 - If the memory may contain useful evidence but details are incomplete or ambiguous, use relevance="uncertain".
 """
 
@@ -126,11 +126,17 @@ def _memory_set_prompt(
     memory_set: EpisodicMemorySet,
     attached_images: List[str],
     max_prompt_chars: int,
+    question_context: Optional[str] = None,
 ) -> str:
     attached = set(attached_images)
+    question_text = str(question_context or question_stem or "")
     lines: List[str] = []
-    lines.append("Question stem:")
-    lines.append(str(question_stem or ""))
+    lines.append("Question to answer, including options if provided:")
+    lines.append(question_text)
+    if question_stem and question_text.strip() != str(question_stem).strip():
+        lines.append("")
+        lines.append("Question stem used for retrieval:")
+        lines.append(str(question_stem))
     lines.append("")
     lines.append(f"Memory set: {memory_set.id}")
     lines.append(f"Session: {memory_set.session_id}")
@@ -158,12 +164,14 @@ def _cache_key(
     memory_set: EpisodicMemorySet,
     image_paths: List[str],
     cache_namespace: str,
+    question_context: Optional[str] = None,
 ) -> str:
     raw = json.dumps(
         {
             "version": _PROMPT_VERSION,
             "cache_namespace": cache_namespace,
             "question_stem": question_stem,
+            "question_context": question_context or question_stem,
             "set_id": memory_set.id,
             "round_ids": memory_set.round_ids,
             "images": image_paths,
@@ -190,6 +198,27 @@ def make_fallback_state(memory_set: EpisodicMemorySet, reason: str) -> EpisodicS
     )
 
 
+def _log_state_result(prefix: str, state: EpisodicState) -> None:
+    log.info(
+        "%s set=%s relevance=%s confidence=%.2f rounds=%s facts=%d uncertainties=%d",
+        prefix,
+        state.set_id,
+        state.relevance,
+        state.confidence,
+        " -> ".join(state.round_ids),
+        len(state.answer_relevant_facts),
+        len(state.uncertainties),
+    )
+    if state.answer_relevant_facts:
+        for idx, fact in enumerate(state.answer_relevant_facts, start=1):
+            log.info("%s fact[%02d]: %s", prefix, idx, " ".join(str(fact).split()))
+    else:
+        log.info("%s facts: <none>", prefix)
+    if state.uncertainties:
+        for idx, item in enumerate(state.uncertainties, start=1):
+            log.info("%s uncertainty[%02d]: %s", prefix, idx, " ".join(str(item).split()))
+
+
 def read_episodic_state(
     question_stem: str,
     memory_set: EpisodicMemorySet,
@@ -200,17 +229,18 @@ def read_episodic_state(
     use_images: bool = True,
     max_images: int = 4,
     max_prompt_chars: int = 10000,
+    question_context: Optional[str] = None,
 ) -> EpisodicState:
     images = state_image_paths(memory_set, max_images) if use_images else []
     cache_file: Optional[Path] = None
     if use_cache:
-        key = _cache_key(question_stem, memory_set, images, cache_namespace)
+        key = _cache_key(question_stem, memory_set, images, cache_namespace, question_context)
         cache_file = Path(_cache_dir()) / f"{key}.json"
         if cache_file.exists():
             try:
                 data = json.loads(cache_file.read_text(encoding="utf-8"))
                 log.info("  [STATE CACHE] HIT set=%s", memory_set.id)
-                return EpisodicState(
+                state = EpisodicState(
                     set_id=memory_set.id,
                     session_id=memory_set.session_id,
                     date=memory_set.date,
@@ -222,10 +252,12 @@ def read_episodic_state(
                     confidence=max(0.0, min(1.0, float(data.get("confidence", 0.0) or 0.0))),
                     score=memory_set.score,
                 )
+                _log_state_result("  [STATE CACHE RESULT]", state)
+                return state
             except Exception as exc:
                 log.warning("  [STATE CACHE] read failed set=%s error=%s", memory_set.id, exc)
 
-    user_text = _memory_set_prompt(question_stem, memory_set, images, max_prompt_chars)
+    user_text = _memory_set_prompt(question_stem, memory_set, images, max_prompt_chars, question_context)
     log.info(
         "  [EVIDENCE READOUT] set=%s rounds=%s images=%d",
         memory_set.id,
@@ -261,9 +293,19 @@ def read_episodic_state(
         score=memory_set.score,
     )
     if not state.answer_relevant_facts and not state.uncertainties:
+        log.warning(
+            "  [EVIDENCE READOUT] no usable fields set=%s parsed_keys=%s raw=%s",
+            memory_set.id,
+            sorted(parsed.keys()),
+            _shorten(raw, 1000),
+        )
         state = make_fallback_state(memory_set, "the state model returned no usable state fields")
 
-    if use_cache and cache_file is not None:
+    is_fallback_state = (
+        not state.answer_relevant_facts
+        and any("readout was not available" in item for item in state.uncertainties)
+    )
+    if use_cache and cache_file is not None and not is_fallback_state:
         try:
             cache_file.write_text(
                 json.dumps(
@@ -283,6 +325,9 @@ def read_episodic_state(
             )
         except Exception as exc:
             log.warning("  [STATE] Cache write failed: %s", exc)
+    elif is_fallback_state:
+        log.info("  [STATE CACHE] skip fallback state set=%s", memory_set.id)
+    _log_state_result("  [EVIDENCE READOUT RESULT]", state)
     return state
 
 
@@ -296,6 +341,7 @@ def read_episodic_states(
     use_images: bool = True,
     max_images: int = 4,
     max_prompt_chars: int = 10000,
+    question_context: Optional[str] = None,
 ) -> List[EpisodicState]:
     states: List[EpisodicState] = []
     for memory_set in memory_sets:
@@ -309,6 +355,7 @@ def read_episodic_states(
                 use_images=use_images,
                 max_images=max_images,
                 max_prompt_chars=max_prompt_chars,
+                question_context=question_context,
             )
         )
     log.info("EVI episodic evidence readouts generated: %d", len(states))
