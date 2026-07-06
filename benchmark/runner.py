@@ -385,7 +385,10 @@ def run_benchmark(
     # 3) Open-ended 分支：当题目没有选项时，模型直接生成自由文本答案，
     #    再用 F1、BLEU、BERTScore、LLM Judge 等指标做语义与文本相似度评估。
     for i, qa in enumerate(qas, start=1):
+        print("================================================================")
+        print(f"[INFO] Running QA {i}/{len(qas)} point={qa.get('point')} method={method.name} mode={mode}")
         question_text = qa.get("question", "")
+        print(f"[INFO] Question: {question_text}")
         gt = qa.get("answer", "")
         has_options = isinstance(qa.get("options"), (dict, list)) and bool(qa.get("options"))
         rotation_mode = is_rotation_mcq(qa)
@@ -461,6 +464,7 @@ def run_benchmark(
                     pred = method.answer(dataset, qa, question, **answer_kwargs)
                 else:
                     # 对于普通方法，走统一的 router.answer(history, question, question_images=...)。
+                    print(f"[DEBUG] Calling router.answer with history={history} \nquestion={question} \nquestion_images={question_image_paths}")
                     pred = router.answer(history, question, question_images=question_image_paths)
                 # 计算单轮推理耗时，单位为毫秒。
                 latency_ms = int((dt.datetime.now() - t0).total_seconds() * 1000)
@@ -558,6 +562,7 @@ def run_benchmark(
                 pred = method.answer(dataset, qa, question, **answer_kwargs)
             else:
                 # 普通方法走统一的 router.answer 路径。
+                print(f"[DEBUG] Calling router.answer with history={history} \nquestion={question} \nquestion_images={question_image_paths}")
                 pred = router.answer(history, question, question_images=question_image_paths)
             # 计算这次回答的耗时，并把结果写回结果对象，方便后续做性能分析。
             latency_ms = int((dt.datetime.now() - t0).total_seconds() * 1000)
@@ -618,6 +623,7 @@ def run_benchmark(
                 pred = method.answer(dataset, qa, question, **answer_kwargs)
             else:
                 # 普通方法则依赖 router 来完成最终生成。
+                print(f"[DEBUG] Calling router.answer with history={history} \nquestion={question} \nquestion_images={question_image_paths}")
                 pred = router.answer(history, question, question_images=question_image_paths)
             # 计算这种自由文本回答的耗时。
             latency_ms = int((dt.datetime.now() - t0).total_seconds() * 1000)
