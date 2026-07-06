@@ -9,6 +9,7 @@ from .briefs import generate_memory_briefs
 from .candidates import consolidate_candidates
 from .cues import extract_retrieval_cues
 from .extractor import extract_image_anchors
+from .image_index import ImageIndex
 from .indexes import EvidenceIndex, embed_text, normalize_type
 from .schemas import EpisodicState, EvidenceAnchor, MemoryBrief
 from .sets import build_episodic_memory_sets
@@ -50,6 +51,8 @@ class EVISystem:
         self._index = EvidenceIndex(use_quality_weighting=self._use_anchor_quality_weighting)
         self._vlm: Optional[VLMCallable] = None
         self._embedder: Optional[Any] = None
+        self._mm_embedder: Optional[Any] = None
+        self._image_index: Optional[ImageIndex] = None
 
         self._round_order: List[str] = []
         self._round_session: Dict[str, str] = {}
@@ -81,9 +84,13 @@ class EVISystem:
         self._max_state_images_per_set = int(cfg.get("max_state_images_per_set", 4))
         self._max_retrieval_cues = int(cfg.get("max_retrieval_cues", 4))
         self._use_retrieval_cue_cache = self._as_bool(cfg.get("use_retrieval_cue_cache"), True)
+        self._use_image_retrieval = self._as_bool(cfg.get("use_image_retrieval"), True)
+        self._use_image_embedding_cache = self._as_bool(cfg.get("use_image_embedding_cache"), True)
+        self._multimodal_embedding_model = str(cfg.get("multimodal_embedding_model", "siglip2-base-patch16-384"))
         self._debug_top_k = int(cfg.get("evi_debug_top_k", 20))
         self._debug_prompt_chars = int(cfg.get("evi_debug_prompt_chars", 12000))
         self._embed_cache_namespace = "uninitialized"
+        self._image_embed_cache_namespace = "uninitialized"
         self._vlm_result_namespace = "uninitialized"
 
         self._initialized = False
@@ -139,6 +146,30 @@ class EVISystem:
             )
             self._embedder = None
 
+        self._image_embed_cache_namespace = json.dumps(
+            {"model": self._multimodal_embedding_model},
+            sort_keys=True,
+            default=str,
+        )
+        if self._use_image_retrieval:
+            from ..embeddings import get_multimodal_embedder
+
+            try:
+                self._mm_embedder = get_multimodal_embedder(self._multimodal_embedding_model)
+            except Exception as exc:
+                log.warning("Image retrieval embedder unavailable: %s", exc)
+                self._mm_embedder = None
+            if self._mm_embedder is None:
+                log.warning("QDMO-EVI image retrieval disabled because no multimodal embedder is available")
+                self._use_image_retrieval = False
+            else:
+                self._image_index = ImageIndex(
+                    self._mm_embedder,
+                    cache_namespace=self._image_embed_cache_namespace,
+                    use_cache=self._use_image_embedding_cache,
+                )
+                log.info("Image retrieval embedder loaded: %s", self._multimodal_embedding_model)
+
     def _embed(self, text: str) -> List[float]:
         return embed_text(
             text,
@@ -192,21 +223,32 @@ class EVISystem:
                 hits,
                 misses,
             )
-        cue_rounds: Set[str] = set()
+        unions = {
+            "text_channels_union": set(),
+            "image_channels_union": set(),
+            "cue_channels_union": set(),
+        }
         for channel_id, rounds in channel_rounds.items():
-            if channel_id != "question":
-                cue_rounds.update(rounds)
-        if cue_rounds:
-            hits = [rid for rid in clue_rounds if rid in cue_rounds]
+            if channel_id.startswith("image_"):
+                unions["image_channels_union"].update(rounds)
+            else:
+                unions["text_channels_union"].update(rounds)
+            if channel_id.startswith("cue_") or channel_id.startswith("image_cue_"):
+                unions["cue_channels_union"].update(rounds)
+        for union_name, rounds in unions.items():
+            if not rounds:
+                continue
+            hits = [rid for rid in clue_rounds if rid in rounds]
             misses = [rid for rid in clue_rounds if rid not in set(hits)]
-            coverage["cue_channels_union"] = {
+            coverage[union_name] = {
                 "num_hits": len(hits),
                 "num_clues": len(clue_rounds),
                 "hits": hits,
                 "misses": misses,
             }
             log.info(
-                "QDMO-EVI cue-channel union clue coverage: %d/%d hits=%s misses=%s",
+                "QDMO-EVI %s clue coverage: %d/%d hits=%s misses=%s",
+                union_name,
                 len(hits),
                 len(clue_rounds),
                 hits,
@@ -222,8 +264,8 @@ class EVISystem:
             use_cache=self._use_retrieval_cue_cache,
             cache_namespace=self._vlm_result_namespace,
         )
-        channels: List[Dict[str, str]] = [{"id": "question", "text": str(question_stem or "").strip()}]
-        seen_texts = {channels[0]["text"].lower()}
+        base_channels: List[Dict[str, str]] = [{"id": "question", "text": str(question_stem or "").strip()}]
+        seen_texts = {base_channels[0]["text"].lower()}
         for idx, cue in enumerate(cues, start=1):
             cue_text = " ".join(str(cue or "").split())
             if not cue_text:
@@ -231,19 +273,32 @@ class EVISystem:
             key = cue_text.lower()
             if key in seen_texts:
                 continue
-            channels.append({"id": f"cue_{idx}", "text": cue_text})
+            base_channels.append({"id": f"cue_{idx}", "text": cue_text})
             seen_texts.add(key)
+
+        channels: List[Dict[str, str]] = []
+        for base in base_channels:
+            if base["text"]:
+                channels.append({"id": base["id"], "text": base["text"], "kind": "text"})
+        image_channels_enabled = self._use_image_retrieval and self._image_index is not None and len(self._image_index) > 0
+        if image_channels_enabled:
+            for base in base_channels:
+                if base["text"]:
+                    channels.append({"id": f"image_{base['id']}", "text": base["text"], "kind": "image"})
+        elif self._use_image_retrieval:
+            log.info("QDMO-EVI image retrieval requested but image index is empty or unavailable")
 
         channels = [channel for channel in channels if channel["text"]]
         if not channels:
             return []
         per_channel_k = max(1, (self._raw_search_k + len(channels) - 1) // len(channels))
         log.info(
-            "QDMO-EVI multi-channel retrieval: channels=%d per_channel_k=%d raw_search_k=%d cues=%s",
+            "QDMO-EVI multi-channel retrieval: channels=%d per_channel_k=%d raw_search_k=%d cues=%s image_channels=%s",
             len(channels),
             per_channel_k,
             self._raw_search_k,
-            [channel["text"] for channel in channels if channel["id"] != "question"],
+            [channel["text"] for channel in base_channels if channel["id"] != "question"],
+            image_channels_enabled,
         )
 
         self._reset_retrieval_scores()
@@ -256,9 +311,83 @@ class EVISystem:
         channel_rounds: Dict[str, Set[str]] = {}
         channel_summaries: List[Dict[str, Any]] = []
 
+        def add_hit(anchor: EvidenceAnchor, channel_id: str, channel_score: float, raw_score: float) -> None:
+            if channel_score <= 0.0:
+                return
+            anchor_by_id[anchor.id] = anchor
+            round_anchor_ids.setdefault(anchor.round_id, set()).add(anchor.id)
+            best_by_channel = round_channel_best.setdefault(anchor.round_id, {})
+            if channel_score > best_by_channel.get(channel_id, 0.0):
+                best_by_channel[channel_id] = channel_score
+            per_anchor = anchor_channel_scores.setdefault(anchor.id, {})
+            if channel_score > per_anchor.get(channel_id, 0.0):
+                per_anchor[channel_id] = channel_score
+            per_anchor_raw = anchor_channel_raw_scores.setdefault(anchor.id, {})
+            if raw_score > per_anchor_raw.get(channel_id, 0.0):
+                per_anchor_raw[channel_id] = raw_score
+
         for channel in channels:
             channel_id = channel["id"]
             channel_text = channel["text"]
+            channel_kind = channel.get("kind", "text")
+            if channel_kind == "image":
+                if self._image_index is None:
+                    channel_rounds[channel_id] = set()
+                    continue
+                image_hits = self._image_index.search(channel_text, top_k=per_channel_k)
+                channel_rounds[channel_id] = {hit.round_id for hit in image_hits}
+                channel_summaries.append(
+                    {
+                        "channel_id": channel_id,
+                        "channel_text": channel_text,
+                        "channel_kind": channel_kind,
+                        "num_results": len(image_hits),
+                        "top_images": [
+                            {
+                                "round_id": hit.round_id,
+                                "image_path": hit.image_path,
+                                "raw_score": round(float(hit.score), 6),
+                                "rank_score": round(float(hit.rank_score), 6),
+                                "rank": hit.rank,
+                            }
+                            for hit in image_hits[: self._debug_top_k]
+                        ],
+                    }
+                )
+                log.info(
+                    "QDMO-EVI image_channel=%s text=%s retrieved=%d",
+                    channel_id,
+                    channel_text,
+                    len(image_hits),
+                )
+                for hit in image_hits:
+                    log.info(
+                        "  image_hit[%s:%02d] round=%s rank_score=%.4f raw=%.4f image=%s",
+                        channel_id,
+                        hit.rank,
+                        hit.round_id,
+                        hit.rank_score,
+                        hit.score,
+                        hit.image_path,
+                    )
+                for hit in image_hits:
+                    anchor = EvidenceAnchor(
+                        id=f"image_hit::{channel_id}::{hit.rank}::{hit.round_id}",
+                        session_id=self._round_session.get(hit.round_id, ""),
+                        round_id=hit.round_id,
+                        date=self._round_date.get(hit.round_id, ""),
+                        evidence_type="scene",
+                        text=(
+                            f"Image retrieval hit for channel '{channel_id}' using query '{channel_text}'. "
+                            f"Matched image: {os.path.basename(hit.image_path)}."
+                        ),
+                        image_path=hit.image_path,
+                        confidence=1.0,
+                        vector=[],
+                    )
+                    add_hit(anchor, channel_id, float(hit.rank_score), float(hit.score))
+                continue
+
             query_vec = self._embed(channel_text)
             if not query_vec:
                 log.warning("QDMO-EVI retrieval channel has empty embedding channel=%s text=%s", channel_id, channel_text)
@@ -270,43 +399,34 @@ class EVISystem:
                 {
                     "channel_id": channel_id,
                     "channel_text": channel_text,
+                    "channel_kind": channel_kind,
                     "num_results": len(results),
                     "top_anchors": anchors_summary(results, max_items=min(self._debug_top_k, len(results))),
                 }
             )
             log.info(
-                "QDMO-EVI channel=%s text=%s retrieved=%d",
+                "QDMO-EVI text_channel=%s text=%s retrieved=%d",
                 channel_id,
                 channel_text,
                 len(results),
             )
-            for idx, anchor in enumerate(results[: self._debug_top_k], start=1):
+            for rank, anchor in enumerate(results, start=1):
+                rank_score = 1.0 / rank
                 log.info(
-                    "  channel_anchor[%s:%02d] round=%s type=%s score=%.4f raw=%.4f text=%s",
+                    "  channel_anchor[%s:%02d] round=%s type=%s rank_score=%.4f raw=%.4f text=%s",
                     channel_id,
-                    idx,
+                    rank,
                     anchor.round_id,
                     anchor.evidence_type,
+                    rank_score,
                     anchor.score or 0.0,
-                    anchor.raw_score or 0.0,
                     anchor.text.replace("\n", " ")[:160],
                 )
-            for anchor in results:
-                score = float(anchor.score or 0.0)
-                if score <= 0.0:
+            for rank, anchor in enumerate(results, start=1):
+                raw_score = float(anchor.score or 0.0)
+                if raw_score <= 0.0:
                     continue
-                raw_score = float(anchor.raw_score or 0.0)
-                anchor_by_id[anchor.id] = anchor
-                round_anchor_ids.setdefault(anchor.round_id, set()).add(anchor.id)
-                best_by_channel = round_channel_best.setdefault(anchor.round_id, {})
-                if score > best_by_channel.get(channel_id, 0.0):
-                    best_by_channel[channel_id] = score
-                per_anchor = anchor_channel_scores.setdefault(anchor.id, {})
-                if score > per_anchor.get(channel_id, 0.0):
-                    per_anchor[channel_id] = score
-                per_anchor_raw = anchor_channel_raw_scores.setdefault(anchor.id, {})
-                if raw_score > per_anchor_raw.get(channel_id, 0.0):
-                    per_anchor_raw[channel_id] = raw_score
+                add_hit(anchor, channel_id, 1.0 / rank, raw_score)
 
         self._log_channel_clue_coverage(qa, channel_rounds)
         self._reset_retrieval_scores()
@@ -339,6 +459,7 @@ class EVISystem:
                 key=lambda aid: (
                     max(anchor_channel_scores.get(aid, {}).values(), default=0.0),
                     len(anchor_channel_scores.get(aid, {})),
+                    max(anchor_channel_raw_scores.get(aid, {}).values(), default=0.0),
                 ),
                 reverse=True,
             )
@@ -397,10 +518,10 @@ class EVISystem:
             "fused_rounds": fused_round_trace[: self._debug_top_k],
             "num_fused_rounds": len(fused_rounds),
             "num_merged_anchors": len(merged),
+            "image_channels_enabled": image_channels_enabled,
             "merged_anchors": anchors_summary(merged, max_items=min(self._debug_top_k, len(merged))),
         }, max_chars=self._debug_prompt_chars + 4000)
         return merged[: self._raw_search_k]
-
     @staticmethod
     def _as_bool(value: Any, default: bool = False) -> bool:
         if value is None:
@@ -498,6 +619,9 @@ class EVISystem:
             "max_state_images_per_set": self._max_state_images_per_set,
             "max_retrieval_cues": self._max_retrieval_cues,
             "use_retrieval_cue_cache": self._use_retrieval_cue_cache,
+            "use_image_retrieval": self._use_image_retrieval,
+            "use_image_embedding_cache": self._use_image_embedding_cache,
+            "multimodal_embedding_model": self._multimodal_embedding_model,
         })
 
         for sid in dataset.session_order():
@@ -560,6 +684,8 @@ class EVISystem:
                     if not os.path.isfile(image_path):
                         log.warning("[INDEX] image file not found, skipping: %s", image_path)
                         continue
+                    if self._use_image_retrieval and self._image_index is not None:
+                        self._image_index.add(rid, image_path)
                     raw_anchors = extract_image_anchors(
                         image_path=image_path,
                         round_text=round_text,
@@ -599,10 +725,16 @@ class EVISystem:
             len(self._round_order),
             ", ".join(f"{k}:{v}" for k, v in sorted(type_counts.items())),
         )
+        if self._use_image_retrieval:
+            log.info(
+                "QDMO-EVI image index done: %d memory images",
+                len(self._image_index) if self._image_index is not None else 0,
+            )
         trace_json(log, "indexing_done", {
             "num_anchors": len(self._index),
             "num_rounds": len(self._round_order),
             "type_counts": dict(sorted(type_counts.items())),
+            "indexed_memory_images": len(self._image_index) if self._image_index is not None else 0,
             "sample_anchors": anchors_summary(self._index.anchors, max_items=self._debug_top_k),
         })
 
@@ -694,7 +826,7 @@ class EVISystem:
             for state in states
         }
         log.info(
-            "QDMO-EVI final state clue coverage: %d/%d hits=%s misses=%s state_rounds=%s",
+            "QDMO-EVI selected final states clue coverage for final QA: %d/%d hits=%s misses=%s state_rounds=%s",
             len(hits),
             len(clue_rounds),
             hits,

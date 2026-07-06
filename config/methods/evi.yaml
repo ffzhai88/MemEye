@@ -26,6 +26,9 @@ raw_search_k: 120
 use_anchor_quality_weighting: false
 max_retrieval_cues: 4
 use_retrieval_cue_cache: true
+use_image_retrieval: true
+multimodal_embedding_model: siglip2-base-patch16-384
+use_image_embedding_cache: true
 
 # Episodic-state pipeline budget.
 # Retrieved anchors are grouped by session and round order into local memory sets.

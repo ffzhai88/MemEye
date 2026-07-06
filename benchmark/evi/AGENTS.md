@@ -26,6 +26,7 @@ This design is intended to preserve item-level evidence for counting while recov
 - `schemas.py`: dataclasses for anchors, legacy candidates/briefs, episodic memory sets, and episodic states.
 - `extractor.py`: task-agnostic offline visual anchor extraction.
 - `indexes.py`: in-memory anchor vector index and type-aware retrieval scoring.
+- `image_index.py`: cached text-to-image retrieval over original memory images using a multimodal embedder.
 - `sets.py`: builds ordered local `EpisodicMemorySet` objects from retrieved anchors using session/round provenance.
 - `states.py`: cached VLM readout from an episodic memory set into itemized `EpisodicState` evidence.
 - `candidates.py`: legacy candidate consolidation for `evi_pipeline: candidate_assertion`.
@@ -58,7 +59,7 @@ Anchor types are generic and benchmark-independent: `scene`, `text`, `entity`, `
 
 1. Use `qa["question"]` as the retrieval stem when available, so rotated MCQ options do not dominate retrieval.
 2. Extract short retrieval cues from the question stem, using the question's original words where possible.
-3. Run fixed-budget multi-channel retrieval over the whole question and each cue, then fuse hits at the round level. A round is strengthened when multiple channels retrieve anchors from it. The default method config currently disables IDF weighting so multi-channel effects are easier to inspect.
+3. Run fixed-budget multi-channel retrieval over the whole question and each cue. Text channels retrieve evidence anchors; image channels directly retrieve original memory images with a multimodal embedder. Hits are converted to channel-local rank scores and fused at the round level, so text/image cosine scales are not mixed directly. The default method config currently disables IDF weighting so multi-channel effects are easier to inspect.
 4. Build episodic memory sets with `sets.build_episodic_memory_sets(...)`:
    - group by session,
    - add before/after round windows around retrieved hits,
@@ -82,6 +83,9 @@ Important keys:
 - `use_anchor_quality_weighting`: apply query-agnostic collection-level IDF weights during anchor retrieval; default EVI config currently sets this false for multi-channel retrieval experiments.
 - `max_retrieval_cues`: maximum question-stem retrieval cues kept after cue extraction.
 - `use_retrieval_cue_cache`: enable disk cache for retrieval cue extraction.
+- `use_image_retrieval`: enable direct text-to-image retrieval over original memory images.
+- `multimodal_embedding_model`: multimodal embedding model used for image retrieval.
+- `use_image_embedding_cache`: enable disk cache for multimodal text/image embeddings.
 - `max_memory_sets`: maximum episodic sets read per question. Keep this moderately high when many sessions share generic visual cues, because top-k set selection can otherwise crowd out the correct episode.
 - `memory_set_window_before` / `memory_set_window_after`: local round window around retrieved hits.
 - `max_rounds_per_memory_set`: cap on merged set length.
@@ -118,6 +122,8 @@ Legacy pipeline traces include `candidate_pool`, `candidate_clue_coverage`, `mem
 
 - Anchor extraction: `EVI_ANCHOR_CACHE_DIR`, default `~/.cache/evi_anchors`.
 - Text embeddings: `EVI_EMBED_CACHE_DIR`, default `~/.cache/evi_embeddings`.
+- Retrieval cues: `EVI_RETRIEVAL_CUE_CACHE_DIR`, default `~/.cache/evi_retrieval_cues`.
+- Image retrieval embeddings: `EVI_IMAGE_EMBED_CACHE_DIR`, default `~/.cache/evi_image_embeddings`.
 - Episodic state readout: `EVI_STATE_CACHE_DIR`, default `~/.cache/evi_states`.
 - Legacy candidate memory briefs: `EVI_MEMORY_BRIEF_CACHE_DIR`, default `~/.cache/evi_memory_briefs`.
 - Raw VLM calls: `EVI_VLM_CACHE_DIR`, default `~/.cache/evi_vlm`.
