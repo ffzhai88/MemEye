@@ -521,6 +521,8 @@ class EVISystem:
 
         if self._pipeline == "candidate_assertion":
             return self._answer_with_candidate_assertions(question, question_stem, qa, question_images, retrieved)
+        if self._pipeline == "consolidated_topk":
+            return self._answer_with_consolidated_topk(question, question_stem, qa, question_images, retrieved)
         if self._pipeline == "session_round_selection":
             return self._answer_with_session_round_selection(question, question_stem, qa, question_images, retrieved)
         return self._answer_with_episodic_states(question, question_stem, qa, question_images, retrieved)
@@ -992,6 +994,94 @@ class EVISystem:
         else:
             caption_text = str(image_caption).strip()
         return f"{query}\nquestion image caption: {caption_text}" if caption_text else query
+
+    def _answer_with_consolidated_topk(
+        self,
+        question: str,
+        question_stem: str,
+        qa: Optional[Dict[str, Any]],
+        question_images: Optional[List[str]],
+        retrieved: List[EvidenceAnchor],
+    ) -> str:
+        dataset = self._current_dataset
+        if dataset is None:
+            log.warning("QDMO-EVI consolidated_topk requires dataset; falling back to episodic_state pipeline")
+            return self._answer_with_episodic_states(question, question_stem, qa, question_images, retrieved)
+
+        candidates = consolidate_candidates(
+            retrieved,
+            round_text=self._round_text,
+            max_candidates=self._max_candidates,
+            max_candidate_anchors=self._max_candidate_anchors,
+        )
+        trace_json(log, "consolidated_topk_candidate_pool", {
+            "num_candidates": len(candidates),
+            "candidates": candidates_summary(candidates, max_items=self._max_candidates),
+        })
+        candidate_round_ids = [candidate.round_id for candidate in candidates]
+        self._log_selected_round_clue_coverage(qa, candidate_round_ids, "consolidated_candidate_round")
+
+        selected_round_ids: List[str] = []
+        seen: set[str] = set()
+        for candidate in candidates:
+            rid = candidate.round_id
+            if rid in seen:
+                continue
+            selected_round_ids.append(rid)
+            seen.add(rid)
+            if len(selected_round_ids) >= self._max_selected_rounds:
+                break
+        if len(selected_round_ids) < max(1, self._min_selected_rounds):
+            for rid in self._round_order:
+                if rid not in seen:
+                    selected_round_ids.append(rid)
+                    seen.add(rid)
+                if len(selected_round_ids) >= self._max_selected_rounds:
+                    break
+            log.warning("QDMO-EVI consolidated_topk used fallback/top-up: selected=%s", selected_round_ids)
+
+        self._log_selected_round_clue_coverage(qa, selected_round_ids, "selected_round")
+
+        history = self._build_semantic_style_history(dataset, selected_round_ids)
+        history_preview = [
+            {
+                "role": item.get("role"),
+                "round_id": item.get("round_id"),
+                "text": str(item.get("text", ""))[:500],
+                "images": item.get("images", []),
+            }
+            for item in history
+        ]
+        trace_json(log, "consolidated_topk_history", {
+            "selected_round_ids": selected_round_ids,
+            "history_turns": len(history),
+            "history_preview": history_preview,
+        })
+        log.info("QDMO-EVI consolidated-topk final history turns=%d selected_rounds=%s", len(history), selected_round_ids)
+        for idx, item in enumerate(history_preview, start=1):
+            log.info(
+                "  consolidated_topk_history[%02d] role=%s round=%s images=%s text=%s",
+                idx,
+                item.get("role"),
+                item.get("round_id"),
+                item.get("images"),
+                " ".join(str(item.get("text", "")).split())[:500],
+            )
+
+        mode = "mcq" if isinstance((qa or {}).get("options"), (dict, list)) and bool((qa or {}).get("options")) else "open"
+        router = self._get_answer_router(mode)
+        query = self._question_with_image_caption(qa, question)
+        qa_images = self._as_image_list(question_images)[: self._max_answer_images]
+        log.info("QDMO-EVI consolidated-topk answer call mode=%s question_images=%s", mode, qa_images)
+        answer = router.answer(history, query, question_images=qa_images)
+        trace_json(log, "answer_done", {
+            "pipeline": "consolidated_topk",
+            "answer": answer,
+            "selected_round_ids": selected_round_ids,
+            "history_turns": len(history),
+        })
+        log.info("QDMO-EVI answer returned length=%d text=%s", len(str(answer)), str(answer).replace("\n", " ")[:1000])
+        return answer
 
     def _answer_with_session_round_selection(
         self,
