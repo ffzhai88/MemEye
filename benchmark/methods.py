@@ -394,7 +394,7 @@ class EVIMethod(HistoryMethod):
     ) -> str:
         self._ensure_initialized(dataset)
         assert self._system is not None
-        return self._system.answer_question(question, qa=qa, question_images=question_images)
+        return self._system.answer_question(question, qa=qa, question_images=question_images, dataset=dataset)
 
     def build_history(self, dataset: MemoryBenchmarkDataset, qa: Dict[str, Any]) -> List[Dict[str, Any]]:
         return []

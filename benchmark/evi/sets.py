@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import logging
 from typing import Dict, Iterable, List, Tuple
@@ -173,3 +173,73 @@ def build_episodic_memory_sets(
             len(memory_set.retrieved_anchors),
         )
     return out
+
+
+def build_session_memory_sets(
+    retrieved: List[EvidenceAnchor],
+    *,
+    session_rounds: Dict[str, List[str]],
+    round_text: Dict[str, str],
+    round_images: Dict[str, List[str]],
+    round_anchors: Dict[str, List[EvidenceAnchor]],
+    max_rounds: int = 20,
+    max_anchors_per_round: int = 6,
+) -> List[EpisodicMemorySet]:
+    """Group top retrieved rounds by session without neighbor expansion."""
+    retrieved_by_round: Dict[str, List[EvidenceAnchor]] = {}
+    ordered_rounds: List[str] = []
+    seen_rounds: set[str] = set()
+    for anchor in retrieved:
+        retrieved_by_round.setdefault(anchor.round_id, []).append(anchor)
+        if anchor.round_id not in seen_rounds:
+            ordered_rounds.append(anchor.round_id)
+            seen_rounds.add(anchor.round_id)
+        if len(ordered_rounds) >= max_rounds:
+            break
+
+    kept_rounds = set(ordered_rounds)
+    sets: List[EpisodicMemorySet] = []
+    for sid, rounds in session_rounds.items():
+        set_rounds = [rid for rid in rounds if rid in kept_rounds]
+        if not set_rounds:
+            continue
+        set_retrieved = [a for rid in set_rounds for a in retrieved_by_round.get(rid, [])]
+        selected_by_round = {
+            rid: _select_round_anchors(rid, retrieved_by_round, round_anchors, max_anchors_per_round)
+            for rid in set_rounds
+        }
+        best_scores = [
+            max((a.score or 0.0 for a in retrieved_by_round.get(rid, [])), default=0.0)
+            for rid in set_rounds
+        ]
+        score = sum(best_scores) / max(1, len(best_scores))
+        date = set_retrieved[0].date if set_retrieved else ""
+        set_id = f"session::{sid}"
+        sets.append(
+            EpisodicMemorySet(
+                id=set_id,
+                session_id=sid,
+                date=date,
+                round_ids=set_rounds,
+                round_text={rid: round_text.get(rid, "") for rid in set_rounds},
+                round_images={rid: list(round_images.get(rid, [])) for rid in set_rounds},
+                round_anchors=selected_by_round,
+                retrieved_anchors=_sort_anchors(set_retrieved),
+                score=score,
+            )
+        )
+
+    rank_by_round = {rid: idx for idx, rid in enumerate(ordered_rounds)}
+    sets.sort(key=lambda item: min(rank_by_round.get(rid, 10**9) for rid in item.round_ids))
+    log.info("EVI session memory sets built: rounds=%d sets=%d", len(ordered_rounds), len(sets))
+    for idx, memory_set in enumerate(sets, start=1):
+        log.info(
+            "  session_memory_set[%02d] id=%s session=%s rounds=%s score=%.4f retrieved=%d",
+            idx,
+            memory_set.id,
+            memory_set.session_id,
+            " -> ".join(memory_set.round_ids),
+            memory_set.score,
+            len(memory_set.retrieved_anchors),
+        )
+    return sets
