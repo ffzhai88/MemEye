@@ -35,6 +35,7 @@ max_state_anchors_per_round: 6
 max_final_states: 4
 max_selected_rounds: 10
 min_selected_rounds: 1
+round_selector_max_new_tokens: 1024
 use_round_selection_cache: true
 
 # State readout cache and image use.

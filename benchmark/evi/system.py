@@ -248,6 +248,7 @@ class EVISystem:
             "max_final_states": self._max_final_states,
             "max_selected_rounds": self._max_selected_rounds,
             "min_selected_rounds": self._min_selected_rounds,
+            "round_selector_max_new_tokens": self._round_selector_max_new_tokens,
             "use_round_selection_cache": self._use_round_selection_cache,
             "use_state_cache": self._use_state_cache,
             "use_state_images": self._use_state_images,
@@ -475,6 +476,7 @@ class EVISystem:
             raise RuntimeError("VLM not initialized")
 
         question_stem = str((qa or {}).get("question", "")).strip() or str(question or "")
+        log.info("############## QDMO-EVI answering question: %s", question_stem)
         trace_json(log, "answer_start", {
             "question_stem": question_stem,
             "question_full": str(question or ""),
@@ -680,7 +682,7 @@ class EVISystem:
         if provider == "qwen_local":
             router = QwenLocalRouter(
                 model_path=str(model_cfg["model_path"]),
-                max_new_tokens=int(model_cfg.get("max_new_tokens", 128)),
+                max_new_tokens=int(model_cfg.get("round_selector_max_new_tokens", 512)),
                 system_prompt=system_prompt,
                 max_time=model_cfg.get("max_time", 25),
             )
@@ -690,7 +692,7 @@ class EVISystem:
                 api_key=str(model_cfg.get("api_key", "")),
                 api_key_env=str(model_cfg.get("api_key_env", "OPENAI_API_KEY")),
                 base_url=str(model_cfg.get("base_url", "https://api.openai.com/v1")),
-                max_new_tokens=int(model_cfg.get("max_new_tokens", 128)),
+                max_new_tokens=int(model_cfg.get("round_selector_max_new_tokens", 512)),
                 timeout=int(model_cfg.get("timeout", 90)),
                 system_prompt=system_prompt,
             )
@@ -700,7 +702,7 @@ class EVISystem:
                 api_key=str(model_cfg.get("api_key", "")),
                 api_key_env=str(model_cfg.get("api_key_env", "GEMINI_API_KEY")),
                 base_url=str(model_cfg.get("base_url", "https://generativelanguage.googleapis.com/v1beta")),
-                max_new_tokens=int(model_cfg.get("max_new_tokens", 128)),
+                max_new_tokens=int(model_cfg.get("round_selector_max_new_tokens", 512)),
                 timeout=int(model_cfg.get("timeout", 90)),
                 system_prompt=system_prompt,
             )
@@ -724,7 +726,7 @@ class EVISystem:
         if provider == "qwen_local":
             router = QwenLocalRouter(
                 model_path=str(model_cfg["model_path"]),
-                max_new_tokens=int(model_cfg.get("max_new_tokens", 128)),
+                max_new_tokens=int(model_cfg.get("round_selector_max_new_tokens", 512)),
                 system_prompt=system_prompt,
                 max_time=model_cfg.get("max_time", 25),
             )
@@ -734,7 +736,7 @@ class EVISystem:
                 api_key=str(model_cfg.get("api_key", "")),
                 api_key_env=str(model_cfg.get("api_key_env", "OPENAI_API_KEY")),
                 base_url=str(model_cfg.get("base_url", "https://api.openai.com/v1")),
-                max_new_tokens=int(model_cfg.get("max_new_tokens", 128)),
+                max_new_tokens=int(model_cfg.get("round_selector_max_new_tokens", 512)),
                 timeout=int(model_cfg.get("timeout", 90)),
                 system_prompt=system_prompt,
             )
@@ -744,7 +746,7 @@ class EVISystem:
                 api_key=str(model_cfg.get("api_key", "")),
                 api_key_env=str(model_cfg.get("api_key_env", "GEMINI_API_KEY")),
                 base_url=str(model_cfg.get("base_url", "https://generativelanguage.googleapis.com/v1beta")),
-                max_new_tokens=int(model_cfg.get("max_new_tokens", 128)),
+                max_new_tokens=int(model_cfg.get("round_selector_max_new_tokens", 512)),
                 timeout=int(model_cfg.get("timeout", 90)),
                 system_prompt=system_prompt,
             )
@@ -761,11 +763,12 @@ class EVISystem:
 
     def _round_selection_cache_key(self, question_stem: str, memory_sets: List[Any]) -> str:
         payload = {
-            "version": "round_selection_router_raw_v1",
+            "version": "round_selection_router_raw_v2",
             "cache_namespace": self._vlm_result_namespace,
             "question_stem": question_stem,
             "max_selected_rounds": self._max_selected_rounds,
             "min_selected_rounds": self._min_selected_rounds,
+            "round_selector_max_new_tokens": self._round_selector_max_new_tokens,
             "memory_sets": [
                 {
                     "set_id": memory_set.id,
@@ -905,7 +908,7 @@ class EVISystem:
 
         selector_router = self._get_round_selector_router()
         raw = selector_router.answer(selector_history, prompt, question_images=[])
-        log.info("QDMO-EVI round selector raw response: %s", str(raw).replace("\n", " ")[:2000])
+        log.info("QDMO-EVI round selector raw response: %s", str(raw).replace("\n", " ")[:20000])
         parsed = extract_json(raw or "") or {}
         selected_raw = parsed.get("selected_round_ids", []) if isinstance(parsed, dict) else []
         selected: List[str] = []
