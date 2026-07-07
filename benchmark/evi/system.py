@@ -82,6 +82,8 @@ class EVISystem:
         self._max_final_states = int(cfg.get("max_final_states", 4))
         self._max_selected_rounds = int(cfg.get("max_selected_rounds", 10))
         self._min_selected_rounds = int(cfg.get("min_selected_rounds", 1))
+
+        self._use_round_selection_cache = self._as_bool(cfg.get("use_round_selection_cache"), True)
         self._use_state_cache = self._as_bool(cfg.get("use_state_cache"), True)
         self._use_state_images = self._as_bool(cfg.get("use_state_images"), True)
         self._max_state_images_per_set = int(cfg.get("max_state_images_per_set", 4))
