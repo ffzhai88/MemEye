@@ -709,6 +709,50 @@ class EVISystem:
         self._answer_routers[mode] = router
         return router
 
+
+    def _get_round_selector_router(self) -> Any:
+        key = "__round_selector__"
+        if key in self._answer_routers:
+            return self._answer_routers[key]
+        model_cfg = dict(self._model_cfg or {})
+        system_prompt = (
+            "You select memory round ids for a multimodal long-term memory system. "
+            "Use the provided candidate dialogue and attached images only to decide which rounds should be passed to a later answer model. "
+            "Do not answer the user question. Return only valid JSON."
+        )
+        provider = str(model_cfg.get("provider", "openai_api")).strip()
+        if provider == "qwen_local":
+            router = QwenLocalRouter(
+                model_path=str(model_cfg["model_path"]),
+                max_new_tokens=int(model_cfg.get("max_new_tokens", 128)),
+                system_prompt=system_prompt,
+                max_time=model_cfg.get("max_time", 25),
+            )
+        elif provider == "openai_api":
+            router = OpenAIAPIRouter(
+                model=str(model_cfg.get("model", "")),
+                api_key=str(model_cfg.get("api_key", "")),
+                api_key_env=str(model_cfg.get("api_key_env", "OPENAI_API_KEY")),
+                base_url=str(model_cfg.get("base_url", "https://api.openai.com/v1")),
+                max_new_tokens=int(model_cfg.get("max_new_tokens", 128)),
+                timeout=int(model_cfg.get("timeout", 90)),
+                system_prompt=system_prompt,
+            )
+        elif provider == "gemini_api":
+            router = GeminiAPIRouter(
+                model=str(model_cfg.get("model", "")),
+                api_key=str(model_cfg.get("api_key", "")),
+                api_key_env=str(model_cfg.get("api_key_env", "GEMINI_API_KEY")),
+                base_url=str(model_cfg.get("base_url", "https://generativelanguage.googleapis.com/v1beta")),
+                max_new_tokens=int(model_cfg.get("max_new_tokens", 128)),
+                timeout=int(model_cfg.get("timeout", 90)),
+                system_prompt=system_prompt,
+            )
+        else:
+            raise ValueError(f"Unsupported provider for EVI round selector: {provider}")
+        self._answer_routers[key] = router
+        return router
+
     def _round_selection_cache_dir(self) -> Path:
         raw = os.environ.get("EVI_ROUND_SELECTION_CACHE_DIR")
         path = Path(raw).expanduser() if raw else Path.home() / ".cache" / "evi_round_selection"
@@ -717,7 +761,7 @@ class EVISystem:
 
     def _round_selection_cache_key(self, question_stem: str, memory_sets: List[Any]) -> str:
         payload = {
-            "version": "round_selection_v1",
+            "version": "round_selection_router_raw_v1",
             "cache_namespace": self._vlm_result_namespace,
             "question_stem": question_stem,
             "max_selected_rounds": self._max_selected_rounds,
@@ -728,19 +772,7 @@ class EVISystem:
                     "session_id": memory_set.session_id,
                     "round_ids": list(memory_set.round_ids),
                     "round_text": {rid: memory_set.round_text.get(rid, "") for rid in memory_set.round_ids},
-                    "anchors": {
-                        rid: [
-                            {
-                                "id": anchor.id,
-                                "type": anchor.evidence_type,
-                                "text": anchor.text,
-                                "region": anchor.region,
-                                "score": round(float(anchor.score or 0.0), 6),
-                            }
-                            for anchor in memory_set.round_anchors.get(rid, [])[: self._max_state_anchors_per_round]
-                        ]
-                        for rid in memory_set.round_ids
-                    },
+                    "round_images": {rid: list(memory_set.round_images.get(rid, [])) for rid in memory_set.round_ids},
                 }
                 for memory_set in memory_sets
             ],
@@ -772,37 +804,25 @@ class EVISystem:
             log.info("  [ROUND SELECT CACHE] WRITE key=%s selected=%s", key, payload.get("selected_round_ids"))
         except Exception as exc:
             log.warning("  [ROUND SELECT CACHE] write failed key=%s error=%s", key, exc)
+
     def _selection_prompt(self, question_stem: str, memory_sets: List[Any]) -> str:
+        candidate_round_ids = [rid for memory_set in memory_sets for rid in memory_set.round_ids]
         lines: List[str] = []
         lines.append("Select the memory rounds that should be passed to the final multimodal answer model.")
-        lines.append("Use the question, dialogue snippets, and evidence anchors only for selection.")
-        lines.append("Return ONLY valid JSON with selected_round_ids as a list of round ids.")
-        lines.append("Do not answer the question and do not choose an option.")
-        lines.append(f"Select at most {self._max_selected_rounds} rounds. Prefer fewer rounds only when the evidence is clearly sufficient.")
+        lines.append("The candidate dialogue and images are provided above as conversation history.")
+        lines.append("Return ONLY valid JSON with selected_round_ids as a list of candidate round ids.")
+        lines.append("Do not answer the question and do not choose a multiple-choice option.")
+        lines.append(f"Select at most {self._max_selected_rounds} rounds. Prefer enough rounds to preserve all evidence needed by the later answer model.")
         lines.append("")
         lines.append("Question stem:")
         lines.append(str(question_stem or ""))
         lines.append("")
-        lines.append("Session memory sets:")
-        for sidx, memory_set in enumerate(memory_sets, start=1):
-            lines.append(f"Memory set {sidx}: {memory_set.id} session={memory_set.session_id} date={memory_set.date} score={memory_set.score:.4f}")
-            for rid in memory_set.round_ids:
-                lines.append(f"[{rid}]")
-                text = " ".join(str(memory_set.round_text.get(rid, "")).split())
-                if text:
-                    lines.append("Dialogue: " + text[:900])
-                images = memory_set.round_images.get(rid, [])
-                if images:
-                    lines.append("Images: " + "; ".join(images))
-                anchors = memory_set.round_anchors.get(rid, [])[: self._max_state_anchors_per_round]
-                if anchors:
-                    lines.append("Evidence anchors:")
-                    for anchor in anchors:
-                        lines.append(f"- {anchor.evidence_type} score={anchor.score:.4f}: {anchor.text}")
-                lines.append("")
+        lines.append("Candidate round ids:")
+        for rid in candidate_round_ids:
+            lines.append(f"- {rid}")
+        lines.append("")
         lines.append('JSON schema: {"selected_round_ids": ["ROUND_ID"], "notes": {"ROUND_ID": "short reason"}}')
         return "\n".join(lines)
-
     def _fallback_selected_rounds(self, memory_sets: List[Any], limit: int) -> List[str]:
         scored: Dict[str, float] = {}
         order: Dict[str, int] = {}
@@ -821,6 +841,7 @@ class EVISystem:
         self,
         question_stem: str,
         memory_sets: List[Any],
+        dataset: Any,
     ) -> List[str]:
         valid_rounds = {rid for memory_set in memory_sets for rid in memory_set.round_ids}
         if not valid_rounds:
@@ -847,17 +868,43 @@ class EVISystem:
                 log.info("QDMO-EVI selected round ids=%s cache_hit=True", selected)
                 return selected
             log.warning("  [ROUND SELECT CACHE] invalid cached selection key=%s", cache_key)
+
         prompt = self._selection_prompt(question_stem, memory_sets)
         prompt_preview = prompt[: self._debug_prompt_chars]
         if len(prompt) > self._debug_prompt_chars:
             prompt_preview += f"\n... [truncated with {len(prompt) - self._debug_prompt_chars} more chars]"
         log.info("QDMO-EVI round selector prompt preview:\n%s", prompt_preview)
         trace_json(log, "round_selector_prompt", {"prompt_chars": len(prompt), "prompt_preview": prompt_preview})
-        raw = self._vlm(
-            "You select relevant memory round ids for a multimodal memory system. Return only JSON.",
-            prompt,
-            [],
-        ) if self._vlm is not None else ""
+
+        candidate_round_ids = [rid for memory_set in memory_sets for rid in memory_set.round_ids]
+        selector_history = self._build_semantic_style_history(dataset, candidate_round_ids)
+        selector_preview = [
+            {
+                "role": item.get("role"),
+                "round_id": item.get("round_id"),
+                "text": str(item.get("text", ""))[:500],
+                "images": item.get("images", []),
+            }
+            for item in selector_history
+        ]
+        trace_json(log, "round_selector_history", {
+            "candidate_round_ids": candidate_round_ids,
+            "history_turns": len(selector_history),
+            "history_preview": selector_preview,
+        })
+        log.info("QDMO-EVI round selector history turns=%d candidate_rounds=%s", len(selector_history), candidate_round_ids)
+        for idx, item in enumerate(selector_preview, start=1):
+            log.info(
+                "  selector_history[%02d] role=%s round=%s images=%s text=%s",
+                idx,
+                item.get("role"),
+                item.get("round_id"),
+                item.get("images"),
+                " ".join(str(item.get("text", "")).split())[:500],
+            )
+
+        selector_router = self._get_round_selector_router()
+        raw = selector_router.answer(selector_history, prompt, question_images=[])
         log.info("QDMO-EVI round selector raw response: %s", str(raw).replace("\n", " ")[:2000])
         parsed = extract_json(raw or "") or {}
         selected_raw = parsed.get("selected_round_ids", []) if isinstance(parsed, dict) else []
@@ -979,7 +1026,7 @@ class EVISystem:
         session_round_ids = [rid for memory_set in memory_sets for rid in memory_set.round_ids]
         self._log_selected_round_clue_coverage(qa, session_round_ids, "session_candidate_round")
 
-        selected_round_ids = self._select_rounds_from_session_memory_sets(question_stem, memory_sets)
+        selected_round_ids = self._select_rounds_from_session_memory_sets(question_stem, memory_sets, dataset)
         self._log_selected_round_clue_coverage(qa, selected_round_ids, "llm_selected_round")
 
         history = self._build_semantic_style_history(dataset, selected_round_ids)
