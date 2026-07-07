@@ -97,7 +97,9 @@ def _normalize_backend(config: Dict[str, Any]) -> str:
     if backend:
         return backend
     method_name = str(config.get("name", "")).strip().lower()
-    if method_name in {"semantic_rag_text_only", "semantic_rag_multimodal"}:
+    if method_name == "semantic_rag_multimodal":
+        return "dense_multimodal"
+    if method_name == "semantic_rag_text_only":
         return "dense_text"
     return "legacy_sparse"
 
@@ -468,10 +470,12 @@ class _DenseMultimodalRetriever(_BaseRetriever):
                 for image_path in images:
                     image_jobs.append((round_id, image_path))
 
+        text_vectors_by_round: Dict[str, List[float]] = {}
         if text_batch_texts:
             for round_id, vec in zip(text_batch_round_ids, self.text_embedder.embed_batch(text_batch_texts)):
                 text_vectors_by_round[round_id] = vec
 
+        image_vectors_by_round: Dict[str, List[Tuple[str, List[float]]]] = {}
         for round_id, image_path in image_jobs:
             image_vectors_by_round.setdefault(round_id, []).append(
                 (image_path, self.mm_embedder.embed_image(image_path))
@@ -504,6 +508,7 @@ class _DenseMultimodalRetriever(_BaseRetriever):
         for round_id, text_vec, image_items in self.round_rows:
             text_score = _dense_cosine(text_query_vec or [], text_vec or [])
             total_indexed_images += len(image_items)
+            best_image_path = ""
             image_score = 0.0
             for image_path, image_vec in image_items:
                 score = _dense_cosine(image_query_vec or [], image_vec or [])
