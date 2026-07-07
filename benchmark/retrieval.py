@@ -1,4 +1,5 @@
 import json
+import logging
 import math
 import re
 from collections import Counter
@@ -19,6 +20,14 @@ STOPWORDS = {
 }
 
 _RETRIEVER_CACHE: Dict[Tuple[Any, ...], "_BaseRetriever"] = {}
+
+log = logging.getLogger(__name__)
+if not log.handlers:
+    _handler = logging.StreamHandler()
+    _handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s"))
+    log.addHandler(_handler)
+    log.propagate = False
+log.setLevel(logging.INFO)
 
 
 def _tokenize(text: str) -> List[str]:
@@ -232,6 +241,25 @@ class _BaseRetriever:
         self.session_ids = dataset.session_order()
         self.corpus_rows, self.corpus_meta = _build_corpus_rows(dataset, config)
 
+    def _candidate_log_limit(self) -> int:
+        return max(5, self.top_k)
+
+    def _candidate_rows(self, scored: List[Tuple[float, str, Dict[str, Any]]]) -> List[Dict[str, Any]]:
+        return [row for _, _, row in scored[: self._candidate_log_limit()]]
+
+    def _clue_coverage(self, clue_rounds: List[str], round_ids: List[str]) -> Dict[str, Any]:
+        round_set = set(round_ids)
+        ranks = {round_id: idx + 1 for idx, round_id in enumerate(round_ids)}
+        hits = [round_id for round_id in clue_rounds if round_id in round_set]
+        misses = [round_id for round_id in clue_rounds if round_id not in round_set]
+        return {
+            "hit_count": len(hits),
+            "total_count": len(clue_rounds),
+            "hit_round_ids": hits,
+            "missed_round_ids": misses,
+            "hit_ranks": {round_id: ranks[round_id] for round_id in hits},
+        }
+
     def _build_debug_info(
         self,
         qa: Dict[str, Any],
@@ -241,6 +269,8 @@ class _BaseRetriever:
     ) -> Dict[str, Any]:
         # 把题目的 clue 也纳入调试信息，方便观察命中是否与 oracle 相关。
         clue_rounds = list(qa.get("clue", []) or [])
+        seed_coverage = self._clue_coverage(clue_rounds, seed_round_ids)
+        selected_coverage = self._clue_coverage(clue_rounds, selected_round_ids)
         debug: Dict[str, Any] = {
             "retrieval_backend": self.config.get("retrieval_backend", "legacy_sparse"),
             "retrieval_corpus": self.corpus_meta.get("retrieval_corpus", "round_text"),
@@ -250,13 +280,49 @@ class _BaseRetriever:
             "seed_round_ids": seed_round_ids,
             "selected_round_ids": selected_round_ids,
             "top_candidates": top_candidates,
-            "clue_hit_count": sum(1 for rid in selected_round_ids if rid in clue_rounds),
+            "clue_round_ids": clue_rounds,
+            "seed_clue_coverage": seed_coverage,
+            "selected_clue_coverage": selected_coverage,
+            "clue_hit_count": selected_coverage["hit_count"],
             "corpus_entry_count": self.corpus_meta.get("corpus_entry_count", 0),
         }
         notes_path = self.corpus_meta.get("retrieval_notes_json")
         if notes_path:
             debug["retrieval_notes_json"] = notes_path
         return debug
+
+    def _log_retrieval_debug(self, qa: Dict[str, Any], debug: Dict[str, Any]) -> None:
+        question = str(qa.get("question", "")).strip()
+        seed_cov = debug.get("seed_clue_coverage", {})
+        selected_cov = debug.get("selected_clue_coverage", {})
+        log.info(
+            "[retrieval] backend=%s modality=%s top_k=%s neighbor_window=%s question=%r",
+            debug.get("retrieval_backend"),
+            debug.get("method_modality"),
+            debug.get("top_k"),
+            debug.get("neighbor_window"),
+            question,
+        )
+        log.info(
+            "[retrieval] seed_rounds=%s selected_rounds=%s",
+            debug.get("seed_round_ids", []),
+            debug.get("selected_round_ids", []),
+        )
+        log.info(
+            "[retrieval] clue_coverage seed=%s/%s hits=%s misses=%s ranks=%s | selected=%s/%s hits=%s misses=%s ranks=%s",
+            seed_cov.get("hit_count", 0),
+            seed_cov.get("total_count", 0),
+            seed_cov.get("hit_round_ids", []),
+            seed_cov.get("missed_round_ids", []),
+            seed_cov.get("hit_ranks", {}),
+            selected_cov.get("hit_count", 0),
+            selected_cov.get("total_count", 0),
+            selected_cov.get("hit_round_ids", []),
+            selected_cov.get("missed_round_ids", []),
+            selected_cov.get("hit_ranks", {}),
+        )
+        for rank, candidate in enumerate(debug.get("top_candidates", []), start=1):
+            log.info("[retrieval] candidate_rank=%s %s", rank, candidate)
 
     def select(self, qa: Dict[str, Any]) -> Tuple[List[str], Dict[str, Any]]:
         raise NotImplementedError
@@ -323,7 +389,7 @@ class _SparseRetriever(_BaseRetriever):
             qa,
             seed_round_ids,
             selected_round_ids,
-            [row for _, _, row in scored[:5]],
+            self._candidate_rows(scored),
         )
 
 
@@ -347,7 +413,7 @@ class _DenseTextRetriever(_BaseRetriever):
         # 把当前问题转成文本 embedding，作为检索时的查询向量。
         # query_text 是问题文本，query_vec 是问题的向量表示；如果问题文本为空，就直接返回空结果。
         query_text = str(qa.get("question", "")).strip()
-        print(f"====== Dense Text Retrieving and embedding for question: {query_text} =======")
+        log.info("====== Dense Text Retrieving and embedding for question: %s =======", query_text)
         # 如果问题为空，或者没有可检索的候选轮次，就直接返回空结果。
         if not query_text or not self.round_texts:
             return [], self._build_debug_info(qa, [], [], [])
@@ -380,7 +446,7 @@ class _DenseTextRetriever(_BaseRetriever):
             qa,
             seed_round_ids,
             selected_round_ids,
-            [row for _, _, row in scored[:5]],
+            self._candidate_rows(scored),
         )
         debug["text_embedding_model"] = self.text_embedding_model
         debug["caption_text_included"] = self.corpus_meta.get("modality") == "text_only"
@@ -461,7 +527,7 @@ class _DenseMultimodalRetriever(_BaseRetriever):
     def select(self, qa: Dict[str, Any]) -> Tuple[List[str], Dict[str, Any]]:
         # 先取出当前问题文本，作为文本和图像两种 embedding 的查询输入。
         query_text = str(qa.get("question", "")).strip()
-        print(f"====== Dense Multimodal retrieving for question: {query_text} =======")
+        log.info("====== Dense Multimodal retrieving for question: %s =======", query_text)
         # 如果问题为空，或者没有可用的候选轮次，就直接返回空结果。
         if not query_text or not self.round_rows:
             return [], self._build_debug_info(qa, [], [], [])
@@ -472,17 +538,17 @@ class _DenseMultimodalRetriever(_BaseRetriever):
         # 只有在配置允许时，才生成文本 query 向量。
         if self.text_dense_weight > 0:
             text_query_vec = self.text_embedder.embed_query(query_text)
-            print(f"[DEBUG] text_dense_weight={self.text_dense_weight}, built text_query_vec len={len(text_query_vec) if text_query_vec else 0}")
+            log.info("[retrieval] text_dense_weight=%s built_text_query_vec_len=%s", self.text_dense_weight, len(text_query_vec) if text_query_vec else 0)
         # 只有在配置允许时，才生成图像 query 向量。
         if self.image_dense_weight > 0:
             image_query_vec = self.mm_embedder.embed_text(query_text)
-            print(f"[DEBUG] image_dense_weight={self.image_dense_weight}, built image_query_vec len={len(image_query_vec) if image_query_vec else 0}")
+            log.info("[retrieval] image_dense_weight=%s built_image_query_vec_len=%s", self.image_dense_weight, len(image_query_vec) if image_query_vec else 0)
 
         # 用于保存所有候选 round 的打分结果，后续按分数排序。
         scored: List[Tuple[float, str, Dict[str, Any]]] = []
         # 统计一共索引了多少张图像，用于 debug 信息。
         total_indexed_images = 0
-        print(f"[DEBUG] round_rows_count={len(self.round_rows)}, top_k={self.top_k}, neighbor_window={self.neighbor_window}")
+        log.info("[retrieval] round_rows_count=%s top_k=%s neighbor_window=%s", len(self.round_rows), self.top_k, self.neighbor_window)
         # 遍历每个候选 round，分别计算文本得分和图像得分。
         for round_id, text_vec, image_items in self.round_rows:
             # 计算文本相似度分数；如果没有文本向量，就用 0 分。
@@ -514,10 +580,8 @@ class _DenseMultimodalRetriever(_BaseRetriever):
                 )
             )
         # 按最终得分从高到低排序，取前 top_k 个作为初始候选种子。
+        # top 候选的详细内容改由统一日志函数打印。
         scored.sort(key=lambda item: (-item[0], item[1]))
-        # 打印 top 候选用于调试
-        top_preview = [(r[1], r[0]) for r in scored[: min(len(scored), max(5, self.top_k))]]
-        print(f"[DEBUG] top_candidates_preview={top_preview}")
         seed_round_ids = [round_id for _, round_id, _ in scored[: max(1, self.top_k)]]
         # 对种子轮次做邻居扩展，补充连续的上下文历史轮次。
         selected_round_ids = _expand_with_neighbors(
@@ -528,7 +592,7 @@ class _DenseMultimodalRetriever(_BaseRetriever):
             qa,
             seed_round_ids,
             selected_round_ids,
-            [row for _, _, row in scored[:5]],
+            self._candidate_rows(scored),
         )
         debug["text_embedding_model"] = self.text_embedding_model
         debug["multimodal_embedding_model"] = self.mm_model
@@ -608,8 +672,8 @@ def select_round_ids_for_qa(
     retriever = _get_retriever(dataset, config)
     # 让检索器根据题目 q/a 选出候选 round_id。
     selected_round_ids, debug = retriever.select(qa)
-    # 打印检索后（含邻居扩展）的最终候选轮次，便于调试观察哪些轮次被选中
-    print(f"[DEBUG] select_round_ids_for_qa -> selected_round_ids={selected_round_ids}")
+    # 用 log.info 打印检索后（含邻居扩展）的最终候选轮次，便于调试观察哪些轮次被选中。
+    retriever._log_retrieval_debug(qa, debug)
     # 如果调用方传入了 runtime_info，就把检索调试信息写进去，方便追踪。
     if runtime_info is not None:
         runtime_info.clear()
