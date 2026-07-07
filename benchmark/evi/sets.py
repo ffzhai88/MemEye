@@ -243,3 +243,49 @@ def build_session_memory_sets(
             len(memory_set.retrieved_anchors),
         )
     return sets
+
+def build_session_memory_sets_from_candidates(
+    candidates: List[object],
+    *,
+    session_rounds: Dict[str, List[str]],
+) -> List[EpisodicMemorySet]:
+    """Group consolidated candidate rounds by session without neighbor expansion."""
+    by_round = {candidate.round_id: candidate for candidate in candidates}
+    sets: List[EpisodicMemorySet] = []
+    for sid, rounds in session_rounds.items():
+        set_rounds = [rid for rid in rounds if rid in by_round]
+        if not set_rounds:
+            continue
+        set_candidates = [by_round[rid] for rid in set_rounds]
+        retrieved_anchors = [anchor for candidate in set_candidates for anchor in candidate.anchors]
+        score = sum(float(candidate.score or 0.0) for candidate in set_candidates) / max(1, len(set_candidates))
+        date = set_candidates[0].date if set_candidates else ""
+        set_id = f"session::{sid}"
+        sets.append(
+            EpisodicMemorySet(
+                id=set_id,
+                session_id=sid,
+                date=date,
+                round_ids=set_rounds,
+                round_text={candidate.round_id: candidate.round_text for candidate in set_candidates},
+                round_images={candidate.round_id: list(candidate.image_paths) for candidate in set_candidates},
+                round_anchors={candidate.round_id: list(candidate.selected_anchors) for candidate in set_candidates},
+                retrieved_anchors=_sort_anchors(retrieved_anchors),
+                score=score,
+            )
+        )
+
+    candidate_rank = {candidate.round_id: idx for idx, candidate in enumerate(candidates)}
+    sets.sort(key=lambda item: min(candidate_rank.get(rid, 10**9) for rid in item.round_ids))
+    log.info("EVI session memory sets from candidates built: candidates=%d sets=%d", len(candidates), len(sets))
+    for idx, memory_set in enumerate(sets, start=1):
+        log.info(
+            "  session_memory_set[%02d] id=%s session=%s rounds=%s score=%.4f retrieved=%d",
+            idx,
+            memory_set.id,
+            memory_set.session_id,
+            " -> ".join(memory_set.round_ids),
+            memory_set.score,
+            len(memory_set.retrieved_anchors),
+        )
+    return sets

@@ -16,7 +16,7 @@ from .candidates import consolidate_candidates
 from .extractor import extract_image_anchors
 from .indexes import EvidenceIndex, embed_text, normalize_type
 from .schemas import EpisodicState, EvidenceAnchor, MemoryBrief
-from .sets import build_episodic_memory_sets, build_session_memory_sets
+from .sets import build_episodic_memory_sets, build_session_memory_sets, build_session_memory_sets_from_candidates
 from .states import read_episodic_states
 from .trace import (
     anchors_summary,
@@ -955,21 +955,29 @@ class EVISystem:
             log.warning("QDMO-EVI session_round_selection requires dataset; falling back to episodic_state pipeline")
             return self._answer_with_episodic_states(question, question_stem, qa, question_images, retrieved)
 
-        memory_sets = build_session_memory_sets(
+        candidates = consolidate_candidates(
             retrieved,
-            session_rounds=self._session_rounds,
             round_text=self._round_text,
-            round_images=self._round_images,
-            round_anchors=self._round_anchors,
-            max_rounds=self._max_candidates,
-            max_anchors_per_round=self._max_state_anchors_per_round,
+            max_candidates=self._max_candidates,
+            max_candidate_anchors=self._max_candidate_anchors,
+        )
+        trace_json(log, "session_round_candidate_pool", {
+            "num_candidates": len(candidates),
+            "candidates": candidates_summary(candidates, max_items=self._max_candidates),
+        })
+        candidate_round_ids = [candidate.round_id for candidate in candidates]
+        self._log_selected_round_clue_coverage(qa, candidate_round_ids, "consolidated_candidate_round")
+
+        memory_sets = build_session_memory_sets_from_candidates(
+            candidates,
+            session_rounds=self._session_rounds,
         )
         trace_json(log, "session_memory_sets", {
             "num_sets": len(memory_sets),
             "memory_sets": memory_sets_summary(memory_sets, max_items=self._max_memory_sets),
         })
-        candidate_round_ids = [rid for memory_set in memory_sets for rid in memory_set.round_ids]
-        self._log_selected_round_clue_coverage(qa, candidate_round_ids, "session_candidate_round")
+        session_round_ids = [rid for memory_set in memory_sets for rid in memory_set.round_ids]
+        self._log_selected_round_clue_coverage(qa, session_round_ids, "session_candidate_round")
 
         selected_round_ids = self._select_rounds_from_session_memory_sets(question_stem, memory_sets)
         self._log_selected_round_clue_coverage(qa, selected_round_ids, "llm_selected_round")
