@@ -39,18 +39,15 @@ Use attached images only to resolve uncertainty.
 Be concise and grounded in the selected evidence.
 If the question is multiple-choice, answer with ONLY the option letter.
 """
-FACET_PROMPT_VERSION = "retrieval_facets_v6_locator_only_general"
+FACET_PROMPT_VERSION = "retrieval_facets_v3b_dedup_locator"
 
 FACET_EXTRACTION_SYSTEM_PROMPT = """You extract retrieval facets for a multimodal long-term memory system.
 
 The goal is only retrieval. Do not answer the question.
 A retrieval facet is a self-contained memory locator phrase, not a keyword list.
-A good facet should help locate the relevant memory episode, object, person, place, document, or visual state.
-Do not extract answer operations or within-episode instructions as retrieval facets.
-Words such as final, later, after, before, most recent, first, last, compare, count, which, how many, answer, or what should be kept only when they are necessary to identify a memory, not when they merely tell the later answer model what to inspect after retrieval.
 Keep modifiers attached to the objects/events they describe.
 If a phrase only makes sense because of another phrase, merge them into one facet.
-Include both sides of comparisons when each side is a concrete memory locator.
+Include both sides of comparisons when the question compares memories.
 Include collection/scope phrases when the question asks over a set.
 Use original nouns, names, visual descriptions, dates, order words, and quoted labels when possible.
 
@@ -60,36 +57,32 @@ Return ONLY valid JSON:
 }
 
 Guidelines:
-- Extract 1-4 facets.
+- Extract 2-4 facets unless the question is extremely simple.
 - Each facet should be independently searchable as a memory locator.
 - Do not create answer choices or solve the question.
 - Do not split compound visual or temporal descriptions into isolated words.
 - Do not output one facet that is mostly contained inside another facet; keep the more specific locator.
-- Avoid generic standalone words such as scene, image, item, view, final, later, compare, before, after, count.
+- Avoid generic standalone words such as scene, image, item, later, compare, before, after, count.
 
 Examples:
 Question: "Which item was on the red object near the wooden table in the last photo?"
-Bad facets: ["red", "object", "table", "last photo", "which item"]
-Good facets: ["red object near the wooden table"]
+Bad facets: ["red", "object", "table", "last photo"]
+Good facets: ["red object near the wooden table in the last photo"]
 
 Question: "After the rainy street scene with a person holding an umbrella, what vehicle appeared at the corner?"
-Bad facets: ["rainy", "street", "umbrella", "after", "vehicle at the corner", "what vehicle appeared"]
-Good facets: ["rainy street scene with a person holding an umbrella"]
-
-Question: "In the sequence that begins with a blue bicycle beside the glass door, what object is visible in the final saved view?"
-Bad facets: ["blue bicycle", "glass door", "final saved view", "object visible in final saved view"]
-Good facets: ["sequence that begins with a blue bicycle beside the glass door"]
+Bad facets: ["rainy", "street", "umbrella", "rainy street scene with a person holding an umbrella", "vehicle", "corner"]
+Good facets: ["rainy street scene with a person holding an umbrella", "vehicle at the corner after that rainy street scene"]
 
 Question: "Between the first meeting with the blue notebook and the later meeting with the white folder, which one had the round wall clock?"
-Bad facets: ["first", "meeting", "blue notebook", "later", "white folder", "round wall clock"]
-Good facets: ["meeting with the blue notebook", "meeting with the white folder"]
+Bad facets: ["first", "meeting", "blue notebook", "white folder", "clock"]
+Good facets: ["first meeting with the blue notebook", "later meeting with the white folder", "round wall clock in one of the meetings"]
 
 Question: "How did the wooden shelf change between its earlier image and the most recent image?"
-Bad facets: ["wooden shelf", "changed", "earlier image", "most recent image"]
-Good facets: ["wooden shelf"]
+Bad facets: ["wooden shelf", "wooden shelf in the earlier image", "wooden shelf in the most recent image", "last image"]
+Good facets: ["wooden shelf in the earlier image", "wooden shelf in the most recent image"]
 
 Question: "Which cue belongs to the scene with the green bag on the left of the gray suitcase rather than the scene with the black backpack?"
-Bad facets: ["left", "green bag", "gray suitcase", "black backpack", "which cue belongs"]
+Bad facets: ["left", "green bag", "gray suitcase", "black backpack"]
 Good facets: ["scene with the green bag on the left of the gray suitcase", "scene with the black backpack"]
 """
 
