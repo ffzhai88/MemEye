@@ -39,6 +39,8 @@ Use attached images only to resolve uncertainty.
 Be concise and grounded in the selected evidence.
 If the question is multiple-choice, answer with ONLY the option letter.
 """
+FACET_PROMPT_VERSION = "retrieval_facets_v2_locator_examples"
+
 FACET_EXTRACTION_SYSTEM_PROMPT = """You extract retrieval facets for a multimodal long-term memory system.
 
 The goal is only retrieval. Do not answer the question.
@@ -127,7 +129,7 @@ class EVISystem:
         self._max_selected_rounds = int(cfg.get("max_selected_rounds", 10))
         self._min_selected_rounds = int(cfg.get("min_selected_rounds", 1))
         self._round_selector_max_new_tokens = int(cfg.get("round_selector_max_new_tokens", 512))
-        self._facet_max_facets = int(cfg.get("facet_max_facets", 6))
+        self._facet_max_facets = int(cfg.get("facet_max_facets", 4))
         self._facet_search_k = int(cfg.get("facet_search_k", 30))
         self._facet_multi_hit_bonus = float(cfg.get("facet_multi_hit_bonus", 0.08))
         self._facet_full_question_weight = float(cfg.get("facet_full_question_weight", 1.0))
@@ -1060,7 +1062,7 @@ class EVISystem:
 
     def _facet_cache_key(self, question_stem: str) -> str:
         payload = {
-            "version": "retrieval_facets_v1",
+            "version": FACET_PROMPT_VERSION,
             "cache_namespace": self._vlm_result_namespace,
             "question_stem": question_stem,
             "max_facets": self._facet_max_facets,
@@ -1097,8 +1099,8 @@ class EVISystem:
             try:
                 data = json.loads(cache_file.read_text(encoding="utf-8"))
                 facets = self._clean_facets(question_stem, data.get("facets", []))
-                log.info("QDMO-EVI retrieval facets cache_hit=True key=%s facets=%s", cache_key, facets)
-                trace_json(log, "retrieval_facets", {"cache_hit": True, "cache_key": cache_key, "facets": facets})
+                log.info("QDMO-EVI retrieval facets cache_hit=True key=%s version=%s facets=%s", cache_key, FACET_PROMPT_VERSION, facets)
+                trace_json(log, "retrieval_facets", {"cache_hit": True, "cache_key": cache_key, "prompt_version": FACET_PROMPT_VERSION, "facets": facets})
                 return facets
             except Exception as exc:
                 log.warning("QDMO-EVI retrieval facet cache read failed key=%s error=%s", cache_key, exc)
@@ -1107,7 +1109,7 @@ class EVISystem:
         raw = self._vlm(FACET_EXTRACTION_SYSTEM_PROMPT, user_text, []) if self._vlm is not None else ""
         parsed = extract_json(raw or "") or {}
         facets = self._clean_facets(question_stem, parsed.get("facets", []))
-        log.info("QDMO-EVI retrieval facets cache_hit=False key=%s facets=%s", cache_key, facets)
+        log.info("QDMO-EVI retrieval facets cache_hit=False key=%s version=%s facets=%s", cache_key, FACET_PROMPT_VERSION, facets)
         log.debug("[FACET RAW] key=%s raw=%s", cache_key, str(raw).replace("\n", " ")[:4000])
         trace_json(log, "retrieval_facets", {
             "cache_hit": False,
@@ -1120,7 +1122,7 @@ class EVISystem:
                 cache_file.write_text(
                     json.dumps(
                         {
-                            "version": "retrieval_facets_v1",
+                            "version": FACET_PROMPT_VERSION,
                             "cache_namespace": self._vlm_result_namespace,
                             "question_stem": question_stem,
                             "facets": facets,
