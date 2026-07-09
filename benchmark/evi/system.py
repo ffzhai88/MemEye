@@ -42,11 +42,12 @@ If the question is multiple-choice, answer with ONLY the option letter.
 FACET_EXTRACTION_SYSTEM_PROMPT = """You extract retrieval facets for a multimodal long-term memory system.
 
 The goal is only retrieval. Do not answer the question.
-Extract short, self-contained phrases that can independently retrieve relevant memories.
-Keep original nouns, names, visual descriptions, dates, order words, and quoted labels when possible.
-Prefer meaningful phrases over isolated keywords.
+A retrieval facet is a self-contained memory locator phrase, not a keyword list.
+Keep modifiers attached to the objects/events they describe.
+If a phrase only makes sense because of another phrase, merge them into one facet.
 Include both sides of comparisons when the question compares memories.
 Include collection/scope phrases when the question asks over a set.
+Use original nouns, names, visual descriptions, dates, order words, and quoted labels when possible.
 
 Return ONLY valid JSON:
 {
@@ -54,10 +55,32 @@ Return ONLY valid JSON:
 }
 
 Guidelines:
-- Each facet should be searchable by itself.
+- Extract 2-4 facets unless the question is extremely simple.
+- Each facet should be independently searchable as a memory locator.
 - Do not create answer choices or solve the question.
-- Use at most 6 facets.
-- Avoid generic standalone words such as route, screen, image, ad, later, compare.
+- Do not split compound visual or temporal descriptions into isolated words.
+- Avoid generic standalone words such as scene, image, item, later, compare, before, after, count.
+
+Examples:
+Question: "Which item was on the red object near the wooden table in the last photo?"
+Bad facets: ["red", "object", "table", "last photo"]
+Good facets: ["red object near the wooden table in the last photo"]
+
+Question: "After the rainy street scene with a person holding an umbrella, what vehicle appeared at the corner?"
+Bad facets: ["rainy", "street", "umbrella", "vehicle", "corner"]
+Good facets: ["rainy street scene with a person holding an umbrella", "vehicle at the corner after that rainy street scene"]
+
+Question: "Between the first meeting with the blue notebook and the later meeting with the white folder, which one had the round wall clock?"
+Bad facets: ["first", "meeting", "blue notebook", "white folder", "clock"]
+Good facets: ["first meeting with the blue notebook", "later meeting with the white folder", "round wall clock in one of the meetings"]
+
+Question: "How did the wooden shelf change between its earlier image and the most recent image?"
+Bad facets: ["wooden shelf", "moved", "last image"]
+Good facets: ["wooden shelf in the earlier image", "wooden shelf in the most recent image"]
+
+Question: "Which cue belongs to the scene with the green bag on the left of the gray suitcase rather than the scene with the black backpack?"
+Bad facets: ["left", "green bag", "gray suitcase", "black backpack"]
+Good facets: ["scene with the green bag on the left of the gray suitcase", "scene with the black backpack"]
 """
 
 

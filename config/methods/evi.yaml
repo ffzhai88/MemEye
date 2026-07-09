@@ -26,7 +26,7 @@ vlm_timeout: 90
 raw_search_k: 120
 
 # Faceted retrieval pipeline budget. Facets are retrieval phrases, not answer operations.
-facet_max_facets: 6
+facet_max_facets: 4
 facet_search_k: 30
 facet_multi_hit_bonus: 0.08
 facet_full_question_weight: 1.0
