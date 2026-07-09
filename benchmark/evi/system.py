@@ -109,6 +109,7 @@ class EVISystem:
         self._round_anchors: Dict[str, List[EvidenceAnchor]] = {}
         self._session_rounds: Dict[str, List[str]] = {}
         self._current_dataset: Optional[Any] = None
+        self._last_context_round_ids: List[str] = []
 
         self._pipeline = str(cfg.get("evi_pipeline", "episodic_state") or "episodic_state").strip().lower()
         self._raw_search_k = int(cfg.get("raw_search_k", 120))
@@ -638,6 +639,7 @@ class EVISystem:
         })
 
         final_briefs = self._select_final_briefs(briefs)
+        self._set_last_context_round_ids([brief.round_id for brief in final_briefs])
         log.info("QDMO-EVI selected final evidence assertions=%d", len(final_briefs))
         for idx, brief in enumerate(final_briefs, start=1):
             log.info(
@@ -1028,6 +1030,20 @@ class EVISystem:
             "selected_round_ids": selected_round_ids,
         })
 
+    def _set_last_context_round_ids(self, round_ids: List[str]) -> None:
+        out: List[str] = []
+        seen: set[str] = set()
+        for rid in round_ids:
+            value = str(rid or "").strip()
+            if not value or value in seen:
+                continue
+            out.append(value)
+            seen.add(value)
+        self._last_context_round_ids = out
+
+    @property
+    def last_context_round_ids(self) -> List[str]:
+        return list(self._last_context_round_ids)
     def _build_semantic_style_history(self, dataset: Any, selected_round_ids: List[str]) -> List[Dict[str, Any]]:
         allowed = set(selected_round_ids)
         history: List[Dict[str, Any]] = []
@@ -1340,6 +1356,7 @@ class EVISystem:
             log.warning("QDMO-EVI faceted_topk used fallback/top-up: selected=%s", selected_round_ids)
 
         self._log_selected_round_clue_coverage(qa, selected_round_ids, "selected_round")
+        self._set_last_context_round_ids(selected_round_ids)
         history = self._build_semantic_style_history(dataset, selected_round_ids)
         history_preview = [
             {
@@ -1426,6 +1443,7 @@ class EVISystem:
             log.warning("QDMO-EVI consolidated_topk used fallback/top-up: selected=%s", selected_round_ids)
 
         self._log_selected_round_clue_coverage(qa, selected_round_ids, "selected_round")
+        self._set_last_context_round_ids(selected_round_ids)
 
         history = self._build_semantic_style_history(dataset, selected_round_ids)
         history_preview = [
@@ -1507,6 +1525,7 @@ class EVISystem:
 
         selected_round_ids = self._select_rounds_from_session_memory_sets(question_stem, memory_sets, dataset)
         self._log_selected_round_clue_coverage(qa, selected_round_ids, "llm_selected_round")
+        self._set_last_context_round_ids(selected_round_ids)
 
         history = self._build_semantic_style_history(dataset, selected_round_ids)
         history_preview = [
@@ -1609,6 +1628,7 @@ class EVISystem:
         })
 
         final_states = self._select_final_states(states)
+        self._set_last_context_round_ids([rid for state in final_states for rid in state.round_ids])
         log.info("QDMO-EVI selected final episodic states=%d", len(final_states))
         for idx, state in enumerate(final_states, start=1):
             log.info(

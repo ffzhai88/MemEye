@@ -394,7 +394,11 @@ class EVIMethod(HistoryMethod):
     ) -> str:
         self._ensure_initialized(dataset)
         assert self._system is not None
-        return self._system.answer_question(question, qa=qa, question_images=question_images, dataset=dataset)
+        answer = self._system.answer_question(question, qa=qa, question_images=question_images, dataset=dataset)
+        self.runtime_info["final_context_round_ids"] = self._system.last_context_round_ids
+        self.runtime_info["history_source"] = "evi_internal"
+        self.runtime_info["history_turns_after_truncation"] = len(self._system.last_context_round_ids) * 2
+        return answer
 
     def build_history(self, dataset: MemoryBenchmarkDataset, qa: Dict[str, Any]) -> List[Dict[str, Any]]:
         return []

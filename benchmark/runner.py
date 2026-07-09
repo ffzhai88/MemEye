@@ -240,6 +240,9 @@ def build_payload(
     method_runtime: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     summary = summarize_results(results)
+    evidence_summary = summarize_evidence_context(results)
+    if evidence_summary:
+        summary["evidence_context"] = evidence_summary
     model_ref = cfg["model"].get("model_path") or cfg["model"].get("model", "")
     payload = {
         "task_name": cfg.get("task", {}).get("name", "task"),
@@ -261,6 +264,99 @@ def build_payload(
     if method_runtime:
         payload["method_runtime"] = method_runtime
     return payload
+
+
+
+def _unique_round_ids(values: Any) -> List[str]:
+    out: List[str] = []
+    seen = set()
+    if not isinstance(values, list):
+        return out
+    for value in values:
+        rid = str(value or "").strip()
+        if not rid or rid in seen:
+            continue
+        out.append(rid)
+        seen.add(rid)
+    return out
+
+
+def _round_ids_from_history(history: List[Dict[str, Any]]) -> List[str]:
+    out: List[str] = []
+    seen = set()
+    for item in history or []:
+        rid = str(item.get("round_id") or "").strip()
+        if not rid or rid in seen:
+            continue
+        out.append(rid)
+        seen.add(rid)
+    return out
+
+
+def _context_round_ids(history: List[Dict[str, Any]], runtime_info: Dict[str, Any]) -> List[str]:
+    for key in ("final_context_round_ids", "selected_round_ids", "retrieved_round_ids"):
+        round_ids = _unique_round_ids(runtime_info.get(key))
+        if round_ids:
+            return round_ids
+    return _round_ids_from_history(history)
+
+
+def _evidence_context_metrics(qa: Dict[str, Any], context_round_ids: List[str]) -> Dict[str, Any]:
+    clue_rounds = _unique_round_ids(qa.get("clue", []))
+    context_round_ids = _unique_round_ids(context_round_ids)
+    context_set = set(context_round_ids)
+    hits = [rid for rid in clue_rounds if rid in context_set]
+    clue_count = len(clue_rounds)
+    context_count = len(context_round_ids)
+    recall = (len(hits) / clue_count) if clue_count else None
+    precision = (len(hits) / context_count) if context_count else (None if clue_count else 0.0)
+    if recall is None or precision is None or recall + precision == 0:
+        f1 = None if recall is None or precision is None else 0.0
+    else:
+        f1 = 2 * recall * precision / (recall + precision)
+    return {
+        "context_round_count": context_count,
+        "clue_round_count": clue_count,
+        "clue_round_hits": len(hits),
+        "clue_round_hit_ids": hits,
+        "clue_round_missed_ids": [rid for rid in clue_rounds if rid not in context_set],
+        "clue_round_recall_at_context": recall,
+        "clue_round_precision_at_context": precision,
+        "clue_round_f1_at_context": f1,
+        "full_clue_coverage": bool(clue_count and len(hits) == clue_count),
+        "context_available": bool(context_round_ids),
+    }
+
+
+def summarize_evidence_context(results: List[Dict[str, Any]]) -> Dict[str, Any]:
+    rows = [
+        _evidence_context_metrics({"clue": r.get("clue_rounds", [])}, r.get("context_round_ids", []))
+        for r in results
+    ]
+    rows = [r for r in rows if r.get("clue_round_count", 0) > 0]
+    if not rows:
+        return {}
+    total_clues = sum(int(r.get("clue_round_count", 0) or 0) for r in rows)
+    total_hits = sum(int(r.get("clue_round_hits", 0) or 0) for r in rows)
+    total_context = sum(int(r.get("context_round_count", 0) or 0) for r in rows)
+    recalls = [float(r["clue_round_recall_at_context"]) for r in rows if r.get("clue_round_recall_at_context") is not None]
+    precisions = [float(r["clue_round_precision_at_context"]) for r in rows if r.get("clue_round_precision_at_context") is not None]
+    f1s = [float(r["clue_round_f1_at_context"]) for r in rows if r.get("clue_round_f1_at_context") is not None]
+    available = [r for r in rows if r.get("context_available")]
+    return {
+        "num_qas_with_clues": len(rows),
+        "num_qas_with_context": len(available),
+        "clue_round_recall_at_context_micro": (total_hits / total_clues) if total_clues else None,
+        "clue_round_recall_at_context_macro": (sum(recalls) / len(recalls)) if recalls else None,
+        "clue_round_precision_at_context_micro": (total_hits / total_context) if total_context else None,
+        "clue_round_precision_at_context_macro": (sum(precisions) / len(precisions)) if precisions else None,
+        "clue_round_f1_at_context_macro": (sum(f1s) / len(f1s)) if f1s else None,
+        "full_clue_coverage_rate": sum(1 for r in rows if r.get("full_clue_coverage")) / len(rows),
+        "context_round_count_mean": total_context / len(rows),
+        "total_clue_rounds": total_clues,
+        "total_clue_round_hits": total_hits,
+        "total_context_rounds": total_context,
+    }
 
 
 def _format_options_block(question: str, options_dict: Dict[str, str]) -> str:
@@ -688,8 +784,12 @@ def run_benchmark(
                 + f" latency_ms={latency_ms}"
             )
 
-        if current_method_runtime:
-            result["method_runtime"] = current_method_runtime
+        post_method_runtime = dict(getattr(method, "runtime_info", {}) or {})
+        context_round_ids = _context_round_ids(history, post_method_runtime)
+        result["context_round_ids"] = context_round_ids
+        result["context_round_count"] = len(context_round_ids)
+        if post_method_runtime:
+            result["method_runtime"] = post_method_runtime
         results.append(result)
 
     # 第八步：所有题目跑完后，汇总 method 的运行时信息，并生成最终的 payload。
