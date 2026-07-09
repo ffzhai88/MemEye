@@ -39,7 +39,7 @@ Use attached images only to resolve uncertainty.
 Be concise and grounded in the selected evidence.
 If the question is multiple-choice, answer with ONLY the option letter.
 """
-FACET_PROMPT_VERSION = "retrieval_facets_v2_locator_examples"
+FACET_PROMPT_VERSION = "retrieval_facets_v3_dedup_locator"
 
 FACET_EXTRACTION_SYSTEM_PROMPT = """You extract retrieval facets for a multimodal long-term memory system.
 
@@ -61,6 +61,7 @@ Guidelines:
 - Each facet should be independently searchable as a memory locator.
 - Do not create answer choices or solve the question.
 - Do not split compound visual or temporal descriptions into isolated words.
+- Do not output one facet that is mostly contained inside another facet; keep the more specific locator.
 - Avoid generic standalone words such as scene, image, item, later, compare, before, after, count.
 
 Examples:
@@ -69,7 +70,7 @@ Bad facets: ["red", "object", "table", "last photo"]
 Good facets: ["red object near the wooden table in the last photo"]
 
 Question: "After the rainy street scene with a person holding an umbrella, what vehicle appeared at the corner?"
-Bad facets: ["rainy", "street", "umbrella", "vehicle", "corner"]
+Bad facets: ["rainy", "street", "umbrella", "rainy street scene with a person holding an umbrella", "vehicle", "corner"]
 Good facets: ["rainy street scene with a person holding an umbrella", "vehicle at the corner after that rainy street scene"]
 
 Question: "Between the first meeting with the blue notebook and the later meeting with the white folder, which one had the round wall clock?"
@@ -77,7 +78,7 @@ Bad facets: ["first", "meeting", "blue notebook", "white folder", "clock"]
 Good facets: ["first meeting with the blue notebook", "later meeting with the white folder", "round wall clock in one of the meetings"]
 
 Question: "How did the wooden shelf change between its earlier image and the most recent image?"
-Bad facets: ["wooden shelf", "moved", "last image"]
+Bad facets: ["wooden shelf", "wooden shelf in the earlier image", "wooden shelf in the most recent image", "last image"]
 Good facets: ["wooden shelf in the earlier image", "wooden shelf in the most recent image"]
 
 Question: "Which cue belongs to the scene with the green bag on the left of the gray suitcase rather than the scene with the black backpack?"
@@ -1070,6 +1071,49 @@ class EVISystem:
         raw = json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str)
         return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:40]
 
+    @staticmethod
+    def _normalize_facet_text(value: str) -> str:
+        chars = []
+        for ch in str(value or "").lower():
+            chars.append(ch if ch.isalnum() else " ")
+        return " ".join("".join(chars).split())
+
+    @classmethod
+    def _facet_is_contained(cls, shorter: str, longer: str) -> bool:
+        short_norm = cls._normalize_facet_text(shorter)
+        long_norm = cls._normalize_facet_text(longer)
+        if not short_norm or not long_norm:
+            return False
+        if short_norm == long_norm:
+            return True
+        if short_norm in long_norm:
+            return True
+        short_tokens = [tok for tok in short_norm.split() if len(tok) > 2]
+        long_tokens = set(tok for tok in long_norm.split() if len(tok) > 2)
+        if len(short_tokens) < 2:
+            return False
+        overlap = sum(1 for tok in short_tokens if tok in long_tokens)
+        return overlap / max(1, len(short_tokens)) >= 0.85 and len(short_norm) + 8 <= len(long_norm)
+
+    def _dedupe_facets(self, facets: List[str]) -> List[str]:
+        deduped: List[str] = []
+        for facet in facets:
+            replaced = False
+            drop = False
+            for idx, existing in enumerate(list(deduped)):
+                if self._facet_is_contained(facet, existing):
+                    log.info("QDMO-EVI dropped redundant retrieval facet=%s covered_by=%s", facet, existing)
+                    drop = True
+                    break
+                if self._facet_is_contained(existing, facet):
+                    log.info("QDMO-EVI replaced redundant retrieval facet=%s with=%s", existing, facet)
+                    deduped[idx] = facet
+                    replaced = True
+                    break
+            if not drop and not replaced:
+                deduped.append(facet)
+        return deduped
+
     def _clean_facets(self, question_stem: str, values: Any) -> List[str]:
         facets: List[str] = []
         seen: set[str] = set()
@@ -1081,17 +1125,16 @@ class EVISystem:
             facet = " ".join(str(item or "").strip().split())
             if not facet:
                 continue
-            key = facet.lower()
+            key = self._normalize_facet_text(facet)
             if key in seen:
                 continue
             seen.add(key)
             facets.append(facet)
-            if len(facets) >= self._facet_max_facets:
-                break
+        facets = self._dedupe_facets(facets)
+        facets = facets[: self._facet_max_facets]
         if not facets:
             facets = [question_stem]
         return facets
-
     def _extract_retrieval_facets(self, question_stem: str) -> List[str]:
         cache_key = self._facet_cache_key(question_stem)
         cache_file = self._facet_cache_dir() / f"{cache_key}.json"
