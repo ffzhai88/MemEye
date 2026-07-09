@@ -32,6 +32,14 @@ facet_multi_hit_bonus: 0.08
 facet_full_question_weight: 1.0
 use_facet_cache: true
 
+# Session-level evidence organization after faceted retrieval.
+# The organizer sees candidate rounds with images and writes clean per-round evidence notes for final QA.
+evi_use_evidence_organizer: true
+evi_organizer_with_options: true
+evi_final_include_evidence_images: true
+evi_organizer_max_evidence_rounds: 10
+evi_organizer_max_rounds_per_session: 0
+
 # Episodic-state pipeline budget.
 # Retrieved anchors are grouped by session and round order into local memory sets.
 # Keep this moderately high on route-like data because similar sessions can otherwise crowd out the correct episode.
