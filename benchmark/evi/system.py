@@ -40,7 +40,7 @@ Be concise and grounded in the selected evidence.
 If the question is multiple-choice, answer with ONLY the option letter.
 """
 FACET_PROMPT_VERSION = "retrieval_facets_v3b_dedup_locator"
-EVIDENCE_ORGANIZER_PROMPT_VERSION = "session_round_evidence_v2"
+EVIDENCE_ORGANIZER_PROMPT_VERSION = "session_round_evidence_v3_weak_filter"
 
 FACET_EXTRACTION_SYSTEM_PROMPT = """You extract retrieval facets for a multimodal long-term memory system.
 
@@ -87,31 +87,33 @@ Bad facets: ["left", "green bag", "gray suitcase", "black backpack"]
 Good facets: ["scene with the green bag on the left of the gray suitcase", "scene with the black backpack"]
 """
 
-EVIDENCE_ORGANIZER_SYSTEM_PROMPT = f"""You organize retrieved multimodal memory rounds into clean evidence for a later QA model.
+EVIDENCE_ORGANIZER_SYSTEM_PROMPT = f"""You annotate retrieved multimodal memory rounds for a later QA model.
 
 Version: {EVIDENCE_ORGANIZER_PROMPT_VERSION}
 
 You are not answering the question.
-For each useful round, state what question-relevant information this round can provide.
+For each candidate round, decide whether it should be kept as memory context and write a short question-aware note when useful.
 Use the attached image as primary visual evidence when available. Dialogue and captions may help, but do not replace visual inspection.
-Options, if provided, are only hints for what visual or textual details may matter.
-Do not choose an option.
-Do not explain why a round is relevant.
-Do not output confidence, scores, retrieval facets, answer operations, or cross-round relationship summaries.
-If a round provides no useful question-relevant information, omit it.
-Keep each evidence item concrete, concise, and grounded in that round.
+Use drop only when the round is clearly unrelated to the question.
+If uncertain, use weak_keep.
+Do not drop a round merely because it provides locator/context rather than the final answer.
+Do not choose an answer.
+Do not mention options, scores, retrieval facets, or confidence.
+Keep notes concrete, concise, and grounded in that round.
 
 Return ONLY valid JSON:
 {{
-  "round_evidence": [
+  "round_notes": [
     {{
       "round_id": "ROUND_ID",
-      "evidence": ["question-relevant observation from this round"]
+      "decision": "keep",
+      "note": "This round can provide ..."
     }}
   ]
 }}
-"""
 
+Allowed decision values: keep, weak_keep, drop.
+"""
 
 class EVISystem:
     """QDMO-EVI over typed evidence anchors with episodic-state readout."""
@@ -162,9 +164,8 @@ class EVISystem:
         self._facet_multi_hit_bonus = float(cfg.get("facet_multi_hit_bonus", 0.08))
         self._facet_full_question_weight = float(cfg.get("facet_full_question_weight", 1.0))
         self._use_evidence_organizer = self._as_bool(cfg.get("evi_use_evidence_organizer"), True)
-        self._evidence_organizer_with_options = self._as_bool(cfg.get("evi_organizer_with_options"), True)
         self._final_include_evidence_images = self._as_bool(cfg.get("evi_final_include_evidence_images"), True)
-        self._organizer_max_evidence_rounds = int(cfg.get("evi_organizer_max_evidence_rounds", self._max_selected_rounds))
+        self._final_max_rounds = int(cfg.get("evi_final_max_rounds", 10))
         self._organizer_max_rounds_per_session = int(cfg.get("evi_organizer_max_rounds_per_session", 0) or 0)
 
         self._use_facet_cache = self._as_bool(cfg.get("use_facet_cache"), True)
@@ -339,9 +340,8 @@ class EVISystem:
             "facet_multi_hit_bonus": self._facet_multi_hit_bonus,
             "facet_full_question_weight": self._facet_full_question_weight,
             "evi_use_evidence_organizer": self._use_evidence_organizer,
-            "evi_organizer_with_options": self._evidence_organizer_with_options,
             "evi_final_include_evidence_images": self._final_include_evidence_images,
-            "evi_organizer_max_evidence_rounds": self._organizer_max_evidence_rounds,
+            "evi_final_max_rounds": self._final_max_rounds,
             "evi_organizer_max_rounds_per_session": self._organizer_max_rounds_per_session,
             "evidence_organizer_prompt_version": EVIDENCE_ORGANIZER_PROMPT_VERSION,
             "use_facet_cache": self._use_facet_cache,
@@ -1291,34 +1291,6 @@ class EVISystem:
         return merged
 
 
-    def _format_options_for_prompt(self, qa: Optional[Dict[str, Any]], question_text: str = "") -> str:
-        current_lines: List[str] = []
-        for raw_line in str(question_text or "").splitlines():
-            line = raw_line.strip()
-            if len(line) >= 3 and line[0].isalpha() and line[1] == "." and line[0].upper() == line[0]:
-                current_lines.append(line)
-        if current_lines:
-            return "\n".join(current_lines)
-
-        options = (qa or {}).get("options")
-        if not options:
-            return ""
-        lines: List[str] = []
-        if isinstance(options, dict):
-            for key in sorted(k for k in options.keys() if str(k).lower() != "answer"):
-                lines.append(f"{key}. {options[key]}")
-        elif isinstance(options, list):
-            for item in options:
-                if isinstance(item, dict):
-                    for key in sorted(k for k in item.keys() if str(k).lower() != "answer"):
-                        lines.append(f"{key}. {item[key]}")
-                    break
-        else:
-            text = str(options).strip()
-            if text and "answer" not in text.lower():
-                lines.append(text)
-        return "\n".join(str(line).strip() for line in lines if str(line).strip())
-
     def _group_round_ids_by_session(self, round_ids: List[str]) -> List[Tuple[str, List[str]]]:
         grouped: Dict[str, List[str]] = {}
         seen: set[str] = set()
@@ -1345,16 +1317,11 @@ class EVISystem:
         session_id: str,
         round_ids: List[str],
         question_stem: str,
-        question_text: str,
-        qa: Optional[Dict[str, Any]],
         dataset: Any,
     ) -> Tuple[str, List[str]]:
         lines: List[str] = []
         images: List[str] = []
-        lines.append(f"Question:\n{question_stem}")
-        options_text = self._format_options_for_prompt(qa, question_text) if self._evidence_organizer_with_options else ""
-        if options_text:
-            lines.append("\nOptions, used only as evidence-collection hints:\n" + options_text)
+        lines.append(f"Question stem, without answer options:\n{question_stem}")
         lines.append(f"\nSession: {session_id}")
         lines.append("Candidate rounds from this session:")
         for rid in round_ids:
@@ -1392,7 +1359,7 @@ class EVISystem:
         order = {str(rid): idx for idx, rid in enumerate(candidate_round_ids)}
         out: List[Dict[str, Any]] = []
         seen: set[str] = set()
-        items = parsed.get("round_evidence", []) if isinstance(parsed, dict) else []
+        items = parsed.get("round_notes", []) if isinstance(parsed, dict) else []
         if not isinstance(items, list):
             return out
         for item in items:
@@ -1401,27 +1368,11 @@ class EVISystem:
             rid = str(item.get("round_id", "")).strip()
             if rid not in allowed or rid in seen:
                 continue
-            raw_evidence = item.get("evidence", [])
-            if isinstance(raw_evidence, str):
-                evidence_values = [raw_evidence]
-            elif isinstance(raw_evidence, list):
-                evidence_values = raw_evidence
-            else:
-                evidence_values = []
-            evidence: List[str] = []
-            ev_seen: set[str] = set()
-            for value in evidence_values:
-                text = " ".join(str(value or "").split())
-                if not text:
-                    continue
-                key = text.lower()
-                if key in ev_seen:
-                    continue
-                ev_seen.add(key)
-                evidence.append(text)
-            if not evidence:
-                continue
-            out.append({"session_id": session_id, "round_id": rid, "evidence": evidence[:4]})
+            decision = str(item.get("decision", "weak_keep") or "weak_keep").strip().lower()
+            if decision not in {"keep", "weak_keep", "drop"}:
+                decision = "weak_keep"
+            note = " ".join(str(item.get("note", "") or "").split())
+            out.append({"session_id": session_id, "round_id": rid, "decision": decision, "note": note})
             seen.add(rid)
         out.sort(key=lambda item: order.get(str(item.get("round_id")), 10**9))
         return out
@@ -1430,13 +1381,11 @@ class EVISystem:
         self,
         *,
         question_stem: str,
-        question_text: str,
-        qa: Optional[Dict[str, Any]],
         dataset: Any,
         candidate_round_ids: List[str],
     ) -> Tuple[List[Dict[str, Any]], List[str]]:
         if not self._use_evidence_organizer:
-            selected = candidate_round_ids[: self._max_selected_rounds]
+            selected = candidate_round_ids[: self._final_max_rounds]
             return [], selected
         all_evidence: List[Dict[str, Any]] = []
         for session_id, session_round_ids in self._group_round_ids_by_session(candidate_round_ids):
@@ -1447,8 +1396,6 @@ class EVISystem:
                 session_id=session_id,
                 round_ids=round_ids,
                 question_stem=question_stem,
-                question_text=question_text,
-                qa=qa,
                 dataset=dataset,
             )
             log.info(
@@ -1465,7 +1412,7 @@ class EVISystem:
                 "round_ids": round_ids,
                 "images": images,
                 "prompt_preview": user_text[: self._debug_prompt_chars],
-                "with_options": self._evidence_organizer_with_options,
+                "with_options": False,
             })
             raw = self._vlm(EVIDENCE_ORGANIZER_SYSTEM_PROMPT, user_text, images) if self._vlm is not None else ""
             parsed = extract_json(raw or "") or {}
@@ -1475,9 +1422,9 @@ class EVISystem:
                 parsed=parsed,
             )
             log.info(
-                "QDMO-EVI evidence organizer output session=%s evidence_rounds=%s raw=%s",
+                "QDMO-EVI evidence organizer output session=%s notes=%s raw=%s",
                 session_id,
-                [item["round_id"] for item in session_evidence],
+                [{"round_id": item["round_id"], "decision": item["decision"], "note": item.get("note", "")[:200]} for item in session_evidence],
                 str(raw).replace("\n", " ")[:4000],
             )
             trace_json(log, "evidence_organizer_output", {
@@ -1489,49 +1436,65 @@ class EVISystem:
             })
             all_evidence.extend(session_evidence)
 
-        candidate_order = {rid: idx for idx, rid in enumerate(candidate_round_ids)}
-        all_evidence.sort(key=lambda item: candidate_order.get(str(item.get("round_id")), 10**9))
+        notes_by_round = {str(item.get("round_id")): item for item in all_evidence}
         selected_round_ids: List[str] = []
-        seen: set[str] = set()
-        limit = self._organizer_max_evidence_rounds if self._organizer_max_evidence_rounds > 0 else len(candidate_round_ids)
-        for item in all_evidence:
-            rid = str(item.get("round_id", "")).strip()
-            if not rid or rid in seen:
+        dropped_round_ids: List[str] = []
+        for rid in candidate_round_ids:
+            item = notes_by_round.get(rid)
+            if item is not None and item.get("decision") == "drop":
+                dropped_round_ids.append(rid)
                 continue
             selected_round_ids.append(rid)
-            seen.add(rid)
-            if len(selected_round_ids) >= limit:
+            if len(selected_round_ids) >= self._final_max_rounds:
                 break
-        if not selected_round_ids:
-            selected_round_ids = candidate_round_ids[: self._max_selected_rounds]
-            log.warning("QDMO-EVI evidence organizer produced no usable evidence; fallback selected_rounds=%s", selected_round_ids)
+        if len(selected_round_ids) < max(1, self._min_selected_rounds):
+            selected_round_ids = candidate_round_ids[: self._final_max_rounds]
+            log.warning("QDMO-EVI weak evidence filtering left too few rounds; fallback selected_rounds=%s", selected_round_ids)
+        log.info(
+            "QDMO-EVI weak evidence filtering selected=%s dropped=%s final_max_rounds=%d",
+            selected_round_ids,
+            dropped_round_ids,
+            self._final_max_rounds,
+        )
+        trace_json(log, "weak_evidence_filtering", {
+            "candidate_round_ids": candidate_round_ids,
+            "selected_round_ids": selected_round_ids,
+            "dropped_round_ids": dropped_round_ids,
+            "notes": all_evidence,
+            "final_max_rounds": self._final_max_rounds,
+        })
         return all_evidence, selected_round_ids
 
-    def _build_evidence_history(
+    def _build_augmented_semantic_history(
         self,
+        dataset: Any,
         evidence_items: List[Dict[str, Any]],
         selected_round_ids: List[str],
     ) -> List[Dict[str, Any]]:
-        by_round: Dict[str, List[Dict[str, Any]]] = {}
+        notes_by_round: Dict[str, Dict[str, Any]] = {}
         for item in evidence_items:
             rid = str(item.get("round_id", "")).strip()
-            if rid:
-                by_round.setdefault(rid, []).append(item)
+            if rid and item.get("decision") != "drop":
+                notes_by_round[rid] = item
+        allowed = set(selected_round_ids)
         history: List[Dict[str, Any]] = []
-        for rid in selected_round_ids:
-            entries = by_round.get(rid, [])
-            if entries:
-                lines = [f"Evidence from session {self._round_session.get(rid, 'unknown')}, round {rid}:"]
-                for entry in entries:
-                    for evidence in entry.get("evidence", []) or []:
-                        text = " ".join(str(evidence or "").split())
-                        if text:
-                            lines.append(f"- {text}")
-                text = "\n".join(lines)
-            else:
-                text = f"Evidence from session {self._round_session.get(rid, 'unknown')}, round {rid}: selected retrieved round; inspect attached image/dialogue if needed."
-            images = list(self._round_images.get(rid, []) or []) if self._final_include_evidence_images else []
-            history.append({"role": "user", "text": text, "images": images, "round_id": rid})
+        for session_id in dataset.session_order():
+            session_history = history_from_round_ids(
+                dataset.get_session(session_id),
+                dataset.rounds,
+                allowed,
+                modality="multimodal",
+            )
+            for msg in session_history:
+                rid = str(msg.get("round_id", "")).strip()
+                if msg.get("role") == "user" and rid in notes_by_round:
+                    note = " ".join(str(notes_by_round[rid].get("note", "") or "").split())
+                    if note:
+                        new_msg = dict(msg)
+                        base_text = str(new_msg.get("text", "")).strip()
+                        new_msg["text"] = (base_text + "\n\nMemory evidence note for the current question:\n" + note).strip()
+                        msg = new_msg
+                history.append(msg)
         return history
 
     def _answer_with_faceted_topk(
@@ -1629,14 +1592,12 @@ class EVISystem:
 
         evidence_items, selected_round_ids = self._organize_session_evidence(
             question_stem=question_stem,
-            question_text=question,
-            qa=qa,
             dataset=dataset,
             candidate_round_ids=candidate_round_ids,
         )
         self._log_selected_round_clue_coverage(qa, selected_round_ids, "evidence_organizer_output_round")
         self._set_last_context_round_ids(selected_round_ids)
-        history = self._build_evidence_history(evidence_items, selected_round_ids)
+        history = self._build_augmented_semantic_history(dataset, evidence_items, selected_round_ids)
         history_preview = [
             {
                 "role": item.get("role"),
@@ -1652,13 +1613,13 @@ class EVISystem:
             "evidence_items": evidence_items,
             "history_turns": len(history),
             "history_preview": history_preview,
-            "final_include_evidence_images": self._final_include_evidence_images,
+            "final_include_evidence_images": True,
         })
         log.info(
             "QDMO-EVI organized evidence final history turns=%d selected_rounds=%s include_images=%s",
             len(history),
             selected_round_ids,
-            self._final_include_evidence_images,
+            True,
         )
         for idx, item in enumerate(history_preview, start=1):
             log.info(
