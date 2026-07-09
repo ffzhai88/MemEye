@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+from dataclasses import replace
 import hashlib
 import json
 import logging
 import os
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from router import GeminiAPIRouter, OpenAIAPIRouter, QwenLocalRouter
 
@@ -37,6 +38,26 @@ The evidence may be reconstructed episodic states or selected factual assertions
 Use attached images only to resolve uncertainty.
 Be concise and grounded in the selected evidence.
 If the question is multiple-choice, answer with ONLY the option letter.
+"""
+FACET_EXTRACTION_SYSTEM_PROMPT = """You extract retrieval facets for a multimodal long-term memory system.
+
+The goal is only retrieval. Do not answer the question.
+Extract short, self-contained phrases that can independently retrieve relevant memories.
+Keep original nouns, names, visual descriptions, dates, order words, and quoted labels when possible.
+Prefer meaningful phrases over isolated keywords.
+Include both sides of comparisons when the question compares memories.
+Include collection/scope phrases when the question asks over a set.
+
+Return ONLY valid JSON:
+{
+  "facets": ["retrieval phrase 1", "retrieval phrase 2"]
+}
+
+Guidelines:
+- Each facet should be searchable by itself.
+- Do not create answer choices or solve the question.
+- Use at most 6 facets.
+- Avoid generic standalone words such as route, screen, image, ad, later, compare.
 """
 
 
@@ -83,7 +104,12 @@ class EVISystem:
         self._max_selected_rounds = int(cfg.get("max_selected_rounds", 10))
         self._min_selected_rounds = int(cfg.get("min_selected_rounds", 1))
         self._round_selector_max_new_tokens = int(cfg.get("round_selector_max_new_tokens", 512))
+        self._facet_max_facets = int(cfg.get("facet_max_facets", 6))
+        self._facet_search_k = int(cfg.get("facet_search_k", 30))
+        self._facet_multi_hit_bonus = float(cfg.get("facet_multi_hit_bonus", 0.08))
+        self._facet_full_question_weight = float(cfg.get("facet_full_question_weight", 1.0))
 
+        self._use_facet_cache = self._as_bool(cfg.get("use_facet_cache"), True)
         self._use_round_selection_cache = self._as_bool(cfg.get("use_round_selection_cache"), True)
         self._use_state_cache = self._as_bool(cfg.get("use_state_cache"), True)
         self._use_state_images = self._as_bool(cfg.get("use_state_images"), True)
@@ -250,6 +276,11 @@ class EVISystem:
             "max_selected_rounds": self._max_selected_rounds,
             "min_selected_rounds": self._min_selected_rounds,
             "round_selector_max_new_tokens": self._round_selector_max_new_tokens,
+            "facet_max_facets": self._facet_max_facets,
+            "facet_search_k": self._facet_search_k,
+            "facet_multi_hit_bonus": self._facet_multi_hit_bonus,
+            "facet_full_question_weight": self._facet_full_question_weight,
+            "use_facet_cache": self._use_facet_cache,
             "use_round_selection_cache": self._use_round_selection_cache,
             "use_state_cache": self._use_state_cache,
             "use_state_images": self._use_state_images,
@@ -490,6 +521,9 @@ class EVISystem:
             log.error("QDMO-EVI index is empty; falling back to question-only answer with raw images.")
             images = self._as_image_list(question_images)[: self._max_answer_images]
             return self._vlm(FINAL_ANSWER_SYSTEM_PROMPT, question, images)
+
+        if self._pipeline == "faceted_topk":
+            return self._answer_with_faceted_topk(question, question_stem, qa, question_images)
 
         query_vec = self._embed(question_stem)
         if not query_vec:
@@ -995,6 +1029,289 @@ class EVISystem:
             caption_text = str(image_caption).strip()
         return f"{query}\nquestion image caption: {caption_text}" if caption_text else query
 
+    def _facet_cache_dir(self) -> Path:
+        raw = self._cfg.get("facet_cache_dir") or os.environ.get("EVI_FACET_CACHE_DIR")
+        path = Path(raw).expanduser() if raw else Path.home() / ".cache" / "evi_facets"
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
+    def _facet_cache_key(self, question_stem: str) -> str:
+        payload = {
+            "version": "retrieval_facets_v1",
+            "cache_namespace": self._vlm_result_namespace,
+            "question_stem": question_stem,
+            "max_facets": self._facet_max_facets,
+        }
+        raw = json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str)
+        return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:40]
+
+    def _clean_facets(self, question_stem: str, values: Any) -> List[str]:
+        facets: List[str] = []
+        seen: set[str] = set()
+        if isinstance(values, list):
+            raw_values = values
+        else:
+            raw_values = []
+        for item in raw_values:
+            facet = " ".join(str(item or "").strip().split())
+            if not facet:
+                continue
+            key = facet.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            facets.append(facet)
+            if len(facets) >= self._facet_max_facets:
+                break
+        if not facets:
+            facets = [question_stem]
+        return facets
+
+    def _extract_retrieval_facets(self, question_stem: str) -> List[str]:
+        cache_key = self._facet_cache_key(question_stem)
+        cache_file = self._facet_cache_dir() / f"{cache_key}.json"
+        if self._use_facet_cache and cache_file.exists():
+            try:
+                data = json.loads(cache_file.read_text(encoding="utf-8"))
+                facets = self._clean_facets(question_stem, data.get("facets", []))
+                log.info("QDMO-EVI retrieval facets cache_hit=True key=%s facets=%s", cache_key, facets)
+                trace_json(log, "retrieval_facets", {"cache_hit": True, "cache_key": cache_key, "facets": facets})
+                return facets
+            except Exception as exc:
+                log.warning("QDMO-EVI retrieval facet cache read failed key=%s error=%s", cache_key, exc)
+
+        user_text = "Question stem:\n" + str(question_stem or "")
+        raw = self._vlm(FACET_EXTRACTION_SYSTEM_PROMPT, user_text, []) if self._vlm is not None else ""
+        parsed = extract_json(raw or "") or {}
+        facets = self._clean_facets(question_stem, parsed.get("facets", []))
+        log.info("QDMO-EVI retrieval facets cache_hit=False key=%s facets=%s", cache_key, facets)
+        log.debug("[FACET RAW] key=%s raw=%s", cache_key, str(raw).replace("\n", " ")[:4000])
+        trace_json(log, "retrieval_facets", {
+            "cache_hit": False,
+            "cache_key": cache_key,
+            "facets": facets,
+            "raw_response": raw,
+        })
+        if self._use_facet_cache:
+            try:
+                cache_file.write_text(
+                    json.dumps(
+                        {
+                            "version": "retrieval_facets_v1",
+                            "cache_namespace": self._vlm_result_namespace,
+                            "question_stem": question_stem,
+                            "facets": facets,
+                            "raw_response": raw,
+                            "cache_key": cache_key,
+                        },
+                        ensure_ascii=False,
+                        indent=2,
+                        default=str,
+                    ),
+                    encoding="utf-8",
+                )
+            except Exception as exc:
+                log.warning("QDMO-EVI retrieval facet cache write failed key=%s error=%s", cache_key, exc)
+        return facets
+
+    def _search_anchors_for_text(self, query_text: str, top_k: int) -> List[EvidenceAnchor]:
+        query_vec = self._embed(query_text)
+        if not query_vec:
+            return []
+        for anchor in self._index.anchors:
+            anchor.score = 0.0
+        return [replace(anchor) for anchor in self._index.search(query_vec, top_k=top_k)]
+
+    def _merge_facet_rounds(
+        self,
+        facet_results: List[Tuple[str, List[EvidenceAnchor]]],
+    ) -> List[Dict[str, Any]]:
+        round_data: Dict[str, Dict[str, Any]] = {}
+        for facet_idx, (facet, anchors) in enumerate(facet_results):
+            facet_key = f"f{facet_idx}"
+            for rank, anchor in enumerate(anchors, start=1):
+                rid = anchor.round_id
+                score = float(anchor.score or 0.0)
+                item = round_data.setdefault(
+                    rid,
+                    {
+                        "round_id": rid,
+                        "session_id": anchor.session_id,
+                        "date": anchor.date,
+                        "max_score": 0.0,
+                        "score_sum": 0.0,
+                        "matched_facets": set(),
+                        "facet_scores": {},
+                        "top_anchors": [],
+                    },
+                )
+                item["max_score"] = max(float(item["max_score"]), score)
+                item["score_sum"] = float(item["score_sum"]) + score
+                item["matched_facets"].add(facet_key)
+                current = item["facet_scores"].get(facet, 0.0)
+                if score > current:
+                    item["facet_scores"][facet] = score
+                if len(item["top_anchors"]) < self._max_candidate_anchors:
+                    item["top_anchors"].append({
+                        "facet": facet,
+                        "rank": rank,
+                        "score": score,
+                        "type": anchor.evidence_type,
+                        "text": anchor.text,
+                    })
+        merged: List[Dict[str, Any]] = []
+        for item in round_data.values():
+            matched_count = len(item["matched_facets"])
+            bonus = self._facet_multi_hit_bonus * max(0, matched_count - 1)
+            item["matched_facets"] = matched_count
+            item["score"] = float(item["max_score"]) + bonus
+            merged.append(item)
+        merged.sort(key=lambda item: (float(item["score"]), int(item["matched_facets"]), float(item["max_score"])), reverse=True)
+        return merged
+
+    def _answer_with_faceted_topk(
+        self,
+        question: str,
+        question_stem: str,
+        qa: Optional[Dict[str, Any]],
+        question_images: Optional[List[str]],
+    ) -> str:
+        dataset = self._current_dataset
+        if dataset is None:
+            log.warning("QDMO-EVI faceted_topk requires dataset; falling back to question-only answer")
+            images = self._as_image_list(question_images)[: self._max_answer_images]
+            return self._vlm(FINAL_ANSWER_SYSTEM_PROMPT, question, images) if self._vlm is not None else ""
+
+        extracted_facets = self._extract_retrieval_facets(question_stem)
+        facets: List[Tuple[str, float]] = [(question_stem, self._facet_full_question_weight)]
+        seen = {question_stem.lower()}
+        for facet in extracted_facets:
+            key = facet.lower()
+            if key in seen:
+                continue
+            facets.append((facet, 1.0))
+            seen.add(key)
+
+        facet_results: List[Tuple[str, List[EvidenceAnchor]]] = []
+        all_retrieved: List[EvidenceAnchor] = []
+        for idx, (facet, weight) in enumerate(facets, start=1):
+            anchors = self._search_anchors_for_text(facet, self._facet_search_k)
+            if weight != 1.0:
+                for anchor in anchors:
+                    anchor.score = float(anchor.score or 0.0) * weight
+            facet_results.append((facet, anchors))
+            all_retrieved.extend(anchors)
+            log.info("QDMO-EVI facet[%02d] query=%s retrieved=%d", idx, facet, len(anchors))
+            for rank, anchor in enumerate(anchors[: self._debug_top_k], start=1):
+                log.info(
+                    "  facet[%02d] anchor[%02d] round=%s type=%s score=%.4f text=%s",
+                    idx,
+                    rank,
+                    anchor.round_id,
+                    anchor.evidence_type,
+                    anchor.score or 0.0,
+                    anchor.text.replace("\n", " ")[:180],
+                )
+            trace_json(log, "facet_retrieval", {
+                "facet_index": idx,
+                "facet": facet,
+                "weight": weight,
+                "num_retrieved": len(anchors),
+                "top_anchors": anchors_summary(anchors, max_items=min(self._debug_top_k, len(anchors))),
+            })
+
+        self._log_raw_clue_coverage(qa, all_retrieved)
+        merged = self._merge_facet_rounds(facet_results)
+        trace_json(log, "faceted_round_merge", {
+            "num_rounds": len(merged),
+            "rounds": [
+                {
+                    "round_id": item["round_id"],
+                    "session_id": item["session_id"],
+                    "score": round(float(item["score"]), 6),
+                    "max_score": round(float(item["max_score"]), 6),
+                    "matched_facets": item["matched_facets"],
+                    "facet_scores": {k: round(float(v), 6) for k, v in item["facet_scores"].items()},
+                    "top_anchors": item["top_anchors"][: self._max_candidate_anchors],
+                }
+                for item in merged[: self._max_candidates]
+            ],
+        })
+        log.info("QDMO-EVI faceted round merge candidates=%d", len(merged))
+        for rank, item in enumerate(merged[: self._max_candidates], start=1):
+            log.info(
+                "  faceted_round[%02d] round=%s session=%s score=%.4f max=%.4f matched_facets=%s facet_scores=%s",
+                rank,
+                item["round_id"],
+                item["session_id"],
+                item["score"],
+                item["max_score"],
+                item["matched_facets"],
+                {k: round(float(v), 4) for k, v in item["facet_scores"].items()},
+            )
+
+        candidate_round_ids = [str(item["round_id"]) for item in merged[: self._max_candidates]]
+        self._log_selected_round_clue_coverage(qa, candidate_round_ids, "faceted_candidate_round")
+        selected_round_ids: List[str] = []
+        seen_rounds: set[str] = set()
+        for item in merged:
+            rid = str(item["round_id"])
+            if rid in seen_rounds:
+                continue
+            selected_round_ids.append(rid)
+            seen_rounds.add(rid)
+            if len(selected_round_ids) >= self._max_selected_rounds:
+                break
+        if len(selected_round_ids) < max(1, self._min_selected_rounds):
+            for rid in self._round_order:
+                if rid not in seen_rounds:
+                    selected_round_ids.append(rid)
+                    seen_rounds.add(rid)
+                if len(selected_round_ids) >= self._max_selected_rounds:
+                    break
+            log.warning("QDMO-EVI faceted_topk used fallback/top-up: selected=%s", selected_round_ids)
+
+        self._log_selected_round_clue_coverage(qa, selected_round_ids, "selected_round")
+        history = self._build_semantic_style_history(dataset, selected_round_ids)
+        history_preview = [
+            {
+                "role": item.get("role"),
+                "round_id": item.get("round_id"),
+                "text": str(item.get("text", ""))[:500],
+                "images": item.get("images", []),
+            }
+            for item in history
+        ]
+        trace_json(log, "faceted_topk_history", {
+            "selected_round_ids": selected_round_ids,
+            "history_turns": len(history),
+            "history_preview": history_preview,
+        })
+        log.info("QDMO-EVI faceted-topk final history turns=%d selected_rounds=%s", len(history), selected_round_ids)
+        for idx, item in enumerate(history_preview, start=1):
+            log.info(
+                "  faceted_topk_history[%02d] role=%s round=%s images=%s text=%s",
+                idx,
+                item.get("role"),
+                item.get("round_id"),
+                item.get("images"),
+                " ".join(str(item.get("text", "")).split())[:500],
+            )
+
+        mode = "mcq" if isinstance((qa or {}).get("options"), (dict, list)) and bool((qa or {}).get("options")) else "open"
+        router = self._get_answer_router(mode)
+        query = self._question_with_image_caption(qa, question)
+        qa_images = self._as_image_list(question_images)[: self._max_answer_images]
+        log.info("QDMO-EVI faceted-topk answer call mode=%s question_images=%s", mode, qa_images)
+        answer = router.answer(history, query, question_images=qa_images)
+        trace_json(log, "answer_done", {
+            "pipeline": "faceted_topk",
+            "answer": answer,
+            "selected_round_ids": selected_round_ids,
+            "history_turns": len(history),
+        })
+        log.info("QDMO-EVI answer returned length=%d text=%s", len(str(answer)), str(answer).replace("\n", " ")[:1000])
+        return answer
     def _answer_with_consolidated_topk(
         self,
         question: str,

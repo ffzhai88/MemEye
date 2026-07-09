@@ -4,10 +4,11 @@ name: evi
 modality: multimodal
 
 # Main online organization pipeline.
+# faceted_topk = extract retrieval facets -> same anchor retriever per facet -> round-level merge -> top10 raw multimodal answer.
 # consolidated_topk = retrieve anchors -> consolidate to candidate rounds -> take top10 directly -> semantic-style raw multimodal answer.
 # episodic_state = legacy retrieve anchors -> ordered episodic memory sets -> cached state readout -> final answer.
 # candidate_assertion = legacy retrieve anchors -> per-candidate assertions -> final answer.
-evi_pipeline: consolidated_topk
+evi_pipeline: faceted_topk
 
 # Text embedding backend used for task-agnostic evidence-anchor retrieval.
 # Safer default for local compile/smoke tests is all-MiniLM-L6-v2; use NV-Embed-v2 for full experiments if available.
@@ -23,6 +24,13 @@ vlm_timeout: 90
 
 # Broad retrieval over task-agnostic evidence anchors before online memory organization.
 raw_search_k: 120
+
+# Faceted retrieval pipeline budget. Facets are retrieval phrases, not answer operations.
+facet_max_facets: 6
+facet_search_k: 30
+facet_multi_hit_bonus: 0.08
+facet_full_question_weight: 1.0
+use_facet_cache: true
 
 # Episodic-state pipeline budget.
 # Retrieved anchors are grouped by session and round order into local memory sets.
@@ -74,4 +82,3 @@ evi_debug_console: true
 evi_debug_append: true
 evi_debug_top_k: 50
 evi_debug_prompt_chars: 12000
-
