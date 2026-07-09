@@ -40,7 +40,7 @@ Be concise and grounded in the selected evidence.
 If the question is multiple-choice, answer with ONLY the option letter.
 """
 FACET_PROMPT_VERSION = "retrieval_facets_v3b_dedup_locator"
-EVIDENCE_ORGANIZER_PROMPT_VERSION = "session_round_evidence_v1"
+EVIDENCE_ORGANIZER_PROMPT_VERSION = "session_round_evidence_v2"
 
 FACET_EXTRACTION_SYSTEM_PROMPT = """You extract retrieval facets for a multimodal long-term memory system.
 
@@ -1291,23 +1291,32 @@ class EVISystem:
         return merged
 
 
-    def _format_options_for_prompt(self, qa: Optional[Dict[str, Any]]) -> str:
+    def _format_options_for_prompt(self, qa: Optional[Dict[str, Any]], question_text: str = "") -> str:
+        current_lines: List[str] = []
+        for raw_line in str(question_text or "").splitlines():
+            line = raw_line.strip()
+            if len(line) >= 3 and line[0].isalpha() and line[1] == "." and line[0].upper() == line[0]:
+                current_lines.append(line)
+        if current_lines:
+            return "\n".join(current_lines)
+
         options = (qa or {}).get("options")
         if not options:
             return ""
         lines: List[str] = []
         if isinstance(options, dict):
-            for key in sorted(options.keys()):
+            for key in sorted(k for k in options.keys() if str(k).lower() != "answer"):
                 lines.append(f"{key}. {options[key]}")
         elif isinstance(options, list):
-            for idx, item in enumerate(options, start=1):
+            for item in options:
                 if isinstance(item, dict):
-                    for key in sorted(item.keys()):
+                    for key in sorted(k for k in item.keys() if str(k).lower() != "answer"):
                         lines.append(f"{key}. {item[key]}")
                     break
-                lines.append(f"{idx}. {item}")
         else:
-            lines.append(str(options))
+            text = str(options).strip()
+            if text and "answer" not in text.lower():
+                lines.append(text)
         return "\n".join(str(line).strip() for line in lines if str(line).strip())
 
     def _group_round_ids_by_session(self, round_ids: List[str]) -> List[Tuple[str, List[str]]]:
@@ -1336,13 +1345,14 @@ class EVISystem:
         session_id: str,
         round_ids: List[str],
         question_stem: str,
+        question_text: str,
         qa: Optional[Dict[str, Any]],
         dataset: Any,
     ) -> Tuple[str, List[str]]:
         lines: List[str] = []
         images: List[str] = []
         lines.append(f"Question:\n{question_stem}")
-        options_text = self._format_options_for_prompt(qa) if self._evidence_organizer_with_options else ""
+        options_text = self._format_options_for_prompt(qa, question_text) if self._evidence_organizer_with_options else ""
         if options_text:
             lines.append("\nOptions, used only as evidence-collection hints:\n" + options_text)
         lines.append(f"\nSession: {session_id}")
@@ -1420,6 +1430,7 @@ class EVISystem:
         self,
         *,
         question_stem: str,
+        question_text: str,
         qa: Optional[Dict[str, Any]],
         dataset: Any,
         candidate_round_ids: List[str],
@@ -1436,6 +1447,7 @@ class EVISystem:
                 session_id=session_id,
                 round_ids=round_ids,
                 question_stem=question_stem,
+                question_text=question_text,
                 qa=qa,
                 dataset=dataset,
             )
@@ -1617,6 +1629,7 @@ class EVISystem:
 
         evidence_items, selected_round_ids = self._organize_session_evidence(
             question_stem=question_stem,
+            question_text=question,
             qa=qa,
             dataset=dataset,
             candidate_round_ids=candidate_round_ids,
