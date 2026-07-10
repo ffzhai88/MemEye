@@ -40,7 +40,7 @@ Be concise and grounded in the selected evidence.
 If the question is multiple-choice, answer with ONLY the option letter.
 """
 FACET_PROMPT_VERSION = "retrieval_facets_v3b_dedup_locator"
-EVIDENCE_ORGANIZER_PROMPT_VERSION = "session_round_evidence_v7_plain_history_call"
+EVIDENCE_ORGANIZER_PROMPT_VERSION = "session_round_evidence_v9_round_packets_original_note"
 
 FACET_EXTRACTION_SYSTEM_PROMPT = """You extract retrieval facets for a multimodal long-term memory system.
 
@@ -1415,13 +1415,33 @@ class EVISystem:
 
     def _build_organizer_history(self, dataset: Any, session_id: str, round_ids: List[str]) -> List[Dict[str, Any]]:
         allowed = set(round_ids)
-        history = history_from_round_ids(
-            dataset.get_session(session_id),
-            dataset.rounds,
-            allowed,
-            modality="multimodal",
-        )
-        return history
+        session = dataset.get_session(session_id)
+        out: List[Dict[str, Any]] = []
+        for dialog in session.get("dialogues", []):
+            rid = str(dialog.get("round", "") or "")
+            if rid not in allowed:
+                continue
+            rp = dataset.rounds.get(rid, {}) if dataset is not None else {}
+            images = list(rp.get("images", []) or [])
+            user_text = " ".join(str(rp.get("user", "") or "").split())
+            assistant_text = " ".join(str(rp.get("assistant", "") or "").split())
+            lines = [
+                f"[Candidate round {rid}]",
+                f"session_id: {session_id}",
+                f"attached_images: {len(images)}",
+            ]
+            if user_text:
+                lines.append(f"User utterance: {user_text}")
+            if assistant_text:
+                lines.append(f"Assistant utterance: {assistant_text}")
+            lines.append("Use only this packet and its attached image(s), if any, when judging this round.")
+            out.append({
+                "role": "user",
+                "text": "\n".join(lines),
+                "images": images,
+                "round_id": rid,
+            })
+        return out
 
     def _build_organizer_prompt(self, *, question_stem: str, session_id: str, round_ids: List[str]) -> str:
         lines: List[str] = []
@@ -1527,6 +1547,13 @@ class EVISystem:
                     item.get("images"),
                     item.get("text"),
                 )
+            log.info(
+                "QDMO-EVI evidence organizer actual plain message layout session=%s system_chars=%d history_user_packets=%d final_prompt_chars=%d",
+                session_id,
+                len(EVIDENCE_ORGANIZER_SYSTEM_PROMPT),
+                len(organizer_history),
+                len(organizer_prompt),
+            )
             trace_json(log, "evidence_organizer_input", {
                 "prompt_version": EVIDENCE_ORGANIZER_PROMPT_VERSION,
                 "session_id": session_id,
