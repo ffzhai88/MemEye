@@ -69,15 +69,22 @@ class GeminiAPIRouter(BaseRouter):
                 parts.append({"text": text})
             for image_path in msg.get("images", []) or []:
                 parts.append({"inline_data": encode_image_inline(image_path)})
+            post_text = str(msg.get("post_text", "")).strip()
+            if post_text:
+                parts.append({"text": post_text})
             if not parts:
                 continue
             role = "model" if msg.get("role") == "assistant" else "user"
             contents.append({"role": role, "parts": parts})
 
-        final_parts: List[Dict[str, Any]] = [{"text": str(prompt or "")}]
+        final_parts: List[Dict[str, Any]] = []
+        final_text = str(prompt or "").strip()
+        if final_text:
+            final_parts.append({"text": final_text})
         for image_path in prompt_images or []:
             final_parts.append({"inline_data": encode_image_inline(image_path)})
-        contents.append({"role": "user", "parts": final_parts})
+        if final_parts:
+            contents.append({"role": "user", "parts": final_parts})
         return contents
 
     def answer_plain_prompt(

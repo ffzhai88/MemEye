@@ -108,13 +108,20 @@ class QwenLocalRouter(BaseRouter):
             txt = msg.get("text", "")
             if txt:
                 content.append({"type": "text", "text": txt})
+            post_text = str(msg.get("post_text", "")).strip()
+            if post_text:
+                content.append({"type": "text", "text": post_text})
             if content:
                 messages.append({"role": msg.get("role", "user"), "content": content})
 
-        final_content: List[Dict[str, Any]] = [{"type": "text", "text": str(prompt or "")}]
+        final_content: List[Dict[str, Any]] = []
+        final_text = str(prompt or "").strip()
+        if final_text:
+            final_content.append({"type": "text", "text": final_text})
         for img in prompt_images or []:
             final_content.append({"type": "image", "image": f"file://{img}"})
-        messages.append({"role": "user", "content": final_content})
+        if final_content:
+            messages.append({"role": "user", "content": final_content})
         return messages
 
     def answer_plain_prompt(
