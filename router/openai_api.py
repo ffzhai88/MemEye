@@ -118,6 +118,81 @@ class OpenAIAPIRouter(BaseRouter):
         messages.append({"role": "user", "content": final_content})
         return messages
 
+    def _to_plain_prompt_messages(
+        self,
+        history_messages: List[Dict[str, Any]],
+        prompt: str,
+        prompt_images: Optional[List[str]] = None,
+    ) -> List[Dict[str, Any]]:
+        p_imgs = prompt_images or []
+        history_messages = self._truncate_images(
+            history_messages, p_imgs, self.max_images,
+        )
+        messages: List[Dict[str, Any]] = [
+            {
+                "role": "system",
+                "content": self.system_prompt,
+            }
+        ]
+        for msg in history_messages:
+            content: List[Dict[str, Any]] = []
+            text = str(msg.get("text", "")).strip()
+            if text:
+                content.append({"type": "text", "text": text})
+            for image_path in msg.get("images", []) or []:
+                content.append(
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": encode_image_data_url(image_path), "detail": "high"},
+                    }
+                )
+            if content:
+                messages.append({"role": msg.get("role", "user"), "content": content})
+
+        final_content: List[Dict[str, Any]] = [{"type": "text", "text": str(prompt or "")}]
+        for image_path in p_imgs:
+            final_content.append(
+                {
+                    "type": "image_url",
+                    "image_url": {"url": encode_image_data_url(image_path), "detail": "high"},
+                }
+            )
+        messages.append({"role": "user", "content": final_content})
+        return messages
+
+    def answer_plain_prompt(
+        self,
+        history_messages: List[Dict[str, Any]],
+        prompt: str,
+        prompt_images: Optional[List[str]] = None,
+    ) -> str:
+        payload = {
+            "model": self.model,
+            "messages": self._to_plain_prompt_messages(history_messages, prompt, prompt_images),
+            **({
+                "max_completion_tokens": self.max_new_tokens
+            } if any(self.model.startswith(p) for p in ("gpt-5", "o3", "o4")) else {
+                "max_tokens": self.max_new_tokens
+            }),
+            "temperature": 0,
+        }
+        response = post_json(
+            url=f"{self.base_url}/chat/completions",
+            headers={"Authorization": f"Bearer {self.api_key}"},
+            payload=payload,
+            timeout=self.timeout,
+        )
+        try:
+            usage = response.get("usage", {})
+            self.last_usage = {
+                "prompt_tokens": usage.get("prompt_tokens", 0),
+                "completion_tokens": usage.get("completion_tokens", 0),
+                "total_tokens": usage.get("total_tokens", 0),
+            }
+            return str(response["choices"][0]["message"]["content"]).strip()
+        except Exception as exc:
+            raise RuntimeError(f"Unexpected OpenAI response shape: {response}") from exc
+
     def answer(
         self,
         history_messages: List[Dict[str, Any]],

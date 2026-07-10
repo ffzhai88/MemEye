@@ -55,6 +55,60 @@ class GeminiAPIRouter(BaseRouter):
         contents.append({"role": "user", "parts": final_parts})
         return contents
 
+    def _to_plain_prompt_contents(
+        self,
+        history_messages: List[Dict[str, Any]],
+        prompt: str,
+        prompt_images: Optional[List[str]] = None,
+    ) -> List[Dict[str, Any]]:
+        contents: List[Dict[str, Any]] = []
+        for msg in history_messages:
+            parts: List[Dict[str, Any]] = []
+            text = str(msg.get("text", "")).strip()
+            if text:
+                parts.append({"text": text})
+            for image_path in msg.get("images", []) or []:
+                parts.append({"inline_data": encode_image_inline(image_path)})
+            if not parts:
+                continue
+            role = "model" if msg.get("role") == "assistant" else "user"
+            contents.append({"role": role, "parts": parts})
+
+        final_parts: List[Dict[str, Any]] = [{"text": str(prompt or "")}]
+        for image_path in prompt_images or []:
+            final_parts.append({"inline_data": encode_image_inline(image_path)})
+        contents.append({"role": "user", "parts": final_parts})
+        return contents
+
+    def answer_plain_prompt(
+        self,
+        history_messages: List[Dict[str, Any]],
+        prompt: str,
+        prompt_images: Optional[List[str]] = None,
+    ) -> str:
+        payload = {
+            "systemInstruction": {
+                "parts": [{"text": self.system_prompt}]
+            },
+            "contents": self._to_plain_prompt_contents(history_messages, prompt, prompt_images),
+            "generationConfig": {
+                "temperature": 0,
+                "maxOutputTokens": self.max_new_tokens,
+            },
+        }
+        response = post_json(
+            url=f"{self.base_url}/models/{self.model}:generateContent?key={self.api_key}",
+            headers={},
+            payload=payload,
+            timeout=self.timeout,
+        )
+        try:
+            parts = response["candidates"][0]["content"]["parts"]
+            text = "".join(part.get("text", "") for part in parts)
+            return text.strip()
+        except Exception as exc:
+            raise RuntimeError(f"Unexpected Gemini response shape: {response}") from exc
+
     def answer(
         self,
         history_messages: List[Dict[str, Any]],

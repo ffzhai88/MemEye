@@ -92,6 +92,71 @@ class QwenLocalRouter(BaseRouter):
         messages.append({"role": "user", "content": final_content})
         return messages
 
+    def _to_plain_prompt_qwen_messages(
+        self,
+        history_messages: List[Dict[str, Any]],
+        prompt: str,
+        prompt_images: Optional[List[str]] = None,
+    ) -> List[Dict[str, Any]]:
+        messages: List[Dict[str, Any]] = []
+        if self.system_prompt:
+            messages.append({"role": "system", "content": [{"type": "text", "text": self.system_prompt}]})
+        for msg in history_messages:
+            content: List[Dict[str, str]] = []
+            for img in msg.get("images", []) or []:
+                content.append({"type": "image", "image": f"file://{img}"})
+            txt = msg.get("text", "")
+            if txt:
+                content.append({"type": "text", "text": txt})
+            if content:
+                messages.append({"role": msg.get("role", "user"), "content": content})
+
+        final_content: List[Dict[str, Any]] = [{"type": "text", "text": str(prompt or "")}]
+        for img in prompt_images or []:
+            final_content.append({"type": "image", "image": f"file://{img}"})
+        messages.append({"role": "user", "content": final_content})
+        return messages
+
+    def answer_plain_prompt(
+        self,
+        history_messages: List[Dict[str, Any]],
+        prompt: str,
+        prompt_images: Optional[List[str]] = None,
+    ) -> str:
+        messages = self._to_plain_prompt_qwen_messages(history_messages, prompt, prompt_images)
+        text = self.processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+        image_inputs, video_inputs = self.process_vision_info(messages)
+        if image_inputs or video_inputs:
+            processor_kwargs: Dict[str, Any] = dict(
+                text=[text],
+                padding=True,
+                return_tensors="pt",
+            )
+            if image_inputs:
+                processor_kwargs["images"] = image_inputs
+            if video_inputs:
+                processor_kwargs["videos"] = video_inputs
+            inputs = self.processor(**processor_kwargs)
+        else:
+            inputs = self.processor.tokenizer([text], padding=True, return_tensors="pt")
+        if self.use_cuda:
+            inputs = inputs.to("cuda")
+
+        eos_token_id = getattr(self.processor.tokenizer, "eos_token_id", None)
+        pad_token_id = getattr(self.processor.tokenizer, "pad_token_id", None)
+        generate_kwargs: Dict[str, Any] = dict(
+            max_new_tokens=self.max_new_tokens,
+            do_sample=False,
+            eos_token_id=eos_token_id,
+            pad_token_id=pad_token_id if pad_token_id is not None else eos_token_id,
+        )
+        if self.max_time is not None:
+            generate_kwargs["max_time"] = self.max_time
+        with self.torch.no_grad():
+            out = self.model.generate(**inputs, **generate_kwargs)
+        gen = out[:, inputs.input_ids.shape[1]:]
+        return self.processor.batch_decode(gen, skip_special_tokens=True)[0].strip()
+
     def answer(
         self,
         history_messages: List[Dict[str, Any]],

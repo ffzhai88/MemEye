@@ -40,7 +40,7 @@ Be concise and grounded in the selected evidence.
 If the question is multiple-choice, answer with ONLY the option letter.
 """
 FACET_PROMPT_VERSION = "retrieval_facets_v3b_dedup_locator"
-EVIDENCE_ORGANIZER_PROMPT_VERSION = "session_round_evidence_v3_weak_filter"
+EVIDENCE_ORGANIZER_PROMPT_VERSION = "session_round_evidence_v7_plain_history_call"
 
 FACET_EXTRACTION_SYSTEM_PROMPT = """You extract retrieval facets for a multimodal long-term memory system.
 
@@ -87,19 +87,27 @@ Bad facets: ["left", "green bag", "gray suitcase", "black backpack"]
 Good facets: ["scene with the green bag on the left of the gray suitcase", "scene with the black backpack"]
 """
 
-EVIDENCE_ORGANIZER_SYSTEM_PROMPT = f"""You annotate retrieved multimodal memory rounds for a later QA model.
+EVIDENCE_ORGANIZER_SYSTEM_PROMPT = f"""You are given a question and a set of retrieved memory rounds from a multimodal conversation.
+Your task is to prepare these rounds for a later answer model.
 
-Version: {EVIDENCE_ORGANIZER_PROMPT_VERSION}
+Prompt version: {EVIDENCE_ORGANIZER_PROMPT_VERSION}
 
-You are not answering the question.
-For each candidate round, decide whether it should be kept as memory context and write a short question-aware note when useful.
-Use the attached image as primary visual evidence when available. Dialogue and captions may help, but do not replace visual inspection.
-Use drop only when the round is clearly unrelated to the question.
+For each candidate round:
+1. Decide whether the round should remain in the answer context.
+2. If useful, write a short question-aware note for the round.
+
+Decision labels:
+- keep: useful or likely in scope.
+- weak_keep: possibly useful, contextual, or uncertain.
+- drop: clearly outside the question's requested subject or collection.
+
+Use drop conservatively.
 If uncertain, use weak_keep.
-Do not drop a round merely because it provides locator/context rather than the final answer.
-Do not choose an answer.
-Do not mention options, scores, retrieval facets, or confidence.
+Drop rounds that are clearly outside the question's requested subject or collection, even if they share an attribute word from the question.
+Do not drop a round merely because it provides locator or context rather than the final answer.
+
 Keep notes concrete, concise, and grounded in that round.
+Do not choose an answer or perform final reasoning.
 
 Return ONLY valid JSON:
 {{
@@ -111,8 +119,6 @@ Return ONLY valid JSON:
     }}
   ]
 }}
-
-Allowed decision values: keep, weak_keep, drop.
 """
 
 class EVISystem:
@@ -170,6 +176,7 @@ class EVISystem:
 
         self._use_facet_cache = self._as_bool(cfg.get("use_facet_cache"), True)
         self._use_round_selection_cache = self._as_bool(cfg.get("use_round_selection_cache"), True)
+        self._use_evidence_organizer_cache = self._as_bool(cfg.get("use_evidence_organizer_cache"), True)
         self._use_state_cache = self._as_bool(cfg.get("use_state_cache"), True)
         self._use_state_images = self._as_bool(cfg.get("use_state_images"), True)
         self._max_state_images_per_set = int(cfg.get("max_state_images_per_set", 4))
@@ -346,6 +353,7 @@ class EVISystem:
             "evidence_organizer_prompt_version": EVIDENCE_ORGANIZER_PROMPT_VERSION,
             "use_facet_cache": self._use_facet_cache,
             "use_round_selection_cache": self._use_round_selection_cache,
+            "use_evidence_organizer_cache": self._use_evidence_organizer_cache,
             "use_state_cache": self._use_state_cache,
             "use_state_images": self._use_state_images,
             "max_state_images_per_set": self._max_state_images_per_set,
@@ -857,6 +865,100 @@ class EVISystem:
         self._answer_routers[key] = router
         return router
 
+    def _get_evidence_organizer_router(self) -> Any:
+        key = "__evidence_organizer__"
+        if key in self._answer_routers:
+            return self._answer_routers[key]
+        model_cfg = dict(self._model_cfg or {})
+        provider = str(model_cfg.get("provider", "openai_api")).strip()
+        if provider == "qwen_local":
+            router = QwenLocalRouter(
+                model_path=str(model_cfg["model_path"]),
+                max_new_tokens=self._round_selector_max_new_tokens,
+                system_prompt=EVIDENCE_ORGANIZER_SYSTEM_PROMPT,
+                max_time=model_cfg.get("max_time", 25),
+            )
+        elif provider == "openai_api":
+            router = OpenAIAPIRouter(
+                model=str(model_cfg.get("model", "")),
+                api_key=str(model_cfg.get("api_key", "")),
+                api_key_env=str(model_cfg.get("api_key_env", "OPENAI_API_KEY")),
+                base_url=str(model_cfg.get("base_url", "https://api.openai.com/v1")),
+                max_new_tokens=self._round_selector_max_new_tokens,
+                timeout=int(model_cfg.get("timeout", 90)),
+                system_prompt=EVIDENCE_ORGANIZER_SYSTEM_PROMPT,
+            )
+        elif provider == "gemini_api":
+            router = GeminiAPIRouter(
+                model=str(model_cfg.get("model", "")),
+                api_key=str(model_cfg.get("api_key", "")),
+                api_key_env=str(model_cfg.get("api_key_env", "GEMINI_API_KEY")),
+                base_url=str(model_cfg.get("base_url", "https://generativelanguage.googleapis.com/v1beta")),
+                max_new_tokens=self._round_selector_max_new_tokens,
+                timeout=int(model_cfg.get("timeout", 90)),
+                system_prompt=EVIDENCE_ORGANIZER_SYSTEM_PROMPT,
+            )
+        else:
+            raise ValueError(f"Unsupported provider for EVI evidence organizer: {provider}")
+        self._answer_routers[key] = router
+        return router
+
+    def _evidence_organizer_cache_dir(self) -> Path:
+        raw = self._cfg.get("evidence_organizer_cache_dir") or os.environ.get("EVI_EVIDENCE_ORGANIZER_CACHE_DIR")
+        path = Path(raw).expanduser() if raw else Path.home() / ".cache" / "evi_evidence_organizer"
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
+    def _evidence_organizer_cache_key(
+        self,
+        *,
+        question_stem: str,
+        session_id: str,
+        round_ids: List[str],
+        history: List[Dict[str, Any]],
+        prompt: str,
+    ) -> str:
+        payload = {
+            "version": EVIDENCE_ORGANIZER_PROMPT_VERSION,
+            "cache_namespace": self._vlm_result_namespace,
+            "question_stem": question_stem,
+            "session_id": session_id,
+            "round_ids": round_ids,
+            "history": [
+                {
+                    "role": item.get("role"),
+                    "round_id": item.get("round_id"),
+                    "text": item.get("text", ""),
+                    "images": item.get("images", []),
+                }
+                for item in history
+            ],
+            "prompt": prompt,
+        }
+        raw = json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str)
+        return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:40]
+
+    def _read_evidence_organizer_cache(self, key: str) -> Optional[Dict[str, Any]]:
+        if not self._use_evidence_organizer_cache:
+            return None
+        path = self._evidence_organizer_cache_dir() / f"{key}.json"
+        if not path.exists():
+            return None
+        try:
+            return json.loads(path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            log.warning("QDMO-EVI evidence organizer cache read failed key=%s error=%s", key, exc)
+            return None
+
+    def _write_evidence_organizer_cache(self, key: str, payload: Dict[str, Any]) -> None:
+        if not self._use_evidence_organizer_cache:
+            return
+        try:
+            path = self._evidence_organizer_cache_dir() / f"{key}.json"
+            path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
+        except Exception as exc:
+            log.warning("QDMO-EVI evidence organizer cache write failed key=%s error=%s", key, exc)
+
     def _round_selection_cache_dir(self) -> Path:
         raw = os.environ.get("EVI_ROUND_SELECTION_CACHE_DIR")
         path = Path(raw).expanduser() if raw else Path.home() / ".cache" / "evi_round_selection"
@@ -1311,42 +1413,39 @@ class EVISystem:
                 ordered.append((sid, ids))
         return ordered
 
-    def _build_organizer_user_text(
-        self,
-        *,
-        session_id: str,
-        round_ids: List[str],
-        question_stem: str,
-        dataset: Any,
-    ) -> Tuple[str, List[str]]:
+    def _build_organizer_history(self, dataset: Any, session_id: str, round_ids: List[str]) -> List[Dict[str, Any]]:
+        allowed = set(round_ids)
+        history = history_from_round_ids(
+            dataset.get_session(session_id),
+            dataset.rounds,
+            allowed,
+            modality="multimodal",
+        )
+        return history
+
+    def _build_organizer_prompt(self, *, question_stem: str, session_id: str, round_ids: List[str]) -> str:
         lines: List[str] = []
-        images: List[str] = []
-        lines.append(f"Question stem, without answer options:\n{question_stem}")
-        lines.append(f"\nSession: {session_id}")
-        lines.append("Candidate rounds from this session:")
+        lines.append("Question:")
+        lines.append(str(question_stem or ""))
+        lines.append("")
+        lines.append(f"Session: {session_id}")
+        lines.append("Candidate round ids:")
         for rid in round_ids:
-            rp = dataset.rounds.get(rid, {}) if dataset is not None else {}
-            user_text = " ".join(str(rp.get("user", "")).split())
-            assistant_text = " ".join(str(rp.get("assistant", "")).split())
-            date = self._round_date.get(rid, "")
-            round_images = [path for path in self._round_images.get(rid, []) if path]
-            lines.append(f"\nRound {rid} date={date} images={len(round_images)}")
-            if user_text:
-                lines.append(f"User: {user_text}")
-            if assistant_text:
-                lines.append(f"Assistant: {assistant_text}")
-            raw = rp.get("raw", {}) or {}
-            captions = raw.get("image_caption", []) or []
-            if captions:
-                caption_text = "; ".join(" ".join(str(c).split()) for c in captions if str(c).strip())
-                if caption_text:
-                    lines.append(f"Dataset captions, if any: {caption_text}")
-            if round_images:
-                for img_idx, path in enumerate(round_images, start=1):
-                    lines.append(f"Attached image order marker: {rid} image {img_idx}")
-                    images.append(path)
-        lines.append("\nOutput JSON only. Omit rounds that do not provide concrete question-relevant information.")
-        return "\n".join(lines), images
+            lines.append(f"- {rid}")
+        lines.append("")
+        lines.append("Return JSON for the candidate round ids only.")
+        return "\n".join(lines)
+
+    def _history_preview(self, history: List[Dict[str, Any]], max_text: int = 500) -> List[Dict[str, Any]]:
+        return [
+            {
+                "role": item.get("role"),
+                "round_id": item.get("round_id"),
+                "text": " ".join(str(item.get("text", "")).split())[:max_text],
+                "images": item.get("images", []),
+            }
+            for item in history
+        ]
 
     def _clean_organized_evidence(
         self,
@@ -1392,30 +1491,74 @@ class EVISystem:
             round_ids = list(session_round_ids)
             if self._organizer_max_rounds_per_session > 0:
                 round_ids = round_ids[: self._organizer_max_rounds_per_session]
-            user_text, images = self._build_organizer_user_text(
+            organizer_history = self._build_organizer_history(dataset, session_id, round_ids)
+            organizer_prompt = self._build_organizer_prompt(
+                question_stem=question_stem,
                 session_id=session_id,
                 round_ids=round_ids,
-                question_stem=question_stem,
-                dataset=dataset,
             )
+            history_preview = self._history_preview(organizer_history, max_text=500)
+            num_images = sum(len(item.get("images", []) or []) for item in organizer_history)
+            cache_key = self._evidence_organizer_cache_key(
+                question_stem=question_stem,
+                session_id=session_id,
+                round_ids=round_ids,
+                history=organizer_history,
+                prompt=organizer_prompt,
+            )
+            cached = self._read_evidence_organizer_cache(cache_key)
             log.info(
-                "QDMO-EVI evidence organizer input session=%s rounds=%s images=%d prompt_chars=%d",
+                "QDMO-EVI evidence organizer input session=%s rounds=%s history_turns=%d images=%d prompt_chars=%d cache_key=%s cache_hit=%s",
                 session_id,
                 round_ids,
-                len(images),
-                len(user_text),
+                len(organizer_history),
+                num_images,
+                len(organizer_prompt),
+                cache_key,
+                cached is not None,
             )
-            log.info("QDMO-EVI evidence organizer prompt session=%s:\n%s", session_id, user_text[: self._debug_prompt_chars])
+            log.info("QDMO-EVI evidence organizer prompt session=%s:\n%s", session_id, organizer_prompt[: self._debug_prompt_chars])
+            for hidx, item in enumerate(history_preview, start=1):
+                log.info(
+                    "  evidence_organizer_history[%02d] role=%s round=%s images=%s text=%s",
+                    hidx,
+                    item.get("role"),
+                    item.get("round_id"),
+                    item.get("images"),
+                    item.get("text"),
+                )
             trace_json(log, "evidence_organizer_input", {
                 "prompt_version": EVIDENCE_ORGANIZER_PROMPT_VERSION,
                 "session_id": session_id,
                 "round_ids": round_ids,
-                "images": images,
-                "prompt_preview": user_text[: self._debug_prompt_chars],
+                "history_turns": len(organizer_history),
+                "history_preview": history_preview,
+                "num_images": num_images,
+                "prompt_preview": organizer_prompt[: self._debug_prompt_chars],
+                "cache_key": cache_key,
+                "cache_hit": cached is not None,
                 "with_options": False,
             })
-            raw = self._vlm(EVIDENCE_ORGANIZER_SYSTEM_PROMPT, user_text, images) if self._vlm is not None else ""
-            parsed = extract_json(raw or "") or {}
+            if cached is not None:
+                raw = str(cached.get("raw_response", ""))
+                parsed = cached.get("parsed_json", {}) if isinstance(cached.get("parsed_json", {}), dict) else {}
+            else:
+                organizer_router = self._get_evidence_organizer_router()
+                if not hasattr(organizer_router, "answer_plain_prompt"):
+                    raise RuntimeError("Evidence organizer router must support answer_plain_prompt")
+                raw = organizer_router.answer_plain_prompt(organizer_history, organizer_prompt, prompt_images=[])
+                parsed = extract_json(raw or "") or {}
+                self._write_evidence_organizer_cache(cache_key, {
+                    "prompt_version": EVIDENCE_ORGANIZER_PROMPT_VERSION,
+                    "cache_key": cache_key,
+                    "session_id": session_id,
+                    "round_ids": round_ids,
+                    "question_stem": question_stem,
+                    "history_preview": history_preview,
+                    "prompt": organizer_prompt,
+                    "raw_response": raw,
+                    "parsed_json": parsed,
+                })
             session_evidence = self._clean_organized_evidence(
                 session_id=session_id,
                 candidate_round_ids=round_ids,
