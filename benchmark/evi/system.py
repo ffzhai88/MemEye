@@ -40,7 +40,7 @@ Be concise and grounded in the selected evidence.
 If the question is multiple-choice, answer with ONLY the option letter.
 """
 FACET_PROMPT_VERSION = "retrieval_facets_v3b_dedup_locator"
-EVIDENCE_ORGANIZER_PROMPT_VERSION = "session_round_evidence_v11_packet_image_before_json_no_packet_warning"
+EVIDENCE_ORGANIZER_PROMPT_VERSION = "meg_style_utility_filter_v1"
 
 FACET_EXTRACTION_SYSTEM_PROMPT = """You extract retrieval facets for a multimodal long-term memory system.
 
@@ -87,35 +87,32 @@ Bad facets: ["left", "green bag", "gray suitcase", "black backpack"]
 Good facets: ["scene with the green bag on the left of the gray suitcase", "scene with the black backpack"]
 """
 
-EVIDENCE_ORGANIZER_SYSTEM_PROMPT = f"""You are given a question and a set of retrieved memory rounds from a multimodal conversation.
-Your task is to prepare these rounds for a later answer model.
+EVIDENCE_ORGANIZER_SYSTEM_PROMPT = f"""You are judging retrieved multimodal memory rounds before a later answer model sees them.
 
 Prompt version: {EVIDENCE_ORGANIZER_PROMPT_VERSION}
 
-For each candidate round:
-1. Decide whether the round should remain in the answer context.
-2. If useful, write a short question-aware note for the round.
+The goal is evidence utility, not semantic similarity.
+For each candidate round, decide whether showing this round to the later answer model is likely to help answer the question, be only backup context, or mislead the answer model.
 
-Decision labels:
-- keep: useful or likely in scope.
-- weak_keep: possibly useful, contextual, or uncertain.
-- drop: clearly outside the question's requested subject or collection.
+Labels:
+- useful: the round provides concrete visual or dialogue evidence needed to answer the question. This includes evidence that an item does NOT have a queried property when the round belongs to the queried memory set.
+- contextual: the round may help locate or interpret the relevant memory, but does not itself provide the main evidence.
+- misleading: the round shares words or visual attributes with the question but belongs to a different entity, episode, route, event, or memory set, so including it may cause the later answer model to count, compare, or attribute it incorrectly.
+- unknown: there is not enough information to judge safely.
 
-Use drop conservatively.
-If uncertain, use weak_keep.
-Drop rounds that are clearly outside the question's requested subject or collection, even if they share an attribute word from the question.
-Do not drop a round merely because it provides locator or context rather than the final answer.
-
-Keep notes concrete, concise, and grounded in that round.
-Do not choose an answer or perform final reasoning.
+Do not choose an answer.
+Do not perform final counting, comparison, or option selection.
+Do not label a round misleading merely because it is a negative example within the queried memory set.
+Prefer unknown over misleading when the round appears to mention or depict the queried entity but its exact role is uncertain.
+Write observations grounded in the round, focusing on what evidence the round can provide and why it might help or mislead the later answer model.
 
 Return ONLY valid JSON:
 {{
   "round_notes": [
     {{
       "round_id": "ROUND_ID",
-      "decision": "keep",
-      "note": "This round can provide ..."
+      "utility": "useful",
+      "observation": "Concrete evidence or misleading-risk observation."
     }}
   ]
 }}
@@ -351,7 +348,7 @@ class EVISystem:
             "evi_final_max_rounds": self._final_max_rounds,
             "evi_organizer_max_rounds_per_session": self._organizer_max_rounds_per_session,
             "evidence_organizer_prompt_version": EVIDENCE_ORGANIZER_PROMPT_VERSION,
-            "evidence_organizer_selection": "soft_rerank",
+            "evidence_organizer_selection": "meg_style_hard_filter",
             "use_facet_cache": self._use_facet_cache,
             "use_round_selection_cache": self._use_round_selection_cache,
             "use_evidence_organizer_cache": self._use_evidence_organizer_cache,
@@ -1485,56 +1482,70 @@ class EVISystem:
             rid = str(item.get("round_id", "")).strip()
             if rid not in allowed or rid in seen:
                 continue
-            decision = str(item.get("decision", "weak_keep") or "weak_keep").strip().lower()
-            if decision not in {"keep", "weak_keep", "drop"}:
-                decision = "weak_keep"
-            note = " ".join(str(item.get("note", "") or "").split())
-            out.append({"session_id": session_id, "round_id": rid, "decision": decision, "note": note})
+            utility = str(item.get("utility", item.get("decision", "unknown")) or "unknown").strip().lower()
+            legacy_map = {"keep": "useful", "weak_keep": "contextual", "drop": "misleading"}
+            utility = legacy_map.get(utility, utility)
+            if utility not in {"useful", "contextual", "misleading", "unknown"}:
+                utility = "unknown"
+            observation = " ".join(str(item.get("observation", item.get("note", "")) or "").split())
+            out.append({"session_id": session_id, "round_id": rid, "utility": utility, "observation": observation})
             seen.add(rid)
         out.sort(key=lambda item: order.get(str(item.get("round_id")), 10**9))
         return out
 
-    def _select_rounds_with_soft_organizer_rerank(
+    def _select_rounds_with_meg_style_filter(
         self,
         *,
         candidate_round_ids: List[str],
         evidence_items: List[Dict[str, Any]],
         candidate_round_scores: Optional[Dict[str, float]] = None,
     ) -> Tuple[List[str], List[Dict[str, Any]]]:
-        notes_by_round = {str(item.get("round_id")): item for item in evidence_items}
+        evidence_by_round = {str(item.get("round_id")): item for item in evidence_items}
         score_by_round = candidate_round_scores or {}
-        total = max(1, len(candidate_round_ids))
-        decision_adjust = {
-            "keep": 0.10,
-            "weak_keep": 0.0,
-            "drop": -0.15,
-        }
         rows: List[Dict[str, Any]] = []
+        buckets: Dict[str, List[str]] = {"useful": [], "contextual": [], "unknown": [], "misleading": []}
         for rank, rid in enumerate(candidate_round_ids, start=1):
-            item = notes_by_round.get(rid)
-            decision = str(item.get("decision", "weak_keep") if item else "weak_keep").strip().lower()
-            if decision not in decision_adjust:
-                decision = "weak_keep"
-            rank_score = (total - rank + 1) / total
-            retrieval_score = float(score_by_round.get(rid, 0.0) or 0.0)
-            soft_score = rank_score + decision_adjust[decision]
+            item = evidence_by_round.get(rid)
+            utility = str(item.get("utility", "unknown") if item else "unknown").strip().lower()
+            if utility not in buckets:
+                utility = "unknown"
+            buckets[utility].append(rid)
             rows.append({
                 "round_id": rid,
                 "original_rank": rank,
-                "rank_score": rank_score,
-                "retrieval_score": retrieval_score,
-                "decision": decision,
-                "decision_adjust": decision_adjust[decision],
-                "soft_score": soft_score,
-                "note": str(item.get("note", "") if item else "")[:300],
+                "retrieval_score": float(score_by_round.get(rid, 0.0) or 0.0),
+                "utility": utility,
+                "selected": False,
+                "observation": str(item.get("observation", "") if item else "")[:300],
             })
-        rows.sort(key=lambda row: (float(row["soft_score"]), float(row["retrieval_score"]), -int(row["original_rank"])), reverse=True)
-        selected_rows = rows[: self._final_max_rounds]
-        selected_set = {str(row["round_id"]) for row in selected_rows}
-        selected_round_ids = [rid for rid in candidate_round_ids if rid in selected_set]
+
+        selected: List[str] = []
+        seen: set[str] = set()
+
+        def add_rounds(round_ids: List[str], limit: Optional[int] = None) -> None:
+            for value in round_ids:
+                if value in seen:
+                    continue
+                selected.append(value)
+                seen.add(value)
+                if len(selected) >= self._final_max_rounds:
+                    return
+                if limit is not None and len(selected) >= limit:
+                    return
+
+        add_rounds(buckets["useful"])
+        min_rounds = min(self._final_max_rounds, max(1, self._min_selected_rounds))
+        if len(selected) < min_rounds:
+            add_rounds(buckets["contextual"], limit=min_rounds)
+        if len(selected) < min_rounds:
+            add_rounds(buckets["unknown"], limit=min_rounds)
+        if len(selected) < min_rounds:
+            add_rounds(candidate_round_ids, limit=min_rounds)
+
+        selected_set = set(selected)
         for row in rows:
             row["selected"] = str(row["round_id"]) in selected_set
-        return selected_round_ids, rows
+        return selected, rows
 
     def _organize_session_evidence(
         self,
@@ -1649,7 +1660,7 @@ class EVISystem:
             log.info(
                 "QDMO-EVI evidence organizer output session=%s notes=%s raw=%s",
                 session_id,
-                [{"round_id": item["round_id"], "decision": item["decision"], "note": item.get("note", "")[:200]} for item in session_evidence],
+                [{"round_id": item["round_id"], "utility": item["utility"], "observation": item.get("observation", "")[:200]} for item in session_evidence],
                 str(raw).replace("\n", " ")[:4000],
             )
             trace_json(log, "evidence_organizer_output", {
@@ -1661,39 +1672,33 @@ class EVISystem:
             })
             all_evidence.extend(session_evidence)
 
-        selected_round_ids, rerank_rows = self._select_rounds_with_soft_organizer_rerank(
+        selected_round_ids, filter_rows = self._select_rounds_with_meg_style_filter(
             candidate_round_ids=candidate_round_ids,
             evidence_items=all_evidence,
             candidate_round_scores=candidate_round_scores,
         )
-        dropped_round_ids = [str(item.get("round_id")) for item in all_evidence if item.get("decision") == "drop"]
-        if len(selected_round_ids) < max(1, self._min_selected_rounds):
-            selected_round_ids = candidate_round_ids[: self._final_max_rounds]
-            log.warning("QDMO-EVI soft organizer rerank left too few rounds; fallback selected_rounds=%s", selected_round_ids)
+        misleading_round_ids = [str(item.get("round_id")) for item in all_evidence if item.get("utility") == "misleading"]
         log.info(
-            "QDMO-EVI soft organizer rerank selected=%s organizer_drop_signals=%s final_max_rounds=%d",
+            "QDMO-EVI MEG-style utility filter selected=%s misleading=%s final_max_rounds=%d",
             selected_round_ids,
-            dropped_round_ids,
+            misleading_round_ids,
             self._final_max_rounds,
         )
-        for row in rerank_rows:
+        for row in filter_rows:
             log.info(
-                "  soft_organizer_rerank round=%s selected=%s original_rank=%d rank_score=%.4f retrieval_score=%.4f decision=%s adjust=%.4f soft_score=%.4f note=%s",
+                "  meg_utility_filter round=%s selected=%s original_rank=%d retrieval_score=%.4f utility=%s observation=%s",
                 row["round_id"],
                 row["selected"],
                 row["original_rank"],
-                row["rank_score"],
                 row["retrieval_score"],
-                row["decision"],
-                row["decision_adjust"],
-                row["soft_score"],
-                row["note"],
+                row["utility"],
+                row["observation"],
             )
-        trace_json(log, "soft_organizer_rerank", {
+        trace_json(log, "meg_style_utility_filter", {
             "candidate_round_ids": candidate_round_ids,
             "selected_round_ids": selected_round_ids,
-            "organizer_drop_signals": dropped_round_ids,
-            "rerank_rows": rerank_rows,
+            "misleading_round_ids": misleading_round_ids,
+            "filter_rows": filter_rows,
             "notes": all_evidence,
             "final_max_rounds": self._final_max_rounds,
         })
@@ -1833,7 +1838,7 @@ class EVISystem:
         )
         self._log_selected_round_clue_coverage(qa, selected_round_ids, "evidence_organizer_output_round")
         self._set_last_context_round_ids(selected_round_ids)
-        history = self._build_augmented_semantic_history(dataset, evidence_items, selected_round_ids)
+        history = self._build_semantic_style_history(dataset, selected_round_ids)
         history_preview = [
             {
                 "role": item.get("role"),
