@@ -33,8 +33,9 @@ facet_full_question_weight: 1.0
 use_facet_cache: true
 
 # Session-level evidence organization after faceted retrieval.
-# The organizer sees candidate rounds with images, weakly drops clearly irrelevant rounds,
-# and injects short evidence notes into semantic-RAG-style raw history.
+# The organizer sees candidate rounds with images and provides soft keep/drop signals.
+# Selection keeps retrieval rank as the main signal, then lightly reranks using organizer decisions.
+# Evidence notes are injected into semantic-RAG-style raw history for selected non-drop rounds.
 evi_use_evidence_organizer: true
 evi_final_include_evidence_images: true
 evi_final_max_rounds: 10

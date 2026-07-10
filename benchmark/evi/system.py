@@ -351,6 +351,7 @@ class EVISystem:
             "evi_final_max_rounds": self._final_max_rounds,
             "evi_organizer_max_rounds_per_session": self._organizer_max_rounds_per_session,
             "evidence_organizer_prompt_version": EVIDENCE_ORGANIZER_PROMPT_VERSION,
+            "evidence_organizer_selection": "soft_rerank",
             "use_facet_cache": self._use_facet_cache,
             "use_round_selection_cache": self._use_round_selection_cache,
             "use_evidence_organizer_cache": self._use_evidence_organizer_cache,
@@ -1493,12 +1494,55 @@ class EVISystem:
         out.sort(key=lambda item: order.get(str(item.get("round_id")), 10**9))
         return out
 
+    def _select_rounds_with_soft_organizer_rerank(
+        self,
+        *,
+        candidate_round_ids: List[str],
+        evidence_items: List[Dict[str, Any]],
+        candidate_round_scores: Optional[Dict[str, float]] = None,
+    ) -> Tuple[List[str], List[Dict[str, Any]]]:
+        notes_by_round = {str(item.get("round_id")): item for item in evidence_items}
+        score_by_round = candidate_round_scores or {}
+        total = max(1, len(candidate_round_ids))
+        decision_adjust = {
+            "keep": 0.10,
+            "weak_keep": 0.0,
+            "drop": -0.15,
+        }
+        rows: List[Dict[str, Any]] = []
+        for rank, rid in enumerate(candidate_round_ids, start=1):
+            item = notes_by_round.get(rid)
+            decision = str(item.get("decision", "weak_keep") if item else "weak_keep").strip().lower()
+            if decision not in decision_adjust:
+                decision = "weak_keep"
+            rank_score = (total - rank + 1) / total
+            retrieval_score = float(score_by_round.get(rid, 0.0) or 0.0)
+            soft_score = rank_score + decision_adjust[decision]
+            rows.append({
+                "round_id": rid,
+                "original_rank": rank,
+                "rank_score": rank_score,
+                "retrieval_score": retrieval_score,
+                "decision": decision,
+                "decision_adjust": decision_adjust[decision],
+                "soft_score": soft_score,
+                "note": str(item.get("note", "") if item else "")[:300],
+            })
+        rows.sort(key=lambda row: (float(row["soft_score"]), float(row["retrieval_score"]), -int(row["original_rank"])), reverse=True)
+        selected_rows = rows[: self._final_max_rounds]
+        selected_set = {str(row["round_id"]) for row in selected_rows}
+        selected_round_ids = [rid for rid in candidate_round_ids if rid in selected_set]
+        for row in rows:
+            row["selected"] = str(row["round_id"]) in selected_set
+        return selected_round_ids, rows
+
     def _organize_session_evidence(
         self,
         *,
         question_stem: str,
         dataset: Any,
         candidate_round_ids: List[str],
+        candidate_round_scores: Optional[Dict[str, float]] = None,
     ) -> Tuple[List[Dict[str, Any]], List[str]]:
         if not self._use_evidence_organizer:
             selected = candidate_round_ids[: self._final_max_rounds]
@@ -1617,30 +1661,39 @@ class EVISystem:
             })
             all_evidence.extend(session_evidence)
 
-        notes_by_round = {str(item.get("round_id")): item for item in all_evidence}
-        selected_round_ids: List[str] = []
-        dropped_round_ids: List[str] = []
-        for rid in candidate_round_ids:
-            item = notes_by_round.get(rid)
-            if item is not None and item.get("decision") == "drop":
-                dropped_round_ids.append(rid)
-                continue
-            selected_round_ids.append(rid)
-            if len(selected_round_ids) >= self._final_max_rounds:
-                break
+        selected_round_ids, rerank_rows = self._select_rounds_with_soft_organizer_rerank(
+            candidate_round_ids=candidate_round_ids,
+            evidence_items=all_evidence,
+            candidate_round_scores=candidate_round_scores,
+        )
+        dropped_round_ids = [str(item.get("round_id")) for item in all_evidence if item.get("decision") == "drop"]
         if len(selected_round_ids) < max(1, self._min_selected_rounds):
             selected_round_ids = candidate_round_ids[: self._final_max_rounds]
-            log.warning("QDMO-EVI weak evidence filtering left too few rounds; fallback selected_rounds=%s", selected_round_ids)
+            log.warning("QDMO-EVI soft organizer rerank left too few rounds; fallback selected_rounds=%s", selected_round_ids)
         log.info(
-            "QDMO-EVI weak evidence filtering selected=%s dropped=%s final_max_rounds=%d",
+            "QDMO-EVI soft organizer rerank selected=%s organizer_drop_signals=%s final_max_rounds=%d",
             selected_round_ids,
             dropped_round_ids,
             self._final_max_rounds,
         )
-        trace_json(log, "weak_evidence_filtering", {
+        for row in rerank_rows:
+            log.info(
+                "  soft_organizer_rerank round=%s selected=%s original_rank=%d rank_score=%.4f retrieval_score=%.4f decision=%s adjust=%.4f soft_score=%.4f note=%s",
+                row["round_id"],
+                row["selected"],
+                row["original_rank"],
+                row["rank_score"],
+                row["retrieval_score"],
+                row["decision"],
+                row["decision_adjust"],
+                row["soft_score"],
+                row["note"],
+            )
+        trace_json(log, "soft_organizer_rerank", {
             "candidate_round_ids": candidate_round_ids,
             "selected_round_ids": selected_round_ids,
-            "dropped_round_ids": dropped_round_ids,
+            "organizer_drop_signals": dropped_round_ids,
+            "rerank_rows": rerank_rows,
             "notes": all_evidence,
             "final_max_rounds": self._final_max_rounds,
         })
@@ -1771,10 +1824,12 @@ class EVISystem:
                     break
             log.warning("QDMO-EVI faceted_topk used candidate fallback/top-up: candidates=%s", candidate_round_ids)
 
+        candidate_round_scores = {str(item["round_id"]): float(item.get("score", 0.0) or 0.0) for item in merged[: self._max_candidates]}
         evidence_items, selected_round_ids = self._organize_session_evidence(
             question_stem=question_stem,
             dataset=dataset,
             candidate_round_ids=candidate_round_ids,
+            candidate_round_scores=candidate_round_scores,
         )
         self._log_selected_round_clue_coverage(qa, selected_round_ids, "evidence_organizer_output_round")
         self._set_last_context_round_ids(selected_round_ids)
