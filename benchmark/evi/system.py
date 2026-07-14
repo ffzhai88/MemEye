@@ -181,6 +181,7 @@ class EVISystem:
         self._facet_search_k = int(cfg.get("facet_search_k", 30))
         self._facet_multi_hit_bonus = float(cfg.get("facet_multi_hit_bonus", 0.08))
         self._facet_full_question_weight = float(cfg.get("facet_full_question_weight", 1.0))
+        self._retrieval_only = self._as_bool(cfg.get("evi_retrieval_only"), False)
         self._use_evidence_organizer = self._as_bool(cfg.get("evi_use_evidence_organizer"), True)
         self._final_include_evidence_images = self._as_bool(cfg.get("evi_final_include_evidence_images"), True)
         self._final_max_rounds = int(cfg.get("evi_final_max_rounds", 10))
@@ -360,6 +361,7 @@ class EVISystem:
             "facet_search_k": self._facet_search_k,
             "facet_multi_hit_bonus": self._facet_multi_hit_bonus,
             "facet_full_question_weight": self._facet_full_question_weight,
+            "evi_retrieval_only": self._retrieval_only,
             "evi_use_evidence_organizer": self._use_evidence_organizer,
             "evi_final_include_evidence_images": self._final_include_evidence_images,
             "evi_final_max_rounds": self._final_max_rounds,
@@ -1649,13 +1651,18 @@ class EVISystem:
             images = self._as_image_list(question_images)[: self._max_answer_images]
             return self._vlm(FINAL_ANSWER_SYSTEM_PROMPT, question, images) if self._vlm is not None else ""
 
-        scope_brief = self._interpret_question_scope(question_stem, question_images)
-        organizer_scope_brief = scope_brief if self._apply_scope_to_organizer else ""
-        log.info(
-            "QDMO-EVI scope organizer_apply=%s scope_brief=%s",
-            self._apply_scope_to_organizer,
-            organizer_scope_brief or "<not passed to organizer>",
-        )
+        scope_brief = ""
+        organizer_scope_brief = ""
+        if self._retrieval_only:
+            log.info("QDMO-EVI retrieval-only ablation: scope interpretation and evidence organizer are disabled")
+        else:
+            scope_brief = self._interpret_question_scope(question_stem, question_images)
+            organizer_scope_brief = scope_brief if self._apply_scope_to_organizer else ""
+            log.info(
+                "QDMO-EVI scope organizer_apply=%s scope_brief=%s",
+                self._apply_scope_to_organizer,
+                organizer_scope_brief or "<not passed to organizer>",
+            )
         extracted_facets = self._extract_retrieval_facets(question_stem)
         facets: List[Tuple[str, float]] = [(question_stem, self._facet_full_question_weight)]
         seen = {question_stem.lower()}
@@ -1736,15 +1743,24 @@ class EVISystem:
                     break
             log.warning("QDMO-EVI faceted_topk used candidate fallback/top-up: candidates=%s", candidate_round_ids)
 
-        evidence_items, selected_round_ids = self._organize_session_evidence(
-            question_stem=question_stem,
-            scope_brief=organizer_scope_brief,
-            dataset=dataset,
-            candidate_round_ids=candidate_round_ids,
-        )
-        self._log_selected_round_clue_coverage(qa, selected_round_ids, "evidence_organizer_output_round")
+        if self._retrieval_only:
+            evidence_items = []
+            selected_round_ids = candidate_round_ids[: self._final_max_rounds]
+            self._log_selected_round_clue_coverage(qa, selected_round_ids, "faceted_top10_raw")
+        else:
+            evidence_items, selected_round_ids = self._organize_session_evidence(
+                question_stem=question_stem,
+                scope_brief=organizer_scope_brief,
+                dataset=dataset,
+                candidate_round_ids=candidate_round_ids,
+            )
+            self._log_selected_round_clue_coverage(qa, selected_round_ids, "evidence_organizer_output_round")
         self._set_last_context_round_ids(selected_round_ids)
-        history = self._build_augmented_semantic_history(dataset, evidence_items, selected_round_ids)
+        history = (
+            self._build_semantic_style_history(dataset, selected_round_ids)
+            if self._retrieval_only
+            else self._build_augmented_semantic_history(dataset, evidence_items, selected_round_ids)
+        )
         history_preview = [
             {
                 "role": item.get("role"),
@@ -1756,8 +1772,9 @@ class EVISystem:
         ]
         trace_json(log, "organized_evidence_history", {
             "candidate_round_ids": candidate_round_ids,
+            "retrieval_only": self._retrieval_only,
             "scope_brief": scope_brief,
-            "scope_applied_to_organizer": self._apply_scope_to_organizer,
+            "scope_applied_to_organizer": self._apply_scope_to_organizer and not self._retrieval_only,
             "selected_round_ids": selected_round_ids,
             "evidence_items": evidence_items,
             "history_turns": len(history),
@@ -1765,7 +1782,8 @@ class EVISystem:
             "final_include_evidence_images": True,
         })
         log.info(
-            "QDMO-EVI organized evidence final history turns=%d selected_rounds=%s include_images=%s",
+            "QDMO-EVI final history mode=%s turns=%d selected_rounds=%s include_images=%s",
+            "faceted_top10_raw" if self._retrieval_only else "organized_evidence",
             len(history),
             selected_round_ids,
             True,
@@ -1800,7 +1818,9 @@ class EVISystem:
         answer = router.answer(history, query, question_images=qa_images)
         trace_json(log, "answer_done", {
             "pipeline": "faceted_topk",
+            "retrieval_only": self._retrieval_only,
             "evidence_organizer_enabled": self._use_evidence_organizer,
+            "evidence_organizer_effective": self._use_evidence_organizer and not self._retrieval_only,
             "answer": answer,
             "candidate_round_ids": candidate_round_ids,
             "selected_round_ids": selected_round_ids,

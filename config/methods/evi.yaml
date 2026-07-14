@@ -32,6 +32,11 @@ facet_multi_hit_bonus: 0.08
 facet_full_question_weight: 1.0
 use_facet_cache: true
 
+# Retrieval-only ablation: anchor + facet retrieval -> ranked top-10 raw multimodal
+# rounds -> the same QA history format as semantic_rag_multimodal. It does not call
+# scope interpretation or the evidence organizer.
+evi_retrieval_only: true
+
 # Session-level evidence organization after faceted retrieval.
 # First derive a question-only information-scope brief. It is independent of memory
 # contents and is reused by every session organizer call to avoid inconsistent scope
