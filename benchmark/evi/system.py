@@ -41,7 +41,7 @@ If the question is multiple-choice, answer with ONLY the option letter.
 """
 FACET_PROMPT_VERSION = "retrieval_facets_v3b_dedup_locator"
 SCOPE_INTERPRETATION_PROMPT_VERSION = "question_scope_brief_v1"
-EVIDENCE_ORGANIZER_PROMPT_VERSION = "session_round_evidence_v3_weak_filter_scope_v1"
+EVIDENCE_ORGANIZER_PROMPT_VERSION = "session_round_evidence_v4_complete_scope_labels"
 
 FACET_EXTRACTION_SYSTEM_PROMPT = """You extract retrieval facets for a multimodal long-term memory system.
 
@@ -107,13 +107,15 @@ EVIDENCE_ORGANIZER_SYSTEM_PROMPT = f"""You annotate retrieved multimodal memory 
 Version: {EVIDENCE_ORGANIZER_PROMPT_VERSION}
 
 You are not answering the question.
-For each candidate round, decide whether it should be kept as memory context and write a short question-aware note when useful.
-When a scope interpretation is provided, treat it as the fixed boundary for this question. Use it to decide whether a round belongs to the requested scope; do not independently broaden that boundary based only on visual or lexical similarity.
+You MUST return exactly one decision for every candidate round id given in the user message. Never omit a candidate round.
+
+When a scope interpretation is provided, treat it as the fixed boundary for this question. Decide membership in that scope independently from whether a round satisfies the question's final property, condition, comparison, or answer criterion.
+- keep: the round belongs to the requested scope and directly provides answer evidence.
+- weak_keep: the round belongs to the requested scope but is contextual, uncertain, or provides negative evidence. A member of the requested scope that does not satisfy the queried property MUST be weak_keep, not drop.
+- drop: the round is clearly outside the requested entity, collection, event, comparison, or time span. Visual or lexical similarity alone does not make it in scope.
+
 Use the attached image as primary visual evidence when available. Dialogue and captions may help, but do not replace visual inspection.
-Use drop only when the round is clearly unrelated to the question.
-If uncertain, use weak_keep.
-Do not drop a round merely because it provides locator/context rather than the final answer.
-Do not choose an answer.
+Do not choose an answer or perform the final counting, comparison, or option selection.
 Do not mention options, scores, retrieval facets, or confidence.
 Keep notes concrete, concise, and grounded in that round.
 
@@ -1470,7 +1472,7 @@ class EVISystem:
                 for img_idx, path in enumerate(round_images, start=1):
                     lines.append(f"Attached image order marker: {rid} image {img_idx}")
                     images.append(path)
-        lines.append("\nOutput JSON only. Omit rounds that do not provide concrete question-relevant information.")
+        lines.append("\nOutput JSON only. Return exactly one round_notes entry for every candidate round listed above. Never omit a candidate round. Use drop only for rounds outside the scope; use weak_keep for in-scope negative or contextual evidence.")
         return "\n".join(lines), images
 
     def _clean_organized_evidence(
@@ -1549,6 +1551,14 @@ class EVISystem:
                 candidate_round_ids=round_ids,
                 parsed=parsed,
             )
+            returned_round_ids = {str(item.get("round_id", "")) for item in session_evidence}
+            missing_round_ids = [rid for rid in round_ids if rid not in returned_round_ids]
+            if missing_round_ids:
+                log.warning(
+                    "QDMO-EVI evidence organizer omitted required round decisions session=%s missing=%s",
+                    session_id,
+                    missing_round_ids,
+                )
             log.info(
                 "QDMO-EVI evidence organizer output session=%s notes=%s raw=%s",
                 session_id,
@@ -1559,6 +1569,7 @@ class EVISystem:
                 "prompt_version": EVIDENCE_ORGANIZER_PROMPT_VERSION,
                 "session_id": session_id,
                 "round_ids": round_ids,
+                "missing_round_ids": missing_round_ids,
                 "raw_response": raw,
                 "parsed_evidence": session_evidence,
             })
