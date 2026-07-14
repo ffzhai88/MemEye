@@ -33,6 +33,13 @@ facet_full_question_weight: 1.0
 use_facet_cache: true
 
 # Session-level evidence organization after faceted retrieval.
+# First derive a question-only information-scope brief. It is independent of memory
+# contents and is reused by every session organizer call to avoid inconsistent scope
+# interpretation across candidate sessions. Set apply=false for a scope-log-only ablation.
+evi_use_scope_interpretation: true
+evi_apply_scope_to_organizer: true
+use_scope_cache: true
+
 # The organizer sees candidate rounds with images, weakly drops clearly irrelevant rounds,
 # and injects short evidence notes into semantic-RAG-style raw history.
 evi_use_evidence_organizer: true

@@ -40,7 +40,8 @@ Be concise and grounded in the selected evidence.
 If the question is multiple-choice, answer with ONLY the option letter.
 """
 FACET_PROMPT_VERSION = "retrieval_facets_v3b_dedup_locator"
-EVIDENCE_ORGANIZER_PROMPT_VERSION = "session_round_evidence_v3_weak_filter"
+SCOPE_INTERPRETATION_PROMPT_VERSION = "question_scope_brief_v1"
+EVIDENCE_ORGANIZER_PROMPT_VERSION = "session_round_evidence_v3_weak_filter_scope_v1"
 
 FACET_EXTRACTION_SYSTEM_PROMPT = """You extract retrieval facets for a multimodal long-term memory system.
 
@@ -87,12 +88,27 @@ Bad facets: ["left", "green bag", "gray suitcase", "black backpack"]
 Good facets: ["scene with the green bag on the left of the gray suitcase", "scene with the black backpack"]
 """
 
+SCOPE_INTERPRETATION_SYSTEM_PROMPT = """You interpret the information scope of a question for a multimodal long-term memory system.
+
+The scope description will later be used to judge whether retrieved memory rounds belong to the same requested entity, collection, event, comparison, or time span.
+
+Describe only the boundary implied by the question:
+- what entity, collection, event, comparison, or time span the answer must concern;
+- what information may help identify or disambiguate that requested scope;
+- what superficially similar information must not be mixed into that scope.
+
+Do not inspect or refer to memory rounds. Do not retrieve evidence. Do not answer the question, count, compare, select an option, or introduce facts that are not stated in the question.
+
+Return only a concise natural-language scope brief in 1-3 sentences. Do not use JSON, headings, scores, or bullet lists.
+"""
+
 EVIDENCE_ORGANIZER_SYSTEM_PROMPT = f"""You annotate retrieved multimodal memory rounds for a later QA model.
 
 Version: {EVIDENCE_ORGANIZER_PROMPT_VERSION}
 
 You are not answering the question.
 For each candidate round, decide whether it should be kept as memory context and write a short question-aware note when useful.
+When a scope interpretation is provided, treat it as the fixed boundary for this question. Use it to decide whether a round belongs to the requested scope; do not independently broaden that boundary based only on visual or lexical similarity.
 Use the attached image as primary visual evidence when available. Dialogue and captions may help, but do not replace visual inspection.
 Use drop only when the round is clearly unrelated to the question.
 If uncertain, use weak_keep.
@@ -167,6 +183,9 @@ class EVISystem:
         self._final_include_evidence_images = self._as_bool(cfg.get("evi_final_include_evidence_images"), True)
         self._final_max_rounds = int(cfg.get("evi_final_max_rounds", 10))
         self._organizer_max_rounds_per_session = int(cfg.get("evi_organizer_max_rounds_per_session", 0) or 0)
+        self._use_scope_interpretation = self._as_bool(cfg.get("evi_use_scope_interpretation"), True)
+        self._apply_scope_to_organizer = self._as_bool(cfg.get("evi_apply_scope_to_organizer"), True)
+        self._use_scope_cache = self._as_bool(cfg.get("use_scope_cache"), True)
 
         self._use_facet_cache = self._as_bool(cfg.get("use_facet_cache"), True)
         self._use_round_selection_cache = self._as_bool(cfg.get("use_round_selection_cache"), True)
@@ -343,6 +362,10 @@ class EVISystem:
             "evi_final_include_evidence_images": self._final_include_evidence_images,
             "evi_final_max_rounds": self._final_max_rounds,
             "evi_organizer_max_rounds_per_session": self._organizer_max_rounds_per_session,
+            "evi_use_scope_interpretation": self._use_scope_interpretation,
+            "evi_apply_scope_to_organizer": self._apply_scope_to_organizer,
+            "use_scope_cache": self._use_scope_cache,
+            "scope_interpretation_prompt_version": SCOPE_INTERPRETATION_PROMPT_VERSION,
             "evidence_organizer_prompt_version": EVIDENCE_ORGANIZER_PROMPT_VERSION,
             "use_facet_cache": self._use_facet_cache,
             "use_round_selection_cache": self._use_round_selection_cache,
@@ -1235,6 +1258,105 @@ class EVISystem:
                 log.warning("QDMO-EVI retrieval facet cache write failed key=%s error=%s", cache_key, exc)
         return facets
 
+    def _scope_cache_dir(self) -> Path:
+        raw = self._cfg.get("scope_cache_dir") or os.environ.get("EVI_SCOPE_CACHE_DIR")
+        path = Path(raw).expanduser() if raw else Path.home() / ".cache" / "evi_scope_interpretation"
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
+    def _scope_cache_key(self, question_stem: str, question_images: List[str]) -> str:
+        payload = {
+            "version": SCOPE_INTERPRETATION_PROMPT_VERSION,
+            "cache_namespace": self._vlm_result_namespace,
+            "question_stem": question_stem,
+            "question_images": question_images,
+        }
+        raw = json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str)
+        return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:40]
+
+    @staticmethod
+    def _clean_scope_brief(value: Any) -> str:
+        brief = " ".join(str(value or "").split())
+        if brief.lower().startswith("scope brief:"):
+            brief = brief[len("scope brief:"):].strip()
+        return brief[:1600]
+
+    def _interpret_question_scope(
+        self,
+        question_stem: str,
+        question_images: Optional[List[str]],
+    ) -> str:
+        if not self._use_scope_interpretation:
+            log.info("QDMO-EVI scope interpretation disabled")
+            return ""
+
+        images = self._as_image_list(question_images)[: self._max_answer_images]
+        cache_key = self._scope_cache_key(question_stem, images)
+        cache_file = self._scope_cache_dir() / f"{cache_key}.json"
+        if self._use_scope_cache and cache_file.exists():
+            try:
+                data = json.loads(cache_file.read_text(encoding="utf-8"))
+                brief = self._clean_scope_brief(data.get("scope_brief", ""))
+                if brief:
+                    log.info(
+                        "QDMO-EVI scope interpretation cache_hit=True key=%s version=%s brief=%s",
+                        cache_key,
+                        SCOPE_INTERPRETATION_PROMPT_VERSION,
+                        brief,
+                    )
+                    trace_json(log, "scope_interpretation", {
+                        "cache_hit": True,
+                        "cache_key": cache_key,
+                        "prompt_version": SCOPE_INTERPRETATION_PROMPT_VERSION,
+                        "question_stem": question_stem,
+                        "question_images": images,
+                        "scope_brief": brief,
+                    })
+                    return brief
+            except Exception as exc:
+                log.warning("QDMO-EVI scope cache read failed key=%s error=%s", cache_key, exc)
+
+        user_text = "Question:\n" + str(question_stem or "")
+        raw = self._vlm(SCOPE_INTERPRETATION_SYSTEM_PROMPT, user_text, images) if self._vlm is not None else ""
+        brief = self._clean_scope_brief(raw)
+        log.info(
+            "QDMO-EVI scope interpretation cache_hit=False key=%s version=%s brief=%s",
+            cache_key,
+            SCOPE_INTERPRETATION_PROMPT_VERSION,
+            brief,
+        )
+        trace_json(log, "scope_interpretation", {
+            "cache_hit": False,
+            "cache_key": cache_key,
+            "prompt_version": SCOPE_INTERPRETATION_PROMPT_VERSION,
+            "question_stem": question_stem,
+            "question_images": images,
+            "scope_brief": brief,
+            "raw_response": raw,
+        })
+        if self._use_scope_cache:
+            try:
+                cache_file.write_text(
+                    json.dumps(
+                        {
+                            "version": SCOPE_INTERPRETATION_PROMPT_VERSION,
+                            "cache_namespace": self._vlm_result_namespace,
+                            "question_stem": question_stem,
+                            "question_images": images,
+                            "scope_brief": brief,
+                            "raw_response": raw,
+                            "cache_key": cache_key,
+                        },
+                        ensure_ascii=False,
+                        indent=2,
+                        default=str,
+                    ),
+                    encoding="utf-8",
+                )
+            except Exception as exc:
+                log.warning("QDMO-EVI scope cache write failed key=%s error=%s", cache_key, exc)
+        return brief
+
     def _search_anchors_for_text(self, query_text: str, top_k: int) -> List[EvidenceAnchor]:
         query_vec = self._embed(query_text)
         if not query_vec:
@@ -1317,11 +1439,14 @@ class EVISystem:
         session_id: str,
         round_ids: List[str],
         question_stem: str,
+        scope_brief: str,
         dataset: Any,
     ) -> Tuple[str, List[str]]:
         lines: List[str] = []
         images: List[str] = []
         lines.append(f"Question stem, without answer options:\n{question_stem}")
+        if scope_brief:
+            lines.append(f"\nScope interpretation:\n{scope_brief}")
         lines.append(f"\nSession: {session_id}")
         lines.append("Candidate rounds from this session:")
         for rid in round_ids:
@@ -1381,6 +1506,7 @@ class EVISystem:
         self,
         *,
         question_stem: str,
+        scope_brief: str,
         dataset: Any,
         candidate_round_ids: List[str],
     ) -> Tuple[List[Dict[str, Any]], List[str]]:
@@ -1396,6 +1522,7 @@ class EVISystem:
                 session_id=session_id,
                 round_ids=round_ids,
                 question_stem=question_stem,
+                scope_brief=scope_brief,
                 dataset=dataset,
             )
             log.info(
@@ -1411,6 +1538,7 @@ class EVISystem:
                 "session_id": session_id,
                 "round_ids": round_ids,
                 "images": images,
+                "scope_brief": scope_brief,
                 "prompt_preview": user_text[: self._debug_prompt_chars],
                 "with_options": False,
             })
@@ -1510,6 +1638,13 @@ class EVISystem:
             images = self._as_image_list(question_images)[: self._max_answer_images]
             return self._vlm(FINAL_ANSWER_SYSTEM_PROMPT, question, images) if self._vlm is not None else ""
 
+        scope_brief = self._interpret_question_scope(question_stem, question_images)
+        organizer_scope_brief = scope_brief if self._apply_scope_to_organizer else ""
+        log.info(
+            "QDMO-EVI scope organizer_apply=%s scope_brief=%s",
+            self._apply_scope_to_organizer,
+            organizer_scope_brief or "<not passed to organizer>",
+        )
         extracted_facets = self._extract_retrieval_facets(question_stem)
         facets: List[Tuple[str, float]] = [(question_stem, self._facet_full_question_weight)]
         seen = {question_stem.lower()}
@@ -1592,6 +1727,7 @@ class EVISystem:
 
         evidence_items, selected_round_ids = self._organize_session_evidence(
             question_stem=question_stem,
+            scope_brief=organizer_scope_brief,
             dataset=dataset,
             candidate_round_ids=candidate_round_ids,
         )
@@ -1609,6 +1745,8 @@ class EVISystem:
         ]
         trace_json(log, "organized_evidence_history", {
             "candidate_round_ids": candidate_round_ids,
+            "scope_brief": scope_brief,
+            "scope_applied_to_organizer": self._apply_scope_to_organizer,
             "selected_round_ids": selected_round_ids,
             "evidence_items": evidence_items,
             "history_turns": len(history),
