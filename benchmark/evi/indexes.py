@@ -243,11 +243,14 @@ class EvidenceIndex:
         query_vec: List[float],
         top_k: int = 60,
         session_ids: Optional[set[str]] = None,
+        source_aware: bool = False,
     ) -> List[Dict[str, Any]]:
-        """Return the best unique rounds and retain per-source anchor scores.
+        """Return unique rounds, optionally taking Top-K independently per source.
 
         A visual round can yield many evidence anchors. Collapsing to a round before
         the Top-K cutoff prevents one visually dense round from consuming a channel.
+        Source-aware mode additionally prevents one evidence source from consuming
+        the complete round budget before cross-source fusion.
         """
         by_round: Dict[str, Dict[str, Any]] = {}
         for anchor in self._anchors:
@@ -261,6 +264,7 @@ class EvidenceIndex:
             item = by_round.setdefault(
                 anchor.round_id,
                 {
+                    "round_id": anchor.round_id,
                     "best_score": 0.0,
                     "best_anchor": None,
                     "source_scores": {},
@@ -277,11 +281,49 @@ class EvidenceIndex:
                 source_scores[source] = score
                 source_anchors[source] = anchor
 
-        ranked = sorted(
-            by_round.values(),
-            key=lambda item: float(item["best_score"]),
-            reverse=True,
-        )[:top_k]
+        source_ranks_by_round: Dict[str, Dict[str, int]] = {}
+        if source_aware:
+            selected: Dict[str, Dict[str, Any]] = {}
+            sources = sorted({
+                str(source)
+                for item in by_round.values()
+                for source in dict(item["source_scores"])
+            })
+            for source in sources:
+                source_ranking = sorted(
+                    (
+                        item
+                        for item in by_round.values()
+                        if float(dict(item["source_scores"]).get(source, 0.0)) > 0.0
+                    ),
+                    key=lambda item: float(dict(item["source_scores"])[source]),
+                    reverse=True,
+                )[:top_k]
+                for rank, item in enumerate(source_ranking, start=1):
+                    round_id = str(item["round_id"])
+                    selected[round_id] = item
+                    source_ranks_by_round.setdefault(round_id, {})[source] = rank
+
+            ranked = sorted(
+                selected.values(),
+                key=lambda item: (
+                    sum(
+                        1.0 / max(1, int(rank))
+                        for rank in source_ranks_by_round.get(
+                            str(item["round_id"]), {}
+                        ).values()
+                    ),
+                    float(item["best_score"]),
+                ),
+                reverse=True,
+            )
+        else:
+            ranked = sorted(
+                by_round.values(),
+                key=lambda item: float(item["best_score"]),
+                reverse=True,
+            )[:top_k]
+
         out: List[Dict[str, Any]] = []
         for item in ranked:
             anchor = item["best_anchor"]
@@ -297,6 +339,12 @@ class EvidenceIndex:
                     "source_scores": {
                         str(key): float(value)
                         for key, value in dict(item["source_scores"]).items()
+                    },
+                    "source_ranks": {
+                        str(key): int(value)
+                        for key, value in source_ranks_by_round.get(
+                            anchor.round_id, {}
+                        ).items()
                     },
                     "source_anchors": dict(item["source_anchors"]),
                 }
