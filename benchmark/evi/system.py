@@ -184,6 +184,7 @@ class EVISystem:
             or "max_similarity_times_reciprocal_rank_consensus"
         ).strip().lower()
         valid_facet_round_fusions = {
+            "max_similarity_times_best_source_rank_consensus",
             "max_similarity_times_reciprocal_rank_consensus",
             "source_facet_reciprocal_rank_consensus",
         }
@@ -1385,7 +1386,10 @@ class EVISystem:
             return []
 
         out: List[Dict[str, Any]] = []
-        source_aware = self._facet_round_fusion == "source_facet_reciprocal_rank_consensus"
+        source_aware = self._facet_round_fusion in {
+            "max_similarity_times_best_source_rank_consensus",
+            "source_facet_reciprocal_rank_consensus",
+        }
         for hit in self._index.search_rounds(
             query_vec,
             top_k=top_k,
@@ -1449,6 +1453,8 @@ class EVISystem:
                         "source_scores": {"dialogue": 0.0, "visual": 0.0},
                         "source_facet_ranks": {},
                         "source_facet_scores": {},
+                        "best_source_facet_ranks": {},
+                        "best_source_by_facet": {},
                         "top_anchors": [],
                     },
                 )
@@ -1470,6 +1476,19 @@ class EVISystem:
                     item["source_facet_scores"][source_facet_key] = float(
                         dict(hit.get("source_scores", {})).get(source, 0.0)
                     )
+                source_ranks = dict(hit.get("source_ranks", {}))
+                source_scores = dict(hit.get("source_scores", {}))
+                if source_ranks:
+                    best_source, best_source_rank = min(
+                        source_ranks.items(),
+                        key=lambda pair: (
+                            int(pair[1]),
+                            -float(source_scores.get(pair[0], 0.0)),
+                            str(pair[0]),
+                        ),
+                    )
+                    item["best_source_facet_ranks"][facet_key] = int(best_source_rank)
+                    item["best_source_by_facet"][facet_key] = str(best_source)
                 if len(item["top_anchors"]) < self._max_candidate_anchors:
                     item["top_anchors"].append(
                         {
@@ -1490,6 +1509,12 @@ class EVISystem:
                     for rank in item["source_facet_ranks"].values()
                 )
                 final_score = consensus_score
+            elif self._facet_round_fusion == "max_similarity_times_best_source_rank_consensus":
+                consensus_score = sum(
+                    1.0 / max(1, int(rank))
+                    for rank in item["best_source_facet_ranks"].values()
+                )
+                final_score = float(item["max_score"]) * consensus_score
             else:
                 consensus_score = sum(
                     1.0 / max(1, int(rank))
@@ -1859,6 +1884,10 @@ class EVISystem:
                 "source_facet_scores": {
                     key: round(float(value), 6) for key, value in item["source_facet_scores"].items()
                 },
+                "best_source_facet_ranks": {
+                    key: int(value) for key, value in item["best_source_facet_ranks"].items()
+                },
+                "best_source_by_facet": dict(item["best_source_by_facet"]),
                 "top_anchors": item["top_anchors"][: self._max_candidate_anchors],
             }
             for item in merged[: self._max_candidates]
@@ -1874,7 +1903,7 @@ class EVISystem:
         log.info("QDMO-EVI faceted round merge candidates=%d", len(merged))
         for rank, item in enumerate(round_trace, start=1):
             log.info(
-                "  faceted_round[%02d] round=%s session=%s score=%.4f max=%.4f consensus=%.4f matched_facets=%s facet_ranks=%s source_facet_ranks=%s source_scores=%s facet_scores=%s",
+                "  faceted_round[%02d] round=%s session=%s score=%.4f max=%.4f consensus=%.4f matched_facets=%s facet_ranks=%s source_facet_ranks=%s best_source_ranks=%s best_sources=%s source_scores=%s facet_scores=%s",
                 rank,
                 item["round_id"],
                 item["session_id"],
@@ -1884,6 +1913,8 @@ class EVISystem:
                 item["matched_facets"],
                 item["facet_ranks"],
                 item["source_facet_ranks"],
+                item["best_source_facet_ranks"],
+                item["best_source_by_facet"],
                 {key: round(float(value), 4) for key, value in item["source_scores"].items()},
                 {key: round(float(value), 4) for key, value in item["facet_scores"].items()},
             )
