@@ -179,7 +179,7 @@ class EVISystem:
         self._round_selector_max_new_tokens = int(cfg.get("round_selector_max_new_tokens", 512))
         self._facet_max_facets = int(cfg.get("facet_max_facets", 4))
         self._facet_search_k = int(cfg.get("facet_search_k", 30))
-        self._facet_multi_hit_bonus = float(cfg.get("facet_multi_hit_bonus", 0.08))
+
         self._facet_full_question_weight = float(cfg.get("facet_full_question_weight", 1.0))
         self._use_retrieval_facets = self._as_bool(cfg.get("evi_use_retrieval_facets"), True)
         self._use_image_anchors = self._as_bool(cfg.get("evi_use_image_anchors"), True)
@@ -361,7 +361,7 @@ class EVISystem:
             "round_selector_max_new_tokens": self._round_selector_max_new_tokens,
             "facet_max_facets": self._facet_max_facets,
             "facet_search_k": self._facet_search_k,
-            "facet_multi_hit_bonus": self._facet_multi_hit_bonus,
+            "facet_round_fusion": "max_similarity_times_reciprocal_rank_consensus",
             "facet_full_question_weight": self._facet_full_question_weight,
             "evi_use_retrieval_facets": self._use_retrieval_facets,
             "evi_use_image_anchors": self._use_image_anchors,
@@ -1422,6 +1422,7 @@ class EVISystem:
                         "score_sum": 0.0,
                         "matched_facets": set(),
                         "facet_scores": {},
+                        "facet_ranks": {},
                         "source_scores": {"dialogue": 0.0, "visual": 0.0},
                         "top_anchors": [],
                     },
@@ -1432,6 +1433,7 @@ class EVISystem:
                 current = item["facet_scores"].get(facet, 0.0)
                 if score > current:
                     item["facet_scores"][facet] = score
+                    item["facet_ranks"][facet] = rank
                 for source, source_score in dict(hit.get("source_scores", {})).items():
                     item["source_scores"][source] = max(
                         float(item["source_scores"].get(source, 0.0)),
@@ -1451,13 +1453,18 @@ class EVISystem:
         merged: List[Dict[str, Any]] = []
         for item in round_data.values():
             matched_count = len(item["matched_facets"])
-            bonus = self._facet_multi_hit_bonus * max(0, matched_count - 1)
+            consensus_score = sum(
+                1.0 / max(1, int(rank))
+                for rank in item["facet_ranks"].values()
+            )
             item["matched_facets"] = matched_count
-            item["score"] = float(item["max_score"]) + bonus
+            item["consensus_score"] = consensus_score
+            item["score"] = float(item["max_score"]) * consensus_score
             merged.append(item)
         merged.sort(
             key=lambda item: (
                 float(item["score"]),
+                float(item["consensus_score"]),
                 int(item["matched_facets"]),
                 float(item["max_score"]),
             ),
@@ -1778,8 +1785,10 @@ class EVISystem:
                 "session_id": item["session_id"],
                 "score": round(float(item["score"]), 6),
                 "max_score": round(float(item["max_score"]), 6),
+                "consensus_score": round(float(item["consensus_score"]), 6),
                 "matched_facets": item["matched_facets"],
                 "facet_scores": {key: round(float(value), 6) for key, value in item["facet_scores"].items()},
+                "facet_ranks": {key: int(value) for key, value in item["facet_ranks"].items()},
                 "source_scores": {key: round(float(value), 6) for key, value in item["source_scores"].items()},
                 "top_anchors": item["top_anchors"][: self._max_candidate_anchors],
             }
@@ -1795,13 +1804,15 @@ class EVISystem:
         log.info("QDMO-EVI faceted round merge candidates=%d", len(merged))
         for rank, item in enumerate(round_trace, start=1):
             log.info(
-                "  faceted_round[%02d] round=%s session=%s score=%.4f max=%.4f matched_facets=%s source_scores=%s facet_scores=%s",
+                "  faceted_round[%02d] round=%s session=%s score=%.4f max=%.4f consensus=%.4f matched_facets=%s facet_ranks=%s source_scores=%s facet_scores=%s",
                 rank,
                 item["round_id"],
                 item["session_id"],
                 item["score"],
                 item["max_score"],
+                item["consensus_score"],
                 item["matched_facets"],
+                item["facet_ranks"],
                 {key: round(float(value), 4) for key, value in item["source_scores"].items()},
                 {key: round(float(value), 4) for key, value in item["facet_scores"].items()},
             )

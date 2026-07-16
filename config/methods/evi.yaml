@@ -28,7 +28,7 @@ raw_search_k: 120
 # Faceted retrieval pipeline budget. Each facet returns this many unique rounds after collapsing multiple evidence anchors from the same round.
 facet_max_facets: 4
 facet_search_k: 30
-facet_multi_hit_bonus: 0.08
+
 facet_full_question_weight: 1.0
 use_facet_cache: true
 
