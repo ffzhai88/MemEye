@@ -238,3 +238,67 @@ class EvidenceIndex:
             anchor.score = score
             out.append(anchor)
         return out
+    def search_rounds(
+        self,
+        query_vec: List[float],
+        top_k: int = 60,
+        session_ids: Optional[set[str]] = None,
+    ) -> List[Dict[str, Any]]:
+        """Return the best unique rounds and retain per-source anchor scores.
+
+        A visual round can yield many evidence anchors. Collapsing to a round before
+        the Top-K cutoff prevents one visually dense round from consuming a channel.
+        """
+        by_round: Dict[str, Dict[str, Any]] = {}
+        for anchor in self._anchors:
+            if session_ids is not None and anchor.session_id not in session_ids:
+                continue
+            score = cosine(query_vec, anchor.vector)
+            if score <= 0:
+                continue
+
+            source = "visual" if anchor.image_path else "dialogue"
+            item = by_round.setdefault(
+                anchor.round_id,
+                {
+                    "best_score": 0.0,
+                    "best_anchor": None,
+                    "source_scores": {},
+                    "source_anchors": {},
+                },
+            )
+            if score > float(item["best_score"]):
+                item["best_score"] = score
+                item["best_anchor"] = anchor
+
+            source_scores: Dict[str, float] = item["source_scores"]
+            source_anchors: Dict[str, EvidenceAnchor] = item["source_anchors"]
+            if score > float(source_scores.get(source, 0.0)):
+                source_scores[source] = score
+                source_anchors[source] = anchor
+
+        ranked = sorted(
+            by_round.values(),
+            key=lambda item: float(item["best_score"]),
+            reverse=True,
+        )[:top_k]
+        out: List[Dict[str, Any]] = []
+        for item in ranked:
+            anchor = item["best_anchor"]
+            if not isinstance(anchor, EvidenceAnchor):
+                continue
+            out.append(
+                {
+                    "round_id": anchor.round_id,
+                    "session_id": anchor.session_id,
+                    "date": anchor.date,
+                    "score": float(item["best_score"]),
+                    "best_anchor": anchor,
+                    "source_scores": {
+                        str(key): float(value)
+                        for key, value in dict(item["source_scores"]).items()
+                    },
+                    "source_anchors": dict(item["source_anchors"]),
+                }
+            )
+        return out

@@ -1366,34 +1366,63 @@ class EVISystem:
                 log.warning("QDMO-EVI scope cache write failed key=%s error=%s", cache_key, exc)
         return brief
 
-    def _search_anchors_for_text(self, query_text: str, top_k: int) -> List[EvidenceAnchor]:
+    def _search_rounds_for_text(self, query_text: str, top_k: int) -> List[Dict[str, Any]]:
         query_vec = self._embed(query_text)
         if not query_vec:
             return []
-        for anchor in self._index.anchors:
-            anchor.score = 0.0
-        return [replace(anchor) for anchor in self._index.search(query_vec, top_k=top_k)]
+
+        out: List[Dict[str, Any]] = []
+        for hit in self._index.search_rounds(query_vec, top_k=top_k):
+            best_anchor = hit.get("best_anchor")
+            if not isinstance(best_anchor, EvidenceAnchor):
+                continue
+            score = float(hit.get("score", 0.0))
+            source_scores = {
+                str(source): float(value)
+                for source, value in dict(hit.get("source_scores", {})).items()
+            }
+            source_anchors = {
+                str(source): replace(anchor, score=float(source_scores.get(source, 0.0)))
+                for source, anchor in dict(hit.get("source_anchors", {})).items()
+                if isinstance(anchor, EvidenceAnchor)
+            }
+            out.append(
+                {
+                    "round_id": str(hit.get("round_id", best_anchor.round_id)),
+                    "session_id": str(hit.get("session_id", best_anchor.session_id)),
+                    "date": str(hit.get("date", best_anchor.date)),
+                    "score": score,
+                    "best_anchor": replace(best_anchor, score=score),
+                    "source_scores": source_scores,
+                    "source_anchors": source_anchors,
+                }
+            )
+        return out
 
     def _merge_facet_rounds(
         self,
-        facet_results: List[Tuple[str, List[EvidenceAnchor]]],
+        facet_results: List[Tuple[str, List[Dict[str, Any]]]],
     ) -> List[Dict[str, Any]]:
         round_data: Dict[str, Dict[str, Any]] = {}
-        for facet_idx, (facet, anchors) in enumerate(facet_results):
+        for facet_idx, (facet, round_hits) in enumerate(facet_results):
             facet_key = f"f{facet_idx}"
-            for rank, anchor in enumerate(anchors, start=1):
-                rid = anchor.round_id
-                score = float(anchor.score or 0.0)
+            for rank, hit in enumerate(round_hits, start=1):
+                anchor = hit.get("best_anchor")
+                if not isinstance(anchor, EvidenceAnchor):
+                    continue
+                rid = str(hit["round_id"])
+                score = float(hit.get("score", 0.0))
                 item = round_data.setdefault(
                     rid,
                     {
                         "round_id": rid,
-                        "session_id": anchor.session_id,
-                        "date": anchor.date,
+                        "session_id": str(hit["session_id"]),
+                        "date": str(hit["date"]),
                         "max_score": 0.0,
                         "score_sum": 0.0,
                         "matched_facets": set(),
                         "facet_scores": {},
+                        "source_scores": {"dialogue": 0.0, "visual": 0.0},
                         "top_anchors": [],
                     },
                 )
@@ -1403,14 +1432,22 @@ class EVISystem:
                 current = item["facet_scores"].get(facet, 0.0)
                 if score > current:
                     item["facet_scores"][facet] = score
+                for source, source_score in dict(hit.get("source_scores", {})).items():
+                    item["source_scores"][source] = max(
+                        float(item["source_scores"].get(source, 0.0)),
+                        float(source_score),
+                    )
                 if len(item["top_anchors"]) < self._max_candidate_anchors:
-                    item["top_anchors"].append({
-                        "facet": facet,
-                        "rank": rank,
-                        "score": score,
-                        "type": anchor.evidence_type,
-                        "text": anchor.text,
-                    })
+                    item["top_anchors"].append(
+                        {
+                            "facet": facet,
+                            "rank": rank,
+                            "score": score,
+                            "type": anchor.evidence_type,
+                            "text": anchor.text,
+                        }
+                    )
+
         merged: List[Dict[str, Any]] = []
         for item in round_data.values():
             matched_count = len(item["matched_facets"])
@@ -1418,9 +1455,15 @@ class EVISystem:
             item["matched_facets"] = matched_count
             item["score"] = float(item["max_score"]) + bonus
             merged.append(item)
-        merged.sort(key=lambda item: (float(item["score"]), int(item["matched_facets"]), float(item["max_score"])), reverse=True)
+        merged.sort(
+            key=lambda item: (
+                float(item["score"]),
+                int(item["matched_facets"]),
+                float(item["max_score"]),
+            ),
+            reverse=True,
+        )
         return merged
-
 
     def _group_round_ids_by_session(self, round_ids: List[str]) -> List[Tuple[str, List[str]]]:
         grouped: Dict[str, List[str]] = {}
@@ -1661,34 +1704,61 @@ class EVISystem:
             facets.append((facet, 1.0))
             seen.add(key)
 
-        facet_results: List[Tuple[str, List[EvidenceAnchor]]] = []
+        facet_results: List[Tuple[str, List[Dict[str, Any]]]] = []
         all_retrieved: List[EvidenceAnchor] = []
         for idx, (facet, weight) in enumerate(facets, start=1):
-            anchors = self._search_anchors_for_text(facet, self._facet_search_k)
+            round_hits = self._search_rounds_for_text(facet, self._facet_search_k)
             if weight != 1.0:
-                for anchor in anchors:
-                    anchor.score = float(anchor.score or 0.0) * weight
-            facet_results.append((facet, anchors))
-            all_retrieved.extend(anchors)
-            log.info("QDMO-EVI facet[%02d] query=%s retrieved=%d", idx, facet, len(anchors))
-            for rank, anchor in enumerate(anchors[: self._debug_top_k], start=1):
+                for hit in round_hits:
+                    hit["score"] = float(hit["score"]) * weight
+                    hit["best_anchor"].score = float(hit["score"])
+                    hit["source_scores"] = {
+                        source: float(value) * weight
+                        for source, value in hit["source_scores"].items()
+                    }
+            facet_results.append((facet, round_hits))
+            all_retrieved.extend(hit["best_anchor"] for hit in round_hits)
+            log.info(
+                "QDMO-EVI facet[%02d] query=%s unique_rounds=%d",
+                idx,
+                facet,
+                len(round_hits),
+            )
+            for rank, hit in enumerate(round_hits[: self._debug_top_k], start=1):
+                anchor = hit["best_anchor"]
                 log.info(
-                    "  facet[%02d] anchor[%02d] round=%s type=%s score=%.4f text=%s",
+                    "  facet[%02d] round[%02d] round=%s type=%s score=%.4f dialogue=%.4f visual=%.4f text=%s",
                     idx,
                     rank,
                     anchor.round_id,
                     anchor.evidence_type,
-                    anchor.score or 0.0,
+                    float(hit["score"]),
+                    float(hit["source_scores"].get("dialogue", 0.0)),
+                    float(hit["source_scores"].get("visual", 0.0)),
                     anchor.text.replace("\n", " ")[:180],
                 )
-            trace_json(log, "facet_retrieval", {
-                "facet_index": idx,
-                "facet": facet,
-                "weight": weight,
-                "num_retrieved": len(anchors),
-                "top_anchors": anchors_summary(anchors, max_items=min(self._debug_top_k, len(anchors))),
-            })
-
+            trace_json(
+                log,
+                "facet_retrieval",
+                {
+                    "facet_index": idx,
+                    "facet": facet,
+                    "weight": weight,
+                    "num_unique_rounds": len(round_hits),
+                    "top_rounds": [
+                        {
+                            "round_id": hit["round_id"],
+                            "score": round(float(hit["score"]), 6),
+                            "source_scores": {
+                                source: round(float(value), 6)
+                                for source, value in hit["source_scores"].items()
+                            },
+                            "best_anchor": anchors_summary([hit["best_anchor"]], max_items=1),
+                        }
+                        for hit in round_hits[: self._debug_top_k]
+                    ],
+                },
+            )
         self._log_raw_clue_coverage(qa, all_retrieved)
         merged = self._merge_facet_rounds(facet_results)
         ranked_rounds = [str(item["round_id"]) for item in merged[: self._max_candidates]]
@@ -1710,6 +1780,7 @@ class EVISystem:
                 "max_score": round(float(item["max_score"]), 6),
                 "matched_facets": item["matched_facets"],
                 "facet_scores": {key: round(float(value), 6) for key, value in item["facet_scores"].items()},
+                "source_scores": {key: round(float(value), 6) for key, value in item["source_scores"].items()},
                 "top_anchors": item["top_anchors"][: self._max_candidate_anchors],
             }
             for item in merged[: self._max_candidates]
@@ -1724,13 +1795,14 @@ class EVISystem:
         log.info("QDMO-EVI faceted round merge candidates=%d", len(merged))
         for rank, item in enumerate(round_trace, start=1):
             log.info(
-                "  faceted_round[%02d] round=%s session=%s score=%.4f max=%.4f matched_facets=%s facet_scores=%s",
+                "  faceted_round[%02d] round=%s session=%s score=%.4f max=%.4f matched_facets=%s source_scores=%s facet_scores=%s",
                 rank,
                 item["round_id"],
                 item["session_id"],
                 item["score"],
                 item["max_score"],
                 item["matched_facets"],
+                {key: round(float(value), 4) for key, value in item["source_scores"].items()},
                 {key: round(float(value), 4) for key, value in item["facet_scores"].items()},
             )
         self._log_selected_round_clue_coverage(qa, ranked_rounds, "faceted_candidate_round")
