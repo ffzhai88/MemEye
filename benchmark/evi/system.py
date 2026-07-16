@@ -206,8 +206,15 @@ class EVISystem:
         self._image_round_fusion = str(
             cfg.get("evi_image_round_fusion", "reciprocal_rank") or "reciprocal_rank"
         ).strip().lower()
-        if self._image_round_fusion != "reciprocal_rank":
-            raise ValueError("Only evi_image_round_fusion=reciprocal_rank is supported")
+        valid_image_round_fusions = {
+            "reciprocal_rank",
+            "anchor_candidate_reciprocal_rank",
+        }
+        if self._image_round_fusion not in valid_image_round_fusions:
+            raise ValueError(
+                f"Unsupported evi_image_round_fusion={self._image_round_fusion!r}; "
+                f"expected one of {sorted(valid_image_round_fusions)}"
+            )
         self._use_evidence_organizer = self._as_bool(cfg.get("evi_use_evidence_organizer"), True)
         self._final_include_evidence_images = self._as_bool(cfg.get("evi_final_include_evidence_images"), True)
         self._final_max_rounds = int(cfg.get("evi_final_max_rounds", 10))
@@ -1802,7 +1809,19 @@ class EVISystem:
         image_ids = [str(item["round_id"]) for item in image_hits]
         anchor_ranks = {round_id: rank for rank, round_id in enumerate(anchor_ids, start=1)}
         image_ranks = {round_id: rank for rank, round_id in enumerate(image_ids, start=1)}
-        candidate_ids = list(dict.fromkeys(anchor_ids + image_ids))
+        anchor_candidates_only = (
+            self._image_round_fusion == "anchor_candidate_reciprocal_rank"
+        )
+        candidate_ids = (
+            list(anchor_ids)
+            if anchor_candidates_only
+            else list(dict.fromkeys(anchor_ids + image_ids))
+        )
+        excluded_image_only_ids = (
+            [round_id for round_id in image_ids if round_id not in anchor_ranks]
+            if anchor_candidates_only
+            else []
+        )
         fusion_rows: List[Dict[str, Any]] = []
         for round_id in candidate_ids:
             anchor_rank = anchor_ranks.get(round_id)
@@ -1829,11 +1848,14 @@ class EVISystem:
         )
         fused_ids = [str(item["round_id"]) for item in fusion_rows]
         log.info(
-            "QDMO-EVI raw-image late fusion backend=%s model=%s anchor_rounds=%s image_rounds=%s fused_rounds=%s",
+            "QDMO-EVI raw-image late fusion mode=%s candidate_policy=%s backend=%s model=%s anchor_rounds=%s image_rounds=%s excluded_image_only=%s fused_rounds=%s",
+            self._image_round_fusion,
+            "anchor_candidates_only" if anchor_candidates_only else "anchor_image_union",
             image_meta.get("image_embedding_backend"),
             image_meta.get("image_embedding_model"),
             anchor_ids,
             image_ids,
+            excluded_image_only_ids,
             fused_ids[: self._debug_top_k],
         )
         for rank, item in enumerate(image_hits[: self._debug_top_k], start=1):
@@ -1857,8 +1879,12 @@ class EVISystem:
         trace = {
             "enabled": True,
             "fusion": self._image_round_fusion,
+            "candidate_policy": (
+                "anchor_candidates_only" if anchor_candidates_only else "anchor_image_union"
+            ),
             "anchor_ranked_round_ids": anchor_ids,
             "image_ranked_round_ids": image_ids,
+            "excluded_image_only_round_ids": excluded_image_only_ids,
             "image_rounds": image_hits,
             "fused_rounds": fusion_rows,
             **image_meta,

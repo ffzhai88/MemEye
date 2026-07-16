@@ -206,6 +206,7 @@ Non-agentic baselines:
 - `semantic_rag_dialogue_control`: retrieval-only dialogue-text control without captions.
 - `semantic_rag_image_only`: retrieval-only raw-image control.
 - `evi_retrieval_image_late_fusion`: EVI anchor/facet ranking fused with full-question raw-image ranking at round level.
+- `evi_retrieval_image_rerank`: raw-image ranking reranks only EVI anchor candidates; image-only rounds are excluded.
 
 Agentic or wrapped methods:
 

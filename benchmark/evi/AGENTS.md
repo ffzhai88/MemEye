@@ -90,7 +90,7 @@ Important keys:
 - `use_embedding_cache`: enable disk cache for text embeddings.
 - `evi_use_raw_image_retrieval`: enable independent full-question text-to-image retrieval.
 - `evi_image_round_search_k`: candidate depth for both EVI and raw-image rankings before fusion.
-- `evi_image_round_fusion`: currently `reciprocal_rank`; fusion happens after image hits are collapsed to rounds.
+- `evi_image_round_fusion`: `reciprocal_rank` uses the anchor/image union; `anchor_candidate_reciprocal_rank` reranks only anchor candidates.
 - `use_image_embedding_cache`: cache raw-image and image-query embeddings under `~/.cache/memeye/raw_image_embeddings` by default.
 - `multimodal_clip_fallback_model`: local CLIP fallback used when SigLIP loading or encoding fails.
 - `use_memory_brief_cache`: enable legacy candidate brief cache.
