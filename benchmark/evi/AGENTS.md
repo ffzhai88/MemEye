@@ -1,4 +1,4 @@
-﻿# QDMO-EVI Agent Guide
+# QDMO-EVI Agent Guide
 
 ## Scope
 
@@ -26,6 +26,7 @@ This design is intended to preserve item-level evidence for counting while recov
 - `schemas.py`: dataclasses for anchors, legacy candidates/briefs, episodic memory sets, and episodic states.
 - `extractor.py`: task-agnostic offline visual anchor extraction.
 - `indexes.py`: in-memory anchor vector index and type-aware retrieval scoring.
+- `episode_retrieval.py`: pure session-set merge, member expansion, and direct/episode reciprocal-rank fusion.
 - `sets.py`: builds ordered local `EpisodicMemorySet` objects from retrieved anchors using session/round provenance.
 - `states.py`: cached VLM readout from an episodic memory set into itemized `EpisodicState` evidence.
 - `candidates.py`: legacy candidate consolidation for `evi_pipeline: candidate_assertion`.
@@ -91,6 +92,10 @@ Important keys:
 - `evi_use_raw_image_retrieval`: enable independent full-question text-to-image retrieval.
 - `evi_image_round_search_k`: candidate depth for both EVI and raw-image rankings before fusion.
 - `evi_image_round_fusion`: `reciprocal_rank` uses the anchor/image union; `anchor_candidate_reciprocal_rank` reranks only anchor candidates.
+- `evi_use_episode_set_retrieval`: add a soft session-set retrieval path without filtering direct round candidates.
+- `evi_episode_search_k`: session-set depth per facet.
+- `evi_episode_round_search_k`: maximum expanded episode-round path depth before direct/episode fusion.
+- `config/methods/evi_retrieval_episode_set_image_rerank.yaml`: retrieval-only direct + episode-set + raw-image corroboration ablation.
 - `use_image_embedding_cache`: cache raw-image and image-query embeddings under `~/.cache/memeye/raw_image_embeddings` by default.
 - `multimodal_clip_fallback_model`: local CLIP fallback used when SigLIP loading or encoding fails.
 - `use_memory_brief_cache`: enable legacy candidate brief cache.
@@ -105,6 +110,8 @@ The default debug trace is `<run_dir>/evi_debug.log` when runtime paths are avai
 - `answer_start`
 - `retrieved_anchors`
 - `raw_retrieval_clue_coverage` when QA clue metadata exists
+- `episode_set_retrieval` with per-facet witness rounds, expanded members, and direct/episode fusion
+- clue coverage for `direct_anchor_top10`, `episode_path_top10`, `direct_episode_fused_top10`, and `final_retrieval_top10`; each trace includes both exact round coverage and target-session coverage
 - `episodic_memory_sets`
 - `episodic_set_clue_coverage` when QA clue metadata exists
 - `episodic_states`
@@ -124,6 +131,11 @@ Legacy pipeline traces include `candidate_pool`, `candidate_clue_coverage`, `mem
 
 State cache keys include prompt version, model namespace, question stem, memory set content, selected anchors, and image-use settings.
 
+## Retrieval-Only Episode-Set Path
+
+The optional episode-set path uses the dataset's natural session boundary as a non-lossy memory node. It does not summarize sessions and does not call another LLM. For each retrieval facet, the session score is witnessed by the best matching member anchor, so different facets may be grounded by different rounds in one episode. Ranked episode members are expanded and fused with the unchanged direct round path using reciprocal ranks. Raw-image retrieval then corroborates the combined semantic candidates exactly as in the image-rerank ablation.
+
+Keep this path soft: direct candidates remain eligible, and episode membership must never hard-filter the global round ranking. Retrieval-only artifacts expose `episode_ranked_round_ids` and `direct_episode_fused_round_ids` for component-level analysis.
 ## Research Notes
 
 The paper-facing story should distinguish:

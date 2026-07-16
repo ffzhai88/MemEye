@@ -15,6 +15,11 @@ from ._utils import extract_json
 from .briefs import generate_memory_briefs
 from .candidates import consolidate_candidates
 from .extractor import extract_image_anchors
+from .episode_retrieval import (
+    build_episode_round_path,
+    fuse_direct_episode_rounds,
+    merge_facet_sessions,
+)
 from .indexes import EvidenceIndex, embed_text, normalize_type
 from .schemas import EpisodicState, EvidenceAnchor, MemoryBrief
 from .sets import build_episodic_memory_sets, build_session_memory_sets, build_session_memory_sets_from_candidates
@@ -203,6 +208,16 @@ class EVISystem:
             cfg.get("evi_use_raw_image_retrieval"), False
         )
         self._image_round_search_k = int(cfg.get("evi_image_round_search_k", 30))
+        self._use_episode_set_retrieval = self._as_bool(
+            cfg.get("evi_use_episode_set_retrieval"), False
+        )
+        self._episode_search_k = int(cfg.get("evi_episode_search_k", self._facet_search_k))
+        self._episode_round_search_k = int(
+            cfg.get(
+                "evi_episode_round_search_k",
+                max(self._max_candidates, self._image_round_search_k),
+            )
+        )
         self._image_round_fusion = str(
             cfg.get("evi_image_round_fusion", "reciprocal_rank") or "reciprocal_rank"
         ).strip().lower()
@@ -400,6 +415,9 @@ class EVISystem:
             "evi_use_raw_image_retrieval": self._use_raw_image_retrieval,
             "evi_image_round_search_k": self._image_round_search_k,
             "evi_image_round_fusion": self._image_round_fusion,
+            "evi_use_episode_set_retrieval": self._use_episode_set_retrieval,
+            "evi_episode_search_k": self._episode_search_k,
+            "evi_episode_round_search_k": self._episode_round_search_k,
             "evi_use_evidence_organizer": self._use_evidence_organizer,
             "evi_final_include_evidence_images": self._final_include_evidence_images,
             "evi_final_max_rounds": self._final_max_rounds,
@@ -1109,20 +1127,40 @@ class EVISystem:
         log.info("QDMO-EVI selected round ids=%s cache_hit=False", selected)
         return selected
 
-    def _log_selected_round_clue_coverage(self, qa: Optional[Dict[str, Any]], selected_round_ids: List[str], label: str) -> None:
-        clue_rounds = (qa or {}).get("clue", [])
+    def _log_selected_round_clue_coverage(
+        self,
+        qa: Optional[Dict[str, Any]],
+        selected_round_ids: List[str],
+        label: str,
+    ) -> None:
+        clue_rounds = [str(value) for value in (qa or {}).get("clue", []) if value]
         if not clue_rounds:
             return
         selected_set = set(selected_round_ids)
         hits = [rid for rid in clue_rounds if rid in selected_set]
         misses = [rid for rid in clue_rounds if rid not in selected_set]
+
+        def session_for(round_id: str) -> str:
+            return self._round_session.get(round_id, round_id.split(":R", 1)[0])
+
+        clue_sessions = list(dict.fromkeys(session_for(rid) for rid in clue_rounds))
+        selected_sessions = list(
+            dict.fromkeys(session_for(rid) for rid in selected_round_ids)
+        )
+        selected_session_set = set(selected_sessions)
+        session_hits = [sid for sid in clue_sessions if sid in selected_session_set]
+        session_misses = [sid for sid in clue_sessions if sid not in selected_session_set]
         log.info(
-            "QDMO-EVI %s clue coverage: %d/%d hits=%s misses=%s selected=%s",
+            "QDMO-EVI %s clue coverage: rounds=%d/%d session_scope=%d/%d round_hits=%s round_misses=%s session_hits=%s session_misses=%s selected=%s",
             label,
             len(hits),
             len(clue_rounds),
+            len(session_hits),
+            len(clue_sessions),
             hits,
             misses,
+            session_hits,
+            session_misses,
             selected_round_ids,
         )
         trace_json(log, f"{label}_clue_coverage", {
@@ -1130,9 +1168,13 @@ class EVISystem:
             "num_clues": len(clue_rounds),
             "hits": hits,
             "misses": misses,
+            "num_session_hits": len(session_hits),
+            "num_clue_sessions": len(clue_sessions),
+            "session_hits": session_hits,
+            "session_misses": session_misses,
+            "selected_session_ids": selected_sessions,
             "selected_round_ids": selected_round_ids,
         })
-
     def _set_last_context_round_ids(self, round_ids: List[str]) -> None:
         out: List[str] = []
         seen: set[str] = set()
@@ -1400,8 +1442,14 @@ class EVISystem:
                 log.warning("QDMO-EVI scope cache write failed key=%s error=%s", cache_key, exc)
         return brief
 
-    def _search_rounds_for_text(self, query_text: str, top_k: int) -> List[Dict[str, Any]]:
-        query_vec = self._embed(query_text)
+    def _search_rounds_for_text(
+        self,
+        query_text: str,
+        top_k: int,
+        query_vec: Optional[List[float]] = None,
+    ) -> List[Dict[str, Any]]:
+        if query_vec is None:
+            query_vec = self._embed(query_text)
         if not query_vec:
             return []
 
@@ -1441,6 +1489,56 @@ class EVISystem:
                     "best_anchor": replace(best_anchor, score=score),
                     "source_scores": source_scores,
                     "source_ranks": source_ranks,
+                    "source_anchors": source_anchors,
+                }
+            )
+        return out
+
+    def _search_sessions_for_text(
+        self,
+        query_text: str,
+        top_k: int,
+        query_vec: Optional[List[float]] = None,
+    ) -> List[Dict[str, Any]]:
+        if query_vec is None:
+            query_vec = self._embed(query_text)
+        if not query_vec:
+            return []
+
+        out: List[Dict[str, Any]] = []
+        source_aware = self._facet_round_fusion in {
+            "max_similarity_times_best_source_rank_consensus",
+            "source_facet_reciprocal_rank_consensus",
+        }
+        for hit in self._index.search_sessions(
+            query_vec,
+            top_k=top_k,
+            source_aware=source_aware,
+        ):
+            best_anchor = hit.get("best_anchor")
+            if not isinstance(best_anchor, EvidenceAnchor):
+                continue
+            score = float(hit.get("score", 0.0))
+            source_scores = {
+                str(source): float(value)
+                for source, value in dict(hit.get("source_scores", {})).items()
+            }
+            source_anchors = {
+                str(source): replace(anchor, score=float(source_scores.get(source, 0.0)))
+                for source, anchor in dict(hit.get("source_anchors", {})).items()
+                if isinstance(anchor, EvidenceAnchor)
+            }
+            out.append(
+                {
+                    "session_id": str(hit.get("session_id", best_anchor.session_id)),
+                    "date": str(hit.get("date", best_anchor.date)),
+                    "score": score,
+                    "best_anchor": replace(best_anchor, score=score),
+                    "source_scores": source_scores,
+                    "source_ranks": {
+                        str(source): int(rank)
+                        for source, rank in dict(hit.get("source_ranks", {})).items()
+                    },
                     "source_anchors": source_anchors,
                 }
             )
@@ -1911,11 +2009,22 @@ class EVISystem:
             seen.add(key)
 
         facet_results: List[Tuple[str, List[Dict[str, Any]]]] = []
+        episode_facet_results: List[Tuple[str, List[Dict[str, Any]]]] = []
         all_retrieved: List[EvidenceAnchor] = []
         for idx, (facet, weight) in enumerate(facets, start=1):
-            round_hits = self._search_rounds_for_text(facet, self._facet_search_k)
+            query_vec = self._embed(facet)
+            round_hits = self._search_rounds_for_text(
+                facet, self._facet_search_k, query_vec=query_vec
+            )
+            episode_hits = (
+                self._search_sessions_for_text(
+                    facet, self._episode_search_k, query_vec=query_vec
+                )
+                if self._use_episode_set_retrieval
+                else []
+            )
             if weight != 1.0:
-                for hit in round_hits:
+                for hit in round_hits + episode_hits:
                     hit["score"] = float(hit["score"]) * weight
                     hit["best_anchor"].score = float(hit["score"])
                     hit["source_scores"] = {
@@ -1923,6 +2032,8 @@ class EVISystem:
                         for source, value in hit["source_scores"].items()
                     }
             facet_results.append((facet, round_hits))
+            if self._use_episode_set_retrieval:
+                episode_facet_results.append((facet, episode_hits))
             all_retrieved.extend(hit["best_anchor"] for hit in round_hits)
             source_candidate_counts = {
                 source: sum(
@@ -1952,6 +2063,27 @@ class EVISystem:
                     hit.get("source_ranks", {}),
                     anchor.text.replace("\n", " ")[:180],
                 )
+            if self._use_episode_set_retrieval:
+                log.info(
+                    "QDMO-EVI episode facet[%02d] query=%s unique_sessions=%d",
+                    idx,
+                    facet,
+                    len(episode_hits),
+                )
+                for rank, hit in enumerate(episode_hits[: self._debug_top_k], start=1):
+                    anchor = hit["best_anchor"]
+                    log.info(
+                        "  episode_facet[%02d] session[%02d] session=%s witness_round=%s score=%.4f dialogue=%.4f visual=%.4f source_ranks=%s text=%s",
+                        idx,
+                        rank,
+                        hit["session_id"],
+                        anchor.round_id,
+                        float(hit["score"]),
+                        float(hit["source_scores"].get("dialogue", 0.0)),
+                        float(hit["source_scores"].get("visual", 0.0)),
+                        hit.get("source_ranks", {}),
+                        anchor.text.replace("\n", " ")[:180],
+                    )
             trace_json(
                 log,
                 "facet_retrieval",
@@ -1981,18 +2113,133 @@ class EVISystem:
             )
         self._log_raw_clue_coverage(qa, all_retrieved)
         merged = self._merge_facet_rounds(facet_results)
-        anchor_pool_size = max(self._max_candidates, self._image_round_search_k)
+        anchor_pool_size = max(
+            self._max_candidates,
+            self._image_round_search_k,
+            self._episode_round_search_k if self._use_episode_set_retrieval else 0,
+        )
         anchor_ranked_rounds = [
             str(item["round_id"]) for item in merged[:anchor_pool_size]
         ]
+        self._log_selected_round_clue_coverage(
+            qa,
+            anchor_ranked_rounds[: self._final_max_rounds],
+            "direct_anchor_top10",
+        )
+
+        episode_trace: Dict[str, Any] = {"enabled": False}
+        pre_image_ranked_rounds = list(anchor_ranked_rounds)
+        if self._use_episode_set_retrieval:
+            merged_episodes = merge_facet_sessions(
+                episode_facet_results, self._facet_round_fusion
+            )
+            episode_round_ids, episode_round_rows = build_episode_round_path(
+                merged_episodes,
+                anchor_ranked_rounds,
+                self._session_rounds,
+                self._episode_round_search_k,
+            )
+            fusion_pool_size = max(
+                self._max_candidates,
+                self._image_round_search_k,
+                self._episode_round_search_k,
+            )
+            pre_image_ranked_rounds, direct_episode_rows = fuse_direct_episode_rounds(
+                anchor_ranked_rounds,
+                episode_round_ids,
+                self._round_session,
+                fusion_pool_size,
+            )
+            episode_rows = [
+                {
+                    "session_id": item["session_id"],
+                    "date": item["date"],
+                    "score": round(float(item["score"]), 6),
+                    "max_score": round(float(item["max_score"]), 6),
+                    "consensus_score": round(float(item["consensus_score"]), 6),
+                    "matched_facets": int(item["matched_facets"]),
+                    "facet_scores": {
+                        key: round(float(value), 6)
+                        for key, value in item["facet_scores"].items()
+                    },
+                    "facet_ranks": {
+                        key: int(value) for key, value in item["facet_ranks"].items()
+                    },
+                    "facet_witness_rounds": dict(item["facet_witness_rounds"]),
+                    "best_source_facet_ranks": {
+                        key: int(value)
+                        for key, value in item["best_source_facet_ranks"].items()
+                    },
+                    "best_source_by_facet": dict(item["best_source_by_facet"]),
+                    "best_source_witness_rounds": dict(
+                        item["best_source_witness_rounds"]
+                    ),
+                    "member_round_ids": list(
+                        self._session_rounds.get(str(item["session_id"]), [])
+                    ),
+                }
+                for item in merged_episodes
+            ]
+            episode_trace = {
+                "enabled": True,
+                "fusion": "direct_episode_reciprocal_rank",
+                "candidate_policy": "direct_episode_union",
+                "episode_search_k": self._episode_search_k,
+                "episode_round_search_k": self._episode_round_search_k,
+                "episodes": episode_rows,
+                "episode_ranked_round_ids": episode_round_ids,
+                "episode_rounds": episode_round_rows,
+                "direct_episode_fused_round_ids": pre_image_ranked_rounds,
+                "direct_episode_fusion_rows": direct_episode_rows,
+            }
+            log.info(
+                "QDMO-EVI episode-set fusion episodes=%s episode_rounds=%s direct_rounds=%s fused_rounds=%s",
+                [item["session_id"] for item in episode_rows[: self._debug_top_k]],
+                episode_round_ids[: self._debug_top_k],
+                anchor_ranked_rounds[: self._debug_top_k],
+                pre_image_ranked_rounds[: self._debug_top_k],
+            )
+            for rank, item in enumerate(episode_rows[: self._debug_top_k], start=1):
+                log.info(
+                    "  episode_set[%02d] session=%s score=%.4f matched_facets=%d witnesses=%s members=%s",
+                    rank,
+                    item["session_id"],
+                    float(item["score"]),
+                    int(item["matched_facets"]),
+                    item["best_source_witness_rounds"],
+                    item["member_round_ids"],
+                )
+            for rank, item in enumerate(direct_episode_rows[: self._debug_top_k], start=1):
+                log.info(
+                    "  direct_episode_fused_round[%02d] round=%s session=%s score=%.4f direct_rank=%s episode_rank=%s matched_paths=%d",
+                    rank,
+                    item["round_id"],
+                    item["session_id"],
+                    float(item["score"]),
+                    item["direct_rank"],
+                    item["episode_rank"],
+                    int(item["matched_paths"]),
+                )
+            trace_json(log, "episode_set_retrieval", episode_trace)
+            self._log_selected_round_clue_coverage(
+                qa,
+                episode_round_ids[: self._final_max_rounds],
+                "episode_path_top10",
+            )
+            self._log_selected_round_clue_coverage(
+                qa,
+                pre_image_ranked_rounds[: self._final_max_rounds],
+                "direct_episode_fused_top10",
+            )
+
         image_fusion_trace: Dict[str, Any] = {"enabled": False}
         if self._use_raw_image_retrieval:
             fused_rounds, image_fusion_trace = self._fuse_anchor_and_image_rounds(
-                question_stem, anchor_ranked_rounds
+                question_stem, pre_image_ranked_rounds
             )
             ranked_rounds = fused_rounds[: self._max_candidates]
         else:
-            ranked_rounds = anchor_ranked_rounds[: self._max_candidates]
+            ranked_rounds = pre_image_ranked_rounds[: self._max_candidates]
         if len(ranked_rounds) < max(1, self._min_selected_rounds):
             seen_rounds = set(ranked_rounds)
             for rid in self._round_order:
@@ -2034,6 +2281,8 @@ class EVISystem:
             "facets": [{"text": facet, "weight": weight} for facet, weight in facets],
             "ranked_round_ids": ranked_rounds,
             "anchor_ranked_round_ids": anchor_ranked_rounds,
+            "pre_image_ranked_round_ids": pre_image_ranked_rounds,
+            "episode_set_retrieval": episode_trace,
             "image_fusion": image_fusion_trace,
             "rounds": round_trace,
         }
@@ -2057,6 +2306,9 @@ class EVISystem:
                 {key: round(float(value), 4) for key, value in item["facet_scores"].items()},
             )
         self._log_selected_round_clue_coverage(qa, ranked_rounds, "faceted_candidate_round")
+        self._log_selected_round_clue_coverage(
+            qa, ranked_rounds[: self._final_max_rounds], "final_retrieval_top10"
+        )
         return ranked_rounds, trace
 
     def retrieve_faceted_rounds(

@@ -104,9 +104,20 @@ def _retrieval_components(trace: Dict[str, Any]) -> Dict[str, List[str]]:
         image_fusion.get("image_ranked_round_ids", [])
         or [item.get("round_id") for item in trace.get("image_ranking", []) or []]
     )
+    episode_trace = trace.get("episode_set_retrieval", {}) or {}
+    episode_ids = list(episode_trace.get("episode_ranked_round_ids", []) or [])
+    direct_episode_ids = list(
+        episode_trace.get("direct_episode_fused_round_ids", [])
+        or trace.get("pre_image_ranked_round_ids", [])
+        or []
+    )
     return {
         "anchor_ranked_round_ids": [str(value) for value in anchor_ids if value],
         "image_ranked_round_ids": [str(value) for value in image_ids if value],
+        "episode_ranked_round_ids": [str(value) for value in episode_ids if value],
+        "direct_episode_fused_round_ids": [
+            str(value) for value in direct_episode_ids if value
+        ],
     }
 
 
@@ -119,8 +130,6 @@ def summarize_component_retrievals(
         and row.get("retrieval_components", {}).get("anchor_ranked_round_ids")
         and row.get("retrieval_components", {}).get("image_ranked_round_ids")
     ]
-    if not eligible:
-        return {}
     by_k: Dict[str, Any] = {}
     for k in _parse_k_values(k_values):
         anchor_hits = image_hits = image_unique_hits = oracle_hits = clue_total = 0
@@ -143,10 +152,50 @@ def summarize_component_retrievals(
             "image_unique_clue_hits": image_unique_hits,
             "image_unique_clue_hit_rate": image_unique_hits / clue_total if clue_total else 0.0,
             "oracle_union_clue_round_recall_micro": oracle_hits / clue_total if clue_total else 0.0,
-            "ranking_overlap_count_mean": overlap_total / len(eligible),
-            "ranking_overlap_rate_mean": overlap_total / (len(eligible) * k),
+            "ranking_overlap_count_mean": overlap_total / len(eligible) if eligible else 0.0,
+            "ranking_overlap_rate_mean": overlap_total / (len(eligible) * k) if eligible else 0.0,
         }
-    return {"num_questions": len(eligible), "by_k": by_k}
+    episode_eligible = [
+        row for row in rows
+        if row.get("clue_round_ids")
+        and row.get("retrieval_components", {}).get("anchor_ranked_round_ids")
+        and row.get("retrieval_components", {}).get("episode_ranked_round_ids")
+    ]
+    episode_by_k: Dict[str, Any] = {}
+    for k in _parse_k_values(k_values):
+        direct_hits = episode_hits = episode_unique_hits = oracle_hits = fused_hits = 0
+        overlap_total = clue_total = 0
+        for row in episode_eligible:
+            clues = set(row["clue_round_ids"])
+            components = row["retrieval_components"]
+            direct = set(components["anchor_ranked_round_ids"][:k])
+            episode = set(components["episode_ranked_round_ids"][:k])
+            fused = set(components.get("direct_episode_fused_round_ids", [])[:k])
+            clue_total += len(clues)
+            direct_hits += len(clues & direct)
+            episode_hits += len(clues & episode)
+            episode_unique_hits += len((clues & episode) - direct)
+            oracle_hits += len(clues & (direct | episode))
+            fused_hits += len(clues & fused)
+            overlap_total += len(direct & episode)
+        count = len(episode_eligible)
+        episode_by_k[str(k)] = {
+            "num_questions": count,
+            "direct_clue_round_recall_micro": direct_hits / clue_total if clue_total else 0.0,
+            "episode_clue_round_recall_micro": episode_hits / clue_total if clue_total else 0.0,
+            "episode_unique_clue_hits": episode_unique_hits,
+            "episode_unique_clue_hit_rate": episode_unique_hits / clue_total if clue_total else 0.0,
+            "direct_episode_oracle_recall_micro": oracle_hits / clue_total if clue_total else 0.0,
+            "direct_episode_fused_recall_micro": fused_hits / clue_total if clue_total else 0.0,
+            "ranking_overlap_count_mean": overlap_total / count if count else 0.0,
+            "ranking_overlap_rate_mean": overlap_total / (count * k) if count else 0.0,
+        }
+    return {
+        "num_questions": len(eligible),
+        "by_k": by_k,
+        "episode_num_questions": len(episode_eligible),
+        "episode_by_k": episode_by_k,
+    }
 
 
 def summarize_retrievals(rows: List[Dict[str, Any]], k_values: Iterable[int]) -> Dict[str, Any]:

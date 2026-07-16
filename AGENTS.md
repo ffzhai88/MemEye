@@ -207,6 +207,7 @@ Non-agentic baselines:
 - `semantic_rag_image_only`: retrieval-only raw-image control.
 - `evi_retrieval_image_late_fusion`: EVI anchor/facet ranking fused with full-question raw-image ranking at round level.
 - `evi_retrieval_image_rerank`: raw-image ranking reranks only EVI anchor candidates; image-only rounds are excluded.
+- `evi_retrieval_episode_set_image_rerank`: softly fuses direct round retrieval with non-lossy session-set expansion before raw-image reranking.
 
 Agentic or wrapped methods:
 

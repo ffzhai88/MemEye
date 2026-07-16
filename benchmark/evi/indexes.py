@@ -6,7 +6,7 @@ import logging
 import math
 import os
 from pathlib import Path
-from typing import Any, FrozenSet, Iterable, List, Optional, Tuple
+from typing import Any, Dict, FrozenSet, Iterable, List, Optional, Tuple
 
 from .schemas import EvidenceAnchor
 
@@ -344,6 +344,115 @@ class EvidenceIndex:
                         str(key): int(value)
                         for key, value in source_ranks_by_round.get(
                             anchor.round_id, {}
+                        ).items()
+                    },
+                    "source_anchors": dict(item["source_anchors"]),
+                }
+            )
+        return out
+
+    def search_sessions(
+        self,
+        query_vec: List[float],
+        top_k: int = 30,
+        source_aware: bool = False,
+    ) -> List[Dict[str, Any]]:
+        """Return session-level set matches while preserving witness anchors.
+
+        Each source contributes its best matching anchor anywhere in the session.
+        Different facets may therefore match different member rounds without
+        replacing the original round index or generating lossy summaries.
+        """
+        by_session: Dict[str, Dict[str, Any]] = {}
+        for anchor in self._anchors:
+            score = cosine(query_vec, anchor.vector)
+            if score <= 0:
+                continue
+
+            source = "visual" if anchor.image_path else "dialogue"
+            item = by_session.setdefault(
+                anchor.session_id,
+                {
+                    "session_id": anchor.session_id,
+                    "date": anchor.date,
+                    "best_score": 0.0,
+                    "best_anchor": None,
+                    "source_scores": {},
+                    "source_anchors": {},
+                },
+            )
+            if score > float(item["best_score"]):
+                item["best_score"] = score
+                item["best_anchor"] = anchor
+
+            source_scores: Dict[str, float] = item["source_scores"]
+            source_anchors: Dict[str, EvidenceAnchor] = item["source_anchors"]
+            if score > float(source_scores.get(source, 0.0)):
+                source_scores[source] = score
+                source_anchors[source] = anchor
+
+        source_ranks_by_session: Dict[str, Dict[str, int]] = {}
+        if source_aware:
+            selected: Dict[str, Dict[str, Any]] = {}
+            sources = sorted({
+                str(source)
+                for item in by_session.values()
+                for source in dict(item["source_scores"])
+            })
+            for source in sources:
+                source_ranking = sorted(
+                    (
+                        item
+                        for item in by_session.values()
+                        if float(dict(item["source_scores"]).get(source, 0.0)) > 0.0
+                    ),
+                    key=lambda item: float(dict(item["source_scores"])[source]),
+                    reverse=True,
+                )[:top_k]
+                for rank, item in enumerate(source_ranking, start=1):
+                    session_id = str(item["session_id"])
+                    selected[session_id] = item
+                    source_ranks_by_session.setdefault(session_id, {})[source] = rank
+
+            ranked = sorted(
+                selected.values(),
+                key=lambda item: (
+                    sum(
+                        1.0 / max(1, int(rank))
+                        for rank in source_ranks_by_session.get(
+                            str(item["session_id"]), {}
+                        ).values()
+                    ),
+                    float(item["best_score"]),
+                ),
+                reverse=True,
+            )
+        else:
+            ranked = sorted(
+                by_session.values(),
+                key=lambda item: float(item["best_score"]),
+                reverse=True,
+            )[:top_k]
+
+        out: List[Dict[str, Any]] = []
+        for item in ranked:
+            anchor = item["best_anchor"]
+            if not isinstance(anchor, EvidenceAnchor):
+                continue
+            out.append(
+                {
+                    "session_id": anchor.session_id,
+                    "date": anchor.date,
+                    "score": float(item["best_score"]),
+                    "best_anchor": anchor,
+                    "source_scores": {
+                        str(key): float(value)
+                        for key, value in dict(item["source_scores"]).items()
+                    },
+                    "source_ranks": {
+                        str(key): int(value)
+                        for key, value in source_ranks_by_session.get(
+                            anchor.session_id, {}
                         ).items()
                     },
                     "source_anchors": dict(item["source_anchors"]),
