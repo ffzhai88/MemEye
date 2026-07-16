@@ -18,6 +18,9 @@ The README is the public-facing overview. This file is the practical guide for a
 
 - `run_benchmark.py`: main single-run entry point.
 - `run_matrix.py`: model x method comparison entry point.
+- `run_retrieval_benchmark.py`: retrieval-only evaluation for one task; it never calls final QA.
+- `run_retrieval_suite.py`: retrieval-only evaluation and aggregation over multiple tasks.
+- `analyze_retrieval_comparison.py`: compares two retrieval suites using clue-round metrics and writes per-dataset/per-question deltas.
 - `score_locked_llm_judge.py`: post-hoc LLM-as-a-judge scoring for open-ended outputs.
 - `register_external_data.py`: creates task configs from an external MemEye data checkout.
 - `benchmark/`: core benchmark package.
@@ -115,6 +118,64 @@ Post-score open outputs:
 ```bash
 python score_locked_llm_judge.py --root runs/<model>/open --judge-model gpt-5.2
 ```
+
+## Retrieval-Only Evaluation
+
+Run retrieval-only evaluation for one task:
+
+```bash
+python run_retrieval_benchmark.py \
+  --task-config config/tasks_external/brand_memory_test.yaml \
+  --model-config config/models/gpt_4_1_nano.yaml \
+  --method-config config/methods/evi.yaml \
+  --ks 1,3,5,10,20
+```
+
+Run retrieval-only evaluation over all registered external tasks:
+
+```bash
+python run_retrieval_suite.py \
+  --task-config config/tasks_external/brand_memory_test.yaml \
+  --task-config config/tasks_external/card_playlog_test.yaml \
+  --task-config config/tasks_external/cartoon_entertainment_companion.yaml \
+  --task-config config/tasks_external/home_renovation_interior_design.yaml \
+  --task-config config/tasks_external/multi_scene_visual_case_archive_assistant.yaml \
+  --task-config config/tasks_external/outdoor_navigation_route_memory_assistant.yaml \
+  --task-config config/tasks_external/personal_health_dashboard_assistant.yaml \
+  --task-config config/tasks_external/social_chat_memory_test.yaml \
+  --model-config config/models/gpt_4_1_nano.yaml \
+  --method-config config/methods/evi.yaml
+```
+
+Compare retrieval suites at `K=10`:
+
+```bash
+python analyze_retrieval_comparison.py \
+  --candidate-suite runs/retrieval/<candidate-run> \
+  --baseline-suite runs/retrieval/<baseline-run> \
+  --k 10
+```
+
+Retrieval-only runs do not belong under individual benchmark task directories. A single-task run writes to:
+
+```text
+runs/retrieval/<timestamp>_<model>_<method>/<task>/
+```
+
+A suite creates one shared root before processing tasks:
+
+```text
+runs/retrieval/<timestamp>_<model-config>_<method-config>/
+  suite_metrics.json
+  suite_runs.json
+  <task-a>/retrieval_debug.log
+  <task-a>/retrievals.jsonl
+  <task-a>/retrieval_metrics.json
+  <task-a>/evi_debug.log
+  <task-b>/...
+```
+
+Use `retrievals.jsonl` for per-question rankings and `retrieval_metrics.json` for task-level Recall@K, Precision@K, Hit@K, full clue coverage, and MRR. Use `suite_metrics.json` for pooled and dataset-macro summaries. Retrieval suite metadata can contain an absolute path from a different machine; `analyze_retrieval_comparison.py` falls back to the local stable `runs/<task>/retrieval/<run-name>` layout when analyzing legacy suites.
 
 ## Data Format
 
