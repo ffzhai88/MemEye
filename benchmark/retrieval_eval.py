@@ -178,6 +178,7 @@ def run_retrieval_benchmark(
     cfg: Dict[str, Any],
     config_dir: Path,
     k_values: Iterable[int] = DEFAULT_K_VALUES,
+    run_dir: Optional[Path] = None,
 ) -> Dict[str, Any]:
     ks = _parse_k_values(k_values)
     max_k = max(ks)
@@ -185,8 +186,11 @@ def run_retrieval_benchmark(
     task_name = str(cfg.get("task", {}).get("name", "task")).strip() or "task"
     model_name = str(cfg.get("model", {}).get("name", "model")).strip() or "model"
     method_name = str(cfg.get("method", {}).get("name", "method")).strip() or "method"
-    timestamp = dt.datetime.now().strftime("%Y%m%d_%H%M%S")
-    run_dir = paths["output_root"] / task_name / "retrieval" / f"{timestamp}_{model_name}_{method_name}"
+    if run_dir is None:
+        timestamp = dt.datetime.now().strftime("%Y%m%d_%H%M%S")
+        run_dir = paths["output_root"] / "retrieval" / f"{timestamp}_{model_name}_{method_name}" / task_name
+    else:
+        run_dir = Path(run_dir).resolve()
     run_dir.mkdir(parents=True, exist_ok=False)
 
     file_handler = logging.FileHandler(run_dir / "retrieval_debug.log", encoding="utf-8")
@@ -292,6 +296,7 @@ def run_modular_retrieval_benchmark(
     output_root: str = "",
     max_questions: int = 0,
     k_values: Iterable[int] = DEFAULT_K_VALUES,
+    run_dir: Optional[Path] = None,
 ) -> Dict[str, Any]:
     cfg, config_dir = _compose_retrieval_config(
         task_config_path=task_config_path,
@@ -300,4 +305,4 @@ def run_modular_retrieval_benchmark(
         output_root=output_root,
         max_questions=max_questions,
     )
-    return run_retrieval_benchmark(cfg, config_dir, k_values=k_values)
+    return run_retrieval_benchmark(cfg, config_dir, k_values=k_values, run_dir=run_dir)

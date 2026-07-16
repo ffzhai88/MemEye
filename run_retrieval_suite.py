@@ -56,6 +56,15 @@ def main() -> None:
     parser.add_argument("--ks", type=parse_k_values, default=list(DEFAULT_K_VALUES))
     args = parser.parse_args()
 
+    output_root = Path(args.output_root)
+    if not output_root.is_absolute():
+        output_root = SCRIPT_DIR / output_root
+    model_name = resolve_config_path(args.model_config).stem
+    method_name = resolve_config_path(args.method_config).stem
+    timestamp = dt.datetime.now().strftime("%Y%m%d_%H%M%S")
+    suite_dir = output_root.resolve() / "retrieval" / f"{timestamp}_{model_name}_{method_name}"
+    suite_dir.mkdir(parents=True, exist_ok=False)
+
     task_payloads: List[Dict[str, Any]] = []
     all_rows: List[Dict[str, Any]] = []
     for task_config in args.task_config:
@@ -66,6 +75,7 @@ def main() -> None:
             output_root=args.output_root,
             max_questions=args.max_questions,
             k_values=args.ks,
+            run_dir=suite_dir / resolve_config_path(task_config).stem,
         )
         run_dir = Path(payload["run_dir"])
         rows = _load_jsonl(run_dir / "retrievals.jsonl")
@@ -73,14 +83,7 @@ def main() -> None:
         for row in rows:
             all_rows.append({"task_name": payload["task_name"], **row})
 
-    output_root = Path(args.output_root)
-    if not output_root.is_absolute():
-        output_root = SCRIPT_DIR / output_root
-    model_name = resolve_config_path(args.model_config).stem
-    method_name = resolve_config_path(args.method_config).stem
-    timestamp = dt.datetime.now().strftime("%Y%m%d_%H%M%S")
-    suite_dir = output_root.resolve() / "retrieval_suites" / f"{timestamp}_{model_name}_{method_name}"
-    suite_dir.mkdir(parents=True, exist_ok=False)
+
 
     suite_payload = {
         "task_configs": args.task_config,
