@@ -17,7 +17,8 @@ set -eu
 export OPENAI_API_KEY=sk-vutycwckjxdohudkuuvlixqpuyzrjrhgtgptdjsikngrjiok
 
 MODEL_CONFIG="${1:-config/models/qwen3_vl_8b_openrouter.yaml}"
-METHOD_CONFIG="${2:-config/methods/evi.yaml}"
+EMETHOD_CONFIG="${2:-config/methods/evi.yaml}"
+SMETHOD_CONFIG="${2:-config/methods/semantic_rag_multimodal.yaml}"
 KS="${3:-1,3,5,10,20}"
 OUTPUT_ROOT="${4:-runs}"
 
@@ -26,7 +27,7 @@ OUTPUT_ROOT="${4:-runs}"
 
 python run_retrieval_suite.py \
   --model-config "$MODEL_CONFIG" \
-  --method-config "$METHOD_CONFIG" \
+  --method-config "$EMETHOD_CONFIG" \
   --ks "$KS" \
   --output-root "$OUTPUT_ROOT" \
   --task-config config/tasks_external/brand_memory_test.yaml \
