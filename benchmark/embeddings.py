@@ -331,8 +331,11 @@ class LocalCLIPEmbedder:
 
     DEFAULT_MODEL = "openai/clip-vit-base-patch32"
 
-    def __init__(self, model_name: str = DEFAULT_MODEL) -> None:
+    def __init__(
+        self, model_name: str = DEFAULT_MODEL, *, local_files_only: bool = False
+    ) -> None:
         self._model_name = model_name
+        self._local_files_only = local_files_only
         self._model = None
         self._processor = None
         self._device = "cpu"
@@ -344,8 +347,16 @@ class LocalCLIPEmbedder:
 
             cache_dir = os.environ.get("HF_HOME") or os.environ.get("TRANSFORMERS_CACHE")
             with _sanitized_hf_token_env():
-                self._processor = CLIPProcessor.from_pretrained(self._model_name, cache_dir=cache_dir)
-                self._model = CLIPModel.from_pretrained(self._model_name, cache_dir=cache_dir)
+                self._processor = CLIPProcessor.from_pretrained(
+                    self._model_name,
+                    cache_dir=cache_dir,
+                    local_files_only=self._local_files_only,
+                )
+                self._model = CLIPModel.from_pretrained(
+                    self._model_name,
+                    cache_dir=cache_dir,
+                    local_files_only=self._local_files_only,
+                )
 
             # Use GPU if available
             if torch.cuda.is_available():

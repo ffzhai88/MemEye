@@ -1,0 +1,7 @@
+name: semantic_rag_dialogue_control
+modality: multimodal
+retrieval_backend: dense_text
+top_k: 10
+neighbor_window: 0
+text_embedding_model: all-MiniLM-L6-v2
+

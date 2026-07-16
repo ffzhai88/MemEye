@@ -8,7 +8,12 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List
 
 from benchmark.common import REPO_ROOT, SCRIPT_DIR, get_git_commit, resolve_config_path, write_json
-from benchmark.retrieval_eval import DEFAULT_K_VALUES, run_modular_retrieval_benchmark, summarize_retrievals
+from benchmark.retrieval_eval import (
+    DEFAULT_K_VALUES,
+    run_modular_retrieval_benchmark,
+    summarize_component_retrievals,
+    summarize_retrievals,
+)
 
 
 def parse_k_values(raw: str) -> List[int]:
@@ -100,6 +105,7 @@ def main() -> None:
             for payload in task_payloads
         ],
         "pooled_all_questions": summarize_retrievals(all_rows, args.ks),
+        "component_diagnostics": summarize_component_retrievals(all_rows, args.ks),
         "macro_over_datasets": _macro_over_datasets(task_payloads, args.ks),
     }
     write_json(suite_dir / "suite_metrics.json", suite_payload)

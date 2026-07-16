@@ -93,6 +93,62 @@ def _rank_details(ranked_round_ids: List[str], clue_round_ids: List[str]) -> Dic
     }
 
 
+def _retrieval_components(trace: Dict[str, Any]) -> Dict[str, List[str]]:
+    image_fusion = trace.get("image_fusion", {}) or {}
+    anchor_ids = list(
+        trace.get("anchor_ranked_round_ids", [])
+        or image_fusion.get("anchor_ranked_round_ids", [])
+        or []
+    )
+    image_ids = list(
+        image_fusion.get("image_ranked_round_ids", [])
+        or [item.get("round_id") for item in trace.get("image_ranking", []) or []]
+    )
+    return {
+        "anchor_ranked_round_ids": [str(value) for value in anchor_ids if value],
+        "image_ranked_round_ids": [str(value) for value in image_ids if value],
+    }
+
+
+def summarize_component_retrievals(
+    rows: List[Dict[str, Any]], k_values: Iterable[int]
+) -> Dict[str, Any]:
+    eligible = [
+        row for row in rows
+        if row.get("clue_round_ids")
+        and row.get("retrieval_components", {}).get("anchor_ranked_round_ids")
+        and row.get("retrieval_components", {}).get("image_ranked_round_ids")
+    ]
+    if not eligible:
+        return {}
+    by_k: Dict[str, Any] = {}
+    for k in _parse_k_values(k_values):
+        anchor_hits = image_hits = image_unique_hits = oracle_hits = clue_total = 0
+        overlap_total = 0
+        for row in eligible:
+            clues = set(row["clue_round_ids"])
+            components = row["retrieval_components"]
+            anchor = set(components["anchor_ranked_round_ids"][:k])
+            image = set(components["image_ranked_round_ids"][:k])
+            clue_total += len(clues)
+            anchor_hits += len(clues & anchor)
+            image_hits += len(clues & image)
+            image_unique_hits += len((clues & image) - anchor)
+            oracle_hits += len(clues & (anchor | image))
+            overlap_total += len(anchor & image)
+        by_k[str(k)] = {
+            "num_questions": len(eligible),
+            "anchor_clue_round_recall_micro": anchor_hits / clue_total if clue_total else 0.0,
+            "image_clue_round_recall_micro": image_hits / clue_total if clue_total else 0.0,
+            "image_unique_clue_hits": image_unique_hits,
+            "image_unique_clue_hit_rate": image_unique_hits / clue_total if clue_total else 0.0,
+            "oracle_union_clue_round_recall_micro": oracle_hits / clue_total if clue_total else 0.0,
+            "ranking_overlap_count_mean": overlap_total / len(eligible),
+            "ranking_overlap_rate_mean": overlap_total / (len(eligible) * k),
+        }
+    return {"num_questions": len(eligible), "by_k": by_k}
+
+
 def summarize_retrievals(rows: List[Dict[str, Any]], k_values: Iterable[int]) -> Dict[str, Any]:
     ks = _parse_k_values(k_values)
     with_clues = [row for row in rows if row.get("clue_round_ids")]
@@ -157,7 +213,12 @@ def _build_retriever(
     if method_name == "evi":
         from .evi import EVISystem
 
-        config["max_candidates"] = max_k
+        image_pool_k = (
+            int(config.get("evi_image_round_search_k", 0) or 0)
+            if config.get("evi_use_raw_image_retrieval")
+            else 0
+        )
+        config["max_candidates"] = max(max_k, image_pool_k)
         config["evi_retrieval_only"] = True
         config["_runtime_paths"] = {"run_dir": str(run_dir)}
         system = EVISystem(config)
@@ -224,6 +285,7 @@ def run_retrieval_benchmark(
             latency_ms = round((time.perf_counter() - started) * 1000, 3)
             clues = _clue_round_ids(qa)
             ranking = _rank_details(ranked_round_ids, clues)
+            components = _retrieval_components(trace)
             row = {
                 "idx": index,
                 "question_id": qa.get("id") or qa.get("question_id") or "",
@@ -234,6 +296,7 @@ def run_retrieval_benchmark(
                 "ranked_round_count": len(ranked_round_ids),
                 "latency_ms": latency_ms,
                 "retrieval_trace": trace,
+                "retrieval_components": components,
                 **ranking,
             }
             rows.append(row)
@@ -254,6 +317,9 @@ def run_retrieval_benchmark(
             )
 
         summary = summarize_retrievals(rows, ks)
+        component_summary = summarize_component_retrievals(rows, ks)
+        if component_summary:
+            summary["component_diagnostics"] = component_summary
         query_latency = [float(row["latency_ms"]) for row in rows]
         summary["latency"] = {
             "index_build_seconds": build_seconds,

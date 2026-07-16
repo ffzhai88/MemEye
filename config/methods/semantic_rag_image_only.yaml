@@ -1,0 +1,12 @@
+name: semantic_rag_image_only
+modality: multimodal
+retrieval_backend: dense_multimodal
+top_k: 10
+neighbor_window: 0
+text_dense_weight: 0.0
+image_dense_weight: 1.0
+multimodal_embedding_model: siglip2-base-patch16-384
+multimodal_clip_fallback_model: openai/clip-vit-base-patch32
+multimodal_clip_local_files_only: true
+use_image_embedding_cache: true
+

@@ -29,6 +29,7 @@ The README is the public-facing overview. This file is the practical guide for a
 - `benchmark/methods.py`: method registry and shared `HistoryMethod` interface.
 - `benchmark/retrieval.py`: sparse/dense/multimodal retrieval used by semantic RAG methods.
 - `benchmark/embeddings.py`: text and multimodal embedding wrappers.
+- `benchmark/image_retrieval.py`: shared raw-image-to-round index with persistent embeddings and SigLIP-to-local-CLIP fallback.
 - `benchmark/evaluator.py`: MCQ extraction, open-ended metrics, LLM judge parsing, X/Y aggregation.
 - `benchmark/matrix.py`: writes matrix summaries under `runs/<task>/matrices/`.
 - `router/`: unified model routers for OpenAI-compatible APIs, Gemini, and local Qwen.
@@ -175,7 +176,7 @@ runs/retrieval/<timestamp>_<model-config>_<method-config>/
   <task-b>/...
 ```
 
-Use `retrievals.jsonl` for per-question rankings and `retrieval_metrics.json` for task-level Recall@K, Precision@K, Hit@K, full clue coverage, and MRR. Use `suite_metrics.json` for pooled and dataset-macro summaries. Retrieval suite metadata can contain an absolute path from a different machine; `analyze_retrieval_comparison.py` falls back to the local stable `runs/<task>/retrieval/<run-name>` layout when analyzing legacy suites.
+Use `retrievals.jsonl` for per-question rankings and `retrieval_metrics.json` for task-level Recall@K, Precision@K, Hit@K, full clue coverage, and MRR. Use `suite_metrics.json` for pooled and dataset-macro summaries. Image late-fusion runs also write component rankings per question and `component_diagnostics` (anchor recall, image recall, image-unique clue hits, and oracle-union recall) in task metrics. Retrieval suite metadata can contain an absolute path from a different machine; `analyze_retrieval_comparison.py` falls back to the local stable `runs/<task>/retrieval/<run-name>` layout when analyzing legacy suites.
 
 ## Data Format
 
@@ -202,6 +203,9 @@ Non-agentic baselines:
 - `clue_only_context`: oracle clue rounds.
 - `semantic_rag_text_only`: text dense retrieval.
 - `semantic_rag_multimodal`: multimodal dense retrieval.
+- `semantic_rag_dialogue_control`: retrieval-only dialogue-text control without captions.
+- `semantic_rag_image_only`: retrieval-only raw-image control.
+- `evi_retrieval_image_late_fusion`: EVI anchor/facet ranking fused with full-question raw-image ranking at round level.
 
 Agentic or wrapped methods:
 

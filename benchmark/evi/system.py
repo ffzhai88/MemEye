@@ -146,6 +146,7 @@ class EVISystem:
         self._vlm: Optional[VLMCallable] = None
         self._embedder: Optional[Any] = None
         self._answer_routers: Dict[str, Any] = {}
+        self._raw_image_index: Optional[Any] = None
 
         self._round_order: List[str] = []
         self._round_session: Dict[str, str] = {}
@@ -198,6 +199,15 @@ class EVISystem:
         self._use_retrieval_facets = self._as_bool(cfg.get("evi_use_retrieval_facets"), True)
         self._use_image_anchors = self._as_bool(cfg.get("evi_use_image_anchors"), True)
         self._retrieval_only = self._as_bool(cfg.get("evi_retrieval_only"), False)
+        self._use_raw_image_retrieval = self._as_bool(
+            cfg.get("evi_use_raw_image_retrieval"), False
+        )
+        self._image_round_search_k = int(cfg.get("evi_image_round_search_k", 30))
+        self._image_round_fusion = str(
+            cfg.get("evi_image_round_fusion", "reciprocal_rank") or "reciprocal_rank"
+        ).strip().lower()
+        if self._image_round_fusion != "reciprocal_rank":
+            raise ValueError("Only evi_image_round_fusion=reciprocal_rank is supported")
         self._use_evidence_organizer = self._as_bool(cfg.get("evi_use_evidence_organizer"), True)
         self._final_include_evidence_images = self._as_bool(cfg.get("evi_final_include_evidence_images"), True)
         self._final_max_rounds = int(cfg.get("evi_final_max_rounds", 10))
@@ -380,6 +390,9 @@ class EVISystem:
             "evi_use_retrieval_facets": self._use_retrieval_facets,
             "evi_use_image_anchors": self._use_image_anchors,
             "evi_retrieval_only": self._retrieval_only,
+            "evi_use_raw_image_retrieval": self._use_raw_image_retrieval,
+            "evi_image_round_search_k": self._image_round_search_k,
+            "evi_image_round_fusion": self._image_round_fusion,
             "evi_use_evidence_organizer": self._use_evidence_organizer,
             "evi_final_include_evidence_images": self._final_include_evidence_images,
             "evi_final_max_rounds": self._final_max_rounds,
@@ -1767,6 +1780,92 @@ class EVISystem:
                 history.append(msg)
         return history
 
+    def _get_raw_image_index(self) -> Any:
+        if self._raw_image_index is None:
+            if self._current_dataset is None:
+                raise RuntimeError("Raw image retrieval requires an initialized dataset")
+            from ..image_retrieval import RawImageRoundIndex
+
+            self._raw_image_index = RawImageRoundIndex(self._current_dataset, self._cfg)
+        return self._raw_image_index
+
+    def _fuse_anchor_and_image_rounds(
+        self,
+        question_stem: str,
+        anchor_ranked_round_ids: List[str],
+    ) -> Tuple[List[str], Dict[str, Any]]:
+        """Fuse independent anchor and raw-image rankings with parameter-free RRF."""
+        anchor_ids = anchor_ranked_round_ids[: self._image_round_search_k]
+        image_hits, image_meta = self._get_raw_image_index().search(
+            question_stem, self._image_round_search_k
+        )
+        image_ids = [str(item["round_id"]) for item in image_hits]
+        anchor_ranks = {round_id: rank for rank, round_id in enumerate(anchor_ids, start=1)}
+        image_ranks = {round_id: rank for rank, round_id in enumerate(image_ids, start=1)}
+        candidate_ids = list(dict.fromkeys(anchor_ids + image_ids))
+        fusion_rows: List[Dict[str, Any]] = []
+        for round_id in candidate_ids:
+            anchor_rank = anchor_ranks.get(round_id)
+            image_rank = image_ranks.get(round_id)
+            score = (
+                (1.0 / anchor_rank if anchor_rank is not None else 0.0)
+                + (1.0 / image_rank if image_rank is not None else 0.0)
+            )
+            fusion_rows.append(
+                {
+                    "round_id": round_id,
+                    "score": score,
+                    "anchor_rank": anchor_rank,
+                    "image_rank": image_rank,
+                    "matched_sources": int(anchor_rank is not None) + int(image_rank is not None),
+                }
+            )
+        fusion_rows.sort(
+            key=lambda item: (
+                -float(item["score"]),
+                -int(item["matched_sources"]),
+                item["round_id"],
+            )
+        )
+        fused_ids = [str(item["round_id"]) for item in fusion_rows]
+        log.info(
+            "QDMO-EVI raw-image late fusion backend=%s model=%s anchor_rounds=%s image_rounds=%s fused_rounds=%s",
+            image_meta.get("image_embedding_backend"),
+            image_meta.get("image_embedding_model"),
+            anchor_ids,
+            image_ids,
+            fused_ids[: self._debug_top_k],
+        )
+        for rank, item in enumerate(image_hits[: self._debug_top_k], start=1):
+            log.info(
+                "  raw_image_round[%02d] round=%s score=%.4f image=%s",
+                rank,
+                item["round_id"],
+                float(item["score"]),
+                item.get("best_image_path", ""),
+            )
+        for rank, item in enumerate(fusion_rows[: self._debug_top_k], start=1):
+            log.info(
+                "  image_fused_round[%02d] round=%s score=%.4f anchor_rank=%s image_rank=%s matched_sources=%d",
+                rank,
+                item["round_id"],
+                float(item["score"]),
+                item["anchor_rank"],
+                item["image_rank"],
+                item["matched_sources"],
+            )
+        trace = {
+            "enabled": True,
+            "fusion": self._image_round_fusion,
+            "anchor_ranked_round_ids": anchor_ids,
+            "image_ranked_round_ids": image_ids,
+            "image_rounds": image_hits,
+            "fused_rounds": fusion_rows,
+            **image_meta,
+        }
+        trace_json(log, "raw_image_round_fusion", trace)
+        return fused_ids, trace
+
     def _retrieve_faceted_round_candidates(
         self,
         question_stem: str,
@@ -1856,7 +1955,18 @@ class EVISystem:
             )
         self._log_raw_clue_coverage(qa, all_retrieved)
         merged = self._merge_facet_rounds(facet_results)
-        ranked_rounds = [str(item["round_id"]) for item in merged[: self._max_candidates]]
+        anchor_pool_size = max(self._max_candidates, self._image_round_search_k)
+        anchor_ranked_rounds = [
+            str(item["round_id"]) for item in merged[:anchor_pool_size]
+        ]
+        image_fusion_trace: Dict[str, Any] = {"enabled": False}
+        if self._use_raw_image_retrieval:
+            fused_rounds, image_fusion_trace = self._fuse_anchor_and_image_rounds(
+                question_stem, anchor_ranked_rounds
+            )
+            ranked_rounds = fused_rounds[: self._max_candidates]
+        else:
+            ranked_rounds = anchor_ranked_rounds[: self._max_candidates]
         if len(ranked_rounds) < max(1, self._min_selected_rounds):
             seen_rounds = set(ranked_rounds)
             for rid in self._round_order:
@@ -1897,6 +2007,8 @@ class EVISystem:
             "facet_round_fusion": self._facet_round_fusion,
             "facets": [{"text": facet, "weight": weight} for facet, weight in facets],
             "ranked_round_ids": ranked_rounds,
+            "anchor_ranked_round_ids": anchor_ranked_rounds,
+            "image_fusion": image_fusion_trace,
             "rounds": round_trace,
         }
         trace_json(log, "faceted_round_merge", {"num_rounds": len(merged), "rounds": round_trace})

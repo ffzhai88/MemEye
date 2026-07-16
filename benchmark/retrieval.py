@@ -388,112 +388,71 @@ class _DenseTextRetriever(_BaseRetriever):
 
 
 class _DenseMultimodalRetriever(_BaseRetriever):
-    def __init__(self, dataset: MemoryBenchmarkDataset, config: Dict[str, Any]) -> None:
-        # 先调用父类初始化，把数据集、配置和基础语料信息都准备好。
-        super().__init__(dataset, config)
-        # 从 embeddings 模块导入文本与多模态 embedding 的具体实现。
-        from .embeddings import TextEmbedder, get_multimodal_embedder
+    """Dense dialogue and raw-image retrieval with round-level score fusion."""
 
-        # 读取文本 embedding 模型名；如果配置里没写，就用默认值。
-        self.text_embedding_model = str(config.get("text_embedding_model", TextEmbedder.DEFAULT_MODEL))
-        # 读取文本相似度与图像相似度的权重，用于后续混合打分。
+    def __init__(self, dataset: MemoryBenchmarkDataset, config: Dict[str, Any]) -> None:
+        super().__init__(dataset, config)
+        from .embeddings import TextEmbedder
+        from .image_retrieval import RawImageRoundIndex
+
+        self.text_embedding_model = str(
+            config.get("text_embedding_model", TextEmbedder.DEFAULT_MODEL)
+        )
         self.text_dense_weight = float(config.get("text_dense_weight", 1.0))
         self.image_dense_weight = float(config.get("image_dense_weight", 0.0))
-        # 初始化文本 embedding 器，用来把问题和候选文本转成向量。
-        self.text_embedder = TextEmbedder(self.text_embedding_model)
-        # 读取多模态 embedding 模型名，默认使用 siglip2。
-        self.mm_model = str(config.get("multimodal_embedding_model", "siglip2-base-patch16-384"))
-        # 初始化多模态 embedding 器，用来把图像转成向量。
-        self.mm_embedder = get_multimodal_embedder(self.mm_model)
-        # 如果多模态 embedding 器不可用，就直接抛错，避免后面检索失败。
-        if self.mm_embedder is None:
-            raise RuntimeError(
-                "semantic_rag dense_multimodal requires a working multimodal embedder; "
-                "neither vLLM SigLIP2 nor local CLIP is available."
-            )
+        if self.text_dense_weight < 0 or self.image_dense_weight < 0:
+            raise ValueError("Dense retrieval weights must be non-negative")
+        if self.text_dense_weight == 0 and self.image_dense_weight == 0:
+            raise ValueError("At least one dense retrieval weight must be positive")
 
-        # 这个列表用于保存每个 round 的最终检索信息：round_id、文本向量、图像向量列表。
-        self.round_rows: List[Tuple[str, Optional[List[float]], List[Tuple[str, List[float]]]]] = []
-        # 收集需要批量文本编码的 round_id 和文本内容。
-        text_batch_round_ids: List[str] = []
-        text_batch_texts: List[str] = []
-        # 收集需要逐张图像编码的任务。
-        image_jobs: List[Tuple[str, str]] = []
-        # 遍历所有候选 round，准备文本和图像的 embedding 任务。
-        for round_id, corpus_text in self.corpus_rows:
-            # 从数据集里取出当前 round 的原始信息，读取其中的图片路径。
-            round_payload = dataset.rounds.get(round_id, {})
-            images = list(round_payload.get("images", []) or [])
-            # 如果当前 round 既没有文本也没有图像，就跳过它。
-            if not corpus_text and not images:
-                continue
-            # 先把这一轮的占位项加入 round_rows，后面再补文本和图像向量。
-            self.round_rows.append((round_id, None, []))
-            # 如果有文本内容，就把它加入批量文本编码列表。
-            if corpus_text:
-                text_batch_round_ids.append(round_id)
-                text_batch_texts.append(corpus_text)
-            # 如果有图像，就把图片路径加入图像编码任务列表。
-            if images:
-                for image_path in images:
-                    image_jobs.append((round_id, image_path))
+        self.mm_model = str(
+            config.get("multimodal_embedding_model", "siglip2-base-patch16-384")
+        )
+        self.text_embedder = (
+            TextEmbedder(self.text_embedding_model) if self.text_dense_weight > 0 else None
+        )
+        self.image_index = (
+            RawImageRoundIndex(dataset, config) if self.image_dense_weight > 0 else None
+        )
 
-        # 把所有文本候选一次性编码成向量，并按 round_id 建立映射。
         text_vectors_by_round: Dict[str, List[float]] = {}
-        if text_batch_texts:
-            for round_id, vec in zip(text_batch_round_ids, self.text_embedder.embed_batch(text_batch_texts)):
-                text_vectors_by_round[round_id] = vec
+        if self.text_embedder is not None:
+            text_round_ids = [round_id for round_id, text in self.corpus_rows if text]
+            texts = [text for _, text in self.corpus_rows if text]
+            if texts:
+                vectors = self.text_embedder.embed_batch(texts)
+                text_vectors_by_round = dict(zip(text_round_ids, vectors))
 
-        # 把所有图像候选逐张编码成向量，并按 round_id 分组存储。
-        image_vectors_by_round: Dict[str, List[Tuple[str, List[float]]]] = {}
-        for round_id, image_path in image_jobs:
-            image_vectors_by_round.setdefault(round_id, []).append(
-                (image_path, self.mm_embedder.embed_image(image_path))
-            )
-
-        # 把前面准备好的文本向量和图像向量合并回最终的 round_rows 结构。
-        self.round_rows = [
-            (round_id, text_vectors_by_round.get(round_id), image_vectors_by_round.get(round_id, []))
-            for round_id, _, _ in self.round_rows
-        ]
+        self.round_rows: List[Tuple[str, Optional[List[float]]]] = []
+        for round_id, corpus_text in self.corpus_rows:
+            images = list(dataset.rounds.get(round_id, {}).get("images", []) or [])
+            if corpus_text or images:
+                self.round_rows.append((round_id, text_vectors_by_round.get(round_id)))
 
     def select(self, qa: Dict[str, Any]) -> Tuple[List[str], Dict[str, Any]]:
-        # 先取出当前问题文本，作为文本和图像两种 embedding 的查询输入。
         query_text = str(qa.get("question", "")).strip()
-        # 如果问题为空，或者没有可用的候选轮次，就直接返回空结果。
         if not query_text or not self.round_rows:
             return [], self._build_debug_info(qa, [], [], [])
 
-        # 初始化两个查询向量，分别用于文本相似度和图像相似度。
         text_query_vec: Optional[List[float]] = None
-        image_query_vec: Optional[List[float]] = None
-        # 只有在配置允许时，才生成文本 query 向量。
-        if self.text_dense_weight > 0:
+        if self.text_embedder is not None:
             text_query_vec = self.text_embedder.embed_query(query_text)
-        # 只有在配置允许时，才生成图像 query 向量。
-        if self.image_dense_weight > 0:
-            image_query_vec = self.mm_embedder.embed_text(query_text)
 
-        # 用于保存所有候选 round 的打分结果，后续按分数排序。
+        image_hits: List[Dict[str, Any]] = []
+        image_meta: Dict[str, Any] = {}
+        if self.image_index is not None:
+            image_hits, image_meta = self.image_index.search(query_text, len(self.round_rows))
+        image_hit_by_round = {str(item["round_id"]): item for item in image_hits}
+
         scored: List[Tuple[float, str, Dict[str, Any]]] = []
-        # 统计一共索引了多少张图像，用于 debug 信息。
-        total_indexed_images = 0
-        # 遍历每个候选 round，分别计算文本得分和图像得分。
-        for round_id, text_vec, image_items in self.round_rows:
-            # 计算文本相似度分数；如果没有文本向量，就用 0 分。
+        for round_id, text_vec in self.round_rows:
             text_score = _dense_cosine(text_query_vec or [], text_vec or [])
-            total_indexed_images += len(image_items)
-            # 先默认没有最佳图像，图像得分为 0。
-            best_image_path = ""
-            image_score = 0.0
-            # 在这一轮的所有图像里，找出与 query 最相似的一张。
-            for image_path, image_vec in image_items:
-                score = _dense_cosine(image_query_vec or [], image_vec or [])
-                if score >= image_score:
-                    image_score = score
-                    best_image_path = image_path
-            # 把文本分数和图像分数按权重混合成最终得分。
-            score = (self.text_dense_weight * text_score) + (self.image_dense_weight * image_score)
+            image_hit = image_hit_by_round.get(round_id, {})
+            image_score = float(image_hit.get("score", 0.0))
+            score = (
+                self.text_dense_weight * text_score
+                + self.image_dense_weight * image_score
+            )
             scored.append(
                 (
                     score,
@@ -503,35 +462,40 @@ class _DenseMultimodalRetriever(_BaseRetriever):
                         "score": score,
                         "text_dense_score": text_score,
                         "image_dense_score": image_score,
-                        "indexed_image_count": len(image_items),
-                        "best_image_path": best_image_path,
+                        "indexed_image_count": len(
+                            self.dataset.rounds.get(round_id, {}).get("images", []) or []
+                        ),
+                        "best_image_path": str(image_hit.get("best_image_path", "")),
+                        "image_rank": image_hit.get("rank"),
                     },
                 )
             )
-        # 按最终得分从高到低排序，取前 top_k 个作为初始候选种子。
+
         scored.sort(key=lambda item: (-item[0], item[1]))
         seed_round_ids = [round_id for _, round_id, _ in scored[: max(1, self.top_k)]]
-        # 对种子轮次做邻居扩展，补充连续的上下文历史轮次。
         selected_round_ids = _expand_with_neighbors(
             self.dataset, seed_round_ids, self.session_ids, self.neighbor_window
         )
-        # 组装 debug 信息，方便观察命中的轮次和打分细节。
         debug = self._build_debug_info(
             qa,
             seed_round_ids,
             selected_round_ids,
             [row for _, _, row in scored[: max(5, self.top_k)]],
         )
-        debug["text_embedding_model"] = self.text_embedding_model
-        debug["multimodal_embedding_model"] = self.mm_model
-        debug["text_dense_weight"] = self.text_dense_weight
-        debug["image_dense_weight"] = self.image_dense_weight
-        debug["caption_text_included"] = False
-        debug["image_embeddings_built"] = total_indexed_images > 0
-        debug["multi_image_indexing_enabled"] = True
-        debug["indexed_image_count"] = total_indexed_images
+        debug.update(
+            {
+                "text_embedding_model": self.text_embedding_model,
+                "multimodal_embedding_model": self.mm_model,
+                "text_dense_weight": self.text_dense_weight,
+                "image_dense_weight": self.image_dense_weight,
+                "caption_text_included": False,
+                "image_embeddings_built": bool(image_meta.get("indexed_image_count", 0)),
+                "multi_image_indexing_enabled": True,
+                "image_ranking": image_hits[: max(5, self.top_k)],
+                **image_meta,
+            }
+        )
         return selected_round_ids, debug
-
 
 def _cache_key(dataset: MemoryBenchmarkDataset, config: Dict[str, Any]) -> Tuple[Any, ...]:
     # 先确定当前检索后端与语料类型，再基于这些配置生成缓存 key。
@@ -545,6 +509,10 @@ def _cache_key(dataset: MemoryBenchmarkDataset, config: Dict[str, Any]) -> Tuple
         "semantic_weight",
         "text_embedding_model",
         "multimodal_embedding_model",
+        "multimodal_clip_fallback_model",
+        "multimodal_clip_local_files_only",
+        "use_image_embedding_cache",
+        "image_embedding_cache_dir",
         "text_dense_weight",
         "image_dense_weight",
         "retrieval_backend",

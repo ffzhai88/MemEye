@@ -88,12 +88,17 @@ Important keys:
 - `use_final_memory_images`: attach selected memory images to the final answer call; default false.
 - `use_dataset_captions`: include benchmark-provided captions only for ablation/upper-information runs.
 - `use_embedding_cache`: enable disk cache for text embeddings.
+- `evi_use_raw_image_retrieval`: enable independent full-question text-to-image retrieval.
+- `evi_image_round_search_k`: candidate depth for both EVI and raw-image rankings before fusion.
+- `evi_image_round_fusion`: currently `reciprocal_rank`; fusion happens after image hits are collapsed to rounds.
+- `use_image_embedding_cache`: cache raw-image and image-query embeddings under `~/.cache/memeye/raw_image_embeddings` by default.
+- `multimodal_clip_fallback_model`: local CLIP fallback used when SigLIP loading or encoding fails.
 - `use_memory_brief_cache`: enable legacy candidate brief cache.
 - `evi_debug_*`: console/file debug tracing controls.
 
 ## Debug Trace
 
-The default debug trace is `logs/evi_debug.log`. It records structured `[TRACE]` blocks for:
+The default debug trace is `<run_dir>/evi_debug.log` when runtime paths are available. It records structured `[TRACE]` blocks for:
 
 - `indexing_start`
 - `indexing_done`
