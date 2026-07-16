@@ -21,6 +21,7 @@ The README is the public-facing overview. This file is the practical guide for a
 - `run_retrieval_benchmark.py`: retrieval-only evaluation for one task; it never calls final QA.
 - `run_retrieval_suite.py`: retrieval-only evaluation and aggregation over multiple tasks.
 - `analyze_retrieval_comparison.py`: compares two retrieval suites using clue-round metrics and writes per-dataset/per-question deltas.
+- `analyze_episode_oracle.py`: replays an EVI episode suite with annotated clue-session filtering to measure session-routing headroom and diagnose routing, expansion-budget, and fusion failures.
 - `score_locked_llm_judge.py`: post-hoc LLM-as-a-judge scoring for open-ended outputs.
 - `register_external_data.py`: creates task configs from an external MemEye data checkout.
 - `benchmark/`: core benchmark package.
@@ -156,6 +157,19 @@ python analyze_retrieval_comparison.py \
   --baseline-suite runs/retrieval/<baseline-run> \
   --k 10
 ```
+
+Analyze oracle episode-routing headroom at `K=10`:
+
+```bash
+python analyze_episode_oracle.py \
+  --suite runs/retrieval/<episode-suite> \
+  --k 10
+```
+
+This is an offline diagnostic and does not call a model. It writes
+`episode_oracle_metrics.json`, `episode_oracle_questions.jsonl`, and
+`episode_oracle_report.md` into the suite. Annotated clue sessions are used only
+as an evaluation oracle and never enter the retrieval method.
 
 Retrieval-only runs do not belong under individual benchmark task directories. A single-task run writes to:
 

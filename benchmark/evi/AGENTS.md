@@ -136,6 +136,13 @@ State cache keys include prompt version, model namespace, question stem, memory 
 The optional episode-set path uses the dataset's natural session boundary as a non-lossy memory node. It does not summarize sessions and does not call another LLM. For each retrieval facet, the session score is witnessed by the best matching member anchor, so different facets may be grounded by different rounds in one episode. Ranked episode members are expanded and fused with the unchanged direct round path using reciprocal ranks. Raw-image retrieval then corroborates the combined semantic candidates exactly as in the image-rerank ablation.
 
 Keep this path soft: direct candidates remain eligible, and episode membership must never hard-filter the global round ranking. Retrieval-only artifacts expose `episode_ranked_round_ids` and `direct_episode_fused_round_ids` for component-level analysis.
+
+Use `analyze_episode_oracle.py` on an episode-set retrieval suite before adding a
+stronger session directory. It keeps only annotated clue sessions, preserves their
+saved relative order, and replays the existing member expansion, reciprocal-rank
+fusion, and image reranking. Its result is an oracle-assisted headroom estimate,
+not a strict mathematical upper bound. The report separates absent sessions,
+episode-path budget misses, intra-session misses, and fusion displacement.
 ## Research Notes
 
 The paper-facing story should distinguish:
