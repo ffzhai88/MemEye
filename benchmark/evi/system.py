@@ -1638,31 +1638,12 @@ class EVISystem:
                 history.append(msg)
         return history
 
-    def _answer_with_faceted_topk(
+    def _retrieve_faceted_round_candidates(
         self,
-        question: str,
         question_stem: str,
         qa: Optional[Dict[str, Any]],
-        question_images: Optional[List[str]],
-    ) -> str:
-        dataset = self._current_dataset
-        if dataset is None:
-            log.warning("QDMO-EVI faceted_topk requires dataset; falling back to question-only answer")
-            images = self._as_image_list(question_images)[: self._max_answer_images]
-            return self._vlm(FINAL_ANSWER_SYSTEM_PROMPT, question, images) if self._vlm is not None else ""
-
-        scope_brief = ""
-        organizer_scope_brief = ""
-        if self._retrieval_only:
-            log.info("QDMO-EVI retrieval-only ablation: scope interpretation and evidence organizer are disabled")
-        else:
-            scope_brief = self._interpret_question_scope(question_stem, question_images)
-            organizer_scope_brief = scope_brief if self._apply_scope_to_organizer else ""
-            log.info(
-                "QDMO-EVI scope organizer_apply=%s scope_brief=%s",
-                self._apply_scope_to_organizer,
-                organizer_scope_brief or "<not passed to organizer>",
-            )
+    ) -> Tuple[List[str], Dict[str, Any]]:
+        """Retrieve and merge anchor hits into a ranked round list without QA-side filtering."""
         extracted_facets = self._extract_retrieval_facets(question_stem)
         facets: List[Tuple[str, float]] = [(question_stem, self._facet_full_question_weight)]
         seen = {question_stem.lower()}
@@ -1703,23 +1684,38 @@ class EVISystem:
 
         self._log_raw_clue_coverage(qa, all_retrieved)
         merged = self._merge_facet_rounds(facet_results)
-        trace_json(log, "faceted_round_merge", {
-            "num_rounds": len(merged),
-            "rounds": [
-                {
-                    "round_id": item["round_id"],
-                    "session_id": item["session_id"],
-                    "score": round(float(item["score"]), 6),
-                    "max_score": round(float(item["max_score"]), 6),
-                    "matched_facets": item["matched_facets"],
-                    "facet_scores": {k: round(float(v), 6) for k, v in item["facet_scores"].items()},
-                    "top_anchors": item["top_anchors"][: self._max_candidate_anchors],
-                }
-                for item in merged[: self._max_candidates]
-            ],
-        })
+        ranked_rounds = [str(item["round_id"]) for item in merged[: self._max_candidates]]
+        if len(ranked_rounds) < max(1, self._min_selected_rounds):
+            seen_rounds = set(ranked_rounds)
+            for rid in self._round_order:
+                if rid not in seen_rounds:
+                    ranked_rounds.append(rid)
+                    seen_rounds.add(rid)
+                if len(ranked_rounds) >= self._max_candidates:
+                    break
+            log.warning("QDMO-EVI faceted retrieval used candidate fallback/top-up: candidates=%s", ranked_rounds)
+
+        round_trace = [
+            {
+                "round_id": item["round_id"],
+                "session_id": item["session_id"],
+                "score": round(float(item["score"]), 6),
+                "max_score": round(float(item["max_score"]), 6),
+                "matched_facets": item["matched_facets"],
+                "facet_scores": {key: round(float(value), 6) for key, value in item["facet_scores"].items()},
+                "top_anchors": item["top_anchors"][: self._max_candidate_anchors],
+            }
+            for item in merged[: self._max_candidates]
+        ]
+        trace = {
+            "question_stem": question_stem,
+            "facets": [{"text": facet, "weight": weight} for facet, weight in facets],
+            "ranked_round_ids": ranked_rounds,
+            "rounds": round_trace,
+        }
+        trace_json(log, "faceted_round_merge", {"num_rounds": len(merged), "rounds": round_trace})
         log.info("QDMO-EVI faceted round merge candidates=%d", len(merged))
-        for rank, item in enumerate(merged[: self._max_candidates], start=1):
+        for rank, item in enumerate(round_trace, start=1):
             log.info(
                 "  faceted_round[%02d] round=%s session=%s score=%.4f max=%.4f matched_facets=%s facet_scores=%s",
                 rank,
@@ -1728,20 +1724,68 @@ class EVISystem:
                 item["score"],
                 item["max_score"],
                 item["matched_facets"],
-                {k: round(float(v), 4) for k, v in item["facet_scores"].items()},
+                {key: round(float(value), 4) for key, value in item["facet_scores"].items()},
             )
+        self._log_selected_round_clue_coverage(qa, ranked_rounds, "faceted_candidate_round")
+        return ranked_rounds, trace
 
-        candidate_round_ids = [str(item["round_id"]) for item in merged[: self._max_candidates]]
-        self._log_selected_round_clue_coverage(qa, candidate_round_ids, "faceted_candidate_round")
-        if len(candidate_round_ids) < max(1, self._min_selected_rounds):
-            seen_candidates = set(candidate_round_ids)
-            for rid in self._round_order:
-                if rid not in seen_candidates:
-                    candidate_round_ids.append(rid)
-                    seen_candidates.add(rid)
-                if len(candidate_round_ids) >= self._max_candidates:
-                    break
-            log.warning("QDMO-EVI faceted_topk used candidate fallback/top-up: candidates=%s", candidate_round_ids)
+    def retrieve_faceted_rounds(
+        self,
+        qa: Dict[str, Any],
+        dataset: Optional[Any] = None,
+        limit: int = 0,
+    ) -> Tuple[List[str], Dict[str, Any]]:
+        """Return ranked rounds for the anchor-plus-facet retrieval ablation only.
+
+        This method intentionally does not invoke scope interpretation, evidence
+        organization, history construction, or final QA.
+        """
+        self._ensure()
+        if dataset is not None:
+            self._current_dataset = dataset
+        if self._current_dataset is None:
+            raise RuntimeError("EVI retrieval requires a dataset")
+        if not self._index.anchors:
+            self.process_all_sessions(self._current_dataset)
+
+        question_stem = str(qa.get("question", "")).strip()
+        if not question_stem:
+            return [], {"question_stem": "", "facets": [], "ranked_round_ids": [], "rounds": []}
+        ranked_round_ids, trace = self._retrieve_faceted_round_candidates(question_stem, qa)
+        final_limit = int(limit) if limit > 0 else self._max_candidates
+        selected_round_ids = ranked_round_ids[:final_limit]
+        trace["selected_round_ids"] = selected_round_ids
+        trace["retrieval_only"] = True
+        self._set_last_context_round_ids(selected_round_ids)
+        self._log_selected_round_clue_coverage(qa, selected_round_ids, "faceted_retrieval_only")
+        log.info("QDMO-EVI faceted retrieval-only selected_rounds=%s", selected_round_ids)
+        return selected_round_ids, trace
+    def _answer_with_faceted_topk(
+        self,
+        question: str,
+        question_stem: str,
+        qa: Optional[Dict[str, Any]],
+        question_images: Optional[List[str]],
+    ) -> str:
+        dataset = self._current_dataset
+        if dataset is None:
+            log.warning("QDMO-EVI faceted_topk requires dataset; falling back to question-only answer")
+            images = self._as_image_list(question_images)[: self._max_answer_images]
+            return self._vlm(FINAL_ANSWER_SYSTEM_PROMPT, question, images) if self._vlm is not None else ""
+
+        scope_brief = ""
+        organizer_scope_brief = ""
+        if self._retrieval_only:
+            log.info("QDMO-EVI retrieval-only ablation: scope interpretation and evidence organizer are disabled")
+        else:
+            scope_brief = self._interpret_question_scope(question_stem, question_images)
+            organizer_scope_brief = scope_brief if self._apply_scope_to_organizer else ""
+            log.info(
+                "QDMO-EVI scope organizer_apply=%s scope_brief=%s",
+                self._apply_scope_to_organizer,
+                organizer_scope_brief or "<not passed to organizer>",
+            )
+        candidate_round_ids, _retrieval_trace = self._retrieve_faceted_round_candidates(question_stem, qa)
 
         if self._retrieval_only:
             evidence_items = []

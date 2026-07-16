@@ -323,7 +323,7 @@ class _SparseRetriever(_BaseRetriever):
             qa,
             seed_round_ids,
             selected_round_ids,
-            [row for _, _, row in scored[:5]],
+            [row for _, _, row in scored[: max(5, self.top_k)]],
         )
 
 
@@ -379,7 +379,7 @@ class _DenseTextRetriever(_BaseRetriever):
             qa,
             seed_round_ids,
             selected_round_ids,
-            [row for _, _, row in scored[:5]],
+            [row for _, _, row in scored[: max(5, self.top_k)]],
         )
         debug["text_embedding_model"] = self.text_embedding_model
         debug["caption_text_included"] = self.corpus_meta.get("modality") == "text_only"
@@ -520,7 +520,7 @@ class _DenseMultimodalRetriever(_BaseRetriever):
             qa,
             seed_round_ids,
             selected_round_ids,
-            [row for _, _, row in scored[:5]],
+            [row for _, _, row in scored[: max(5, self.top_k)]],
         )
         debug["text_embedding_model"] = self.text_embedding_model
         debug["multimodal_embedding_model"] = self.mm_model
