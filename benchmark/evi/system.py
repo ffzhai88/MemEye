@@ -181,6 +181,8 @@ class EVISystem:
         self._facet_search_k = int(cfg.get("facet_search_k", 30))
         self._facet_multi_hit_bonus = float(cfg.get("facet_multi_hit_bonus", 0.08))
         self._facet_full_question_weight = float(cfg.get("facet_full_question_weight", 1.0))
+        self._use_retrieval_facets = self._as_bool(cfg.get("evi_use_retrieval_facets"), True)
+        self._use_image_anchors = self._as_bool(cfg.get("evi_use_image_anchors"), True)
         self._retrieval_only = self._as_bool(cfg.get("evi_retrieval_only"), False)
         self._use_evidence_organizer = self._as_bool(cfg.get("evi_use_evidence_organizer"), True)
         self._final_include_evidence_images = self._as_bool(cfg.get("evi_final_include_evidence_images"), True)
@@ -361,6 +363,8 @@ class EVISystem:
             "facet_search_k": self._facet_search_k,
             "facet_multi_hit_bonus": self._facet_multi_hit_bonus,
             "facet_full_question_weight": self._facet_full_question_weight,
+            "evi_use_retrieval_facets": self._use_retrieval_facets,
+            "evi_use_image_anchors": self._use_image_anchors,
             "evi_retrieval_only": self._retrieval_only,
             "evi_use_evidence_organizer": self._use_evidence_organizer,
             "evi_final_include_evidence_images": self._final_include_evidence_images,
@@ -433,36 +437,37 @@ class EVISystem:
                         if caption_anchor is not None:
                             self._add_anchor(caption_anchor)
 
-                images = list(self._round_images.get(rid, []))
-                for img_idx, image_path in enumerate(images):
-                    if not os.path.isfile(image_path):
-                        log.warning("[INDEX] image file not found, skipping: %s", image_path)
-                        continue
-                    raw_anchors = extract_image_anchors(
-                        image_path=image_path,
-                        round_text=round_text,
-                        prior_rounds_text="\n---\n".join(prior_rounds_text),
-                        vlm_callable=self._vlm,
-                        cache_namespace=self._vlm_result_namespace,
-                    )
-                    log.debug("[INDEX] round=%s image=%s extracted_anchors=%d", rid, image_path, len(raw_anchors))
-                    for aidx, raw_anchor in enumerate(raw_anchors):
-                        anchor = self._make_anchor(
-                            session_id=sid,
-                            round_id=rid,
-                            date=date,
+                if self._use_image_anchors:
+                    images = list(self._round_images.get(rid, []))
+                    for img_idx, image_path in enumerate(images):
+                        if not os.path.isfile(image_path):
+                            log.warning("[INDEX] image file not found, skipping: %s", image_path)
+                            continue
+                        raw_anchors = extract_image_anchors(
                             image_path=image_path,
-                            evidence_type=str(raw_anchor.get("evidence_type", "scene")),
-                            text=str(raw_anchor.get("text", "")),
-                            subject=str(raw_anchor.get("subject", "")),
-                            predicate=str(raw_anchor.get("predicate", "")),
-                            object=str(raw_anchor.get("object", "")),
-                            region=str(raw_anchor.get("region", "")),
-                            confidence=float(raw_anchor.get("confidence", 1.0)),
-                            suffix=f"img{img_idx}_{aidx}",
+                            round_text=round_text,
+                            prior_rounds_text="\n---\n".join(prior_rounds_text),
+                            vlm_callable=self._vlm,
+                            cache_namespace=self._vlm_result_namespace,
                         )
-                        if anchor is not None:
-                            self._add_anchor(anchor)
+                        log.debug("[INDEX] round=%s image=%s extracted_anchors=%d", rid, image_path, len(raw_anchors))
+                        for aidx, raw_anchor in enumerate(raw_anchors):
+                            anchor = self._make_anchor(
+                                session_id=sid,
+                                round_id=rid,
+                                date=date,
+                                image_path=image_path,
+                                evidence_type=str(raw_anchor.get("evidence_type", "scene")),
+                                text=str(raw_anchor.get("text", "")),
+                                subject=str(raw_anchor.get("subject", "")),
+                                predicate=str(raw_anchor.get("predicate", "")),
+                                object=str(raw_anchor.get("object", "")),
+                                region=str(raw_anchor.get("region", "")),
+                                confidence=float(raw_anchor.get("confidence", 1.0)),
+                                suffix=f"img{img_idx}_{aidx}",
+                            )
+                            if anchor is not None:
+                                self._add_anchor(anchor)
 
                 prior_rounds_text.append(round_text)
 
@@ -1644,7 +1649,9 @@ class EVISystem:
         qa: Optional[Dict[str, Any]],
     ) -> Tuple[List[str], Dict[str, Any]]:
         """Retrieve and merge anchor hits into a ranked round list without QA-side filtering."""
-        extracted_facets = self._extract_retrieval_facets(question_stem)
+        extracted_facets = self._extract_retrieval_facets(question_stem) if self._use_retrieval_facets else []
+        if not self._use_retrieval_facets:
+            log.info("QDMO-EVI retrieval facets disabled; using the full question as the only query")
         facets: List[Tuple[str, float]] = [(question_stem, self._facet_full_question_weight)]
         seen = {question_stem.lower()}
         for facet in extracted_facets:

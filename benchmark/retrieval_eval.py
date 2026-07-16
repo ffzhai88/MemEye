@@ -148,7 +148,7 @@ def _build_retriever(
     max_k: int,
 ) -> Tuple[str, Any, Dict[str, Any], float]:
     config = copy.deepcopy(method_cfg)
-    method_name = str(config.get("name", config.get("method", ""))).strip().lower()
+    method_name = str(config.get("method", config.get("name", ""))).strip().lower()
     config["top_k"] = max_k
     if int(config.get("neighbor_window", 0) or 0) != 0:
         raise ValueError("Retrieval evaluation requires neighbor_window: 0 so ranks remain well-defined")
