@@ -15,6 +15,7 @@ from ._utils import extract_json
 from .briefs import generate_memory_briefs
 from .candidates import consolidate_candidates
 from .extractor import extract_image_anchors
+from .episode_directory import EpisodeDirectoryIndex, build_episode_directory_entry
 from .episode_retrieval import (
     build_episode_round_path,
     fuse_direct_episode_rounds,
@@ -148,6 +149,7 @@ class EVISystem:
         self._debug_log_path = setup_evi_debug_logging(cfg)
 
         self._index = EvidenceIndex()
+        self._episode_directory = EpisodeDirectoryIndex()
         self._vlm: Optional[VLMCallable] = None
         self._embedder: Optional[Any] = None
         self._answer_routers: Dict[str, Any] = {}
@@ -210,6 +212,12 @@ class EVISystem:
         self._image_round_search_k = int(cfg.get("evi_image_round_search_k", 30))
         self._use_episode_set_retrieval = self._as_bool(
             cfg.get("evi_use_episode_set_retrieval"), False
+        )
+        self._enable_episode_directory_diagnostic = self._as_bool(
+            cfg.get("evi_enable_episode_directory_diagnostic"), False
+        )
+        self._episode_directory_search_k = int(
+            cfg.get("evi_episode_directory_search_k", 0) or 0
         )
         self._episode_search_k = int(cfg.get("evi_episode_search_k", self._facet_search_k))
         self._episode_round_search_k = int(
@@ -376,6 +384,36 @@ class EVISystem:
         self._index.add(anchor)
         self._round_anchors.setdefault(anchor.round_id, []).append(anchor)
 
+    def _build_episode_directory_index(self) -> None:
+        self._episode_directory = EpisodeDirectoryIndex()
+        if not self._enable_episode_directory_diagnostic:
+            return
+        log.info("Building query-independent holistic episode directory ...")
+        for session_id, round_ids in self._session_rounds.items():
+            date = self._round_date.get(round_ids[0], "unknown") if round_ids else "unknown"
+            entry = build_episode_directory_entry(
+                session_id=session_id,
+                date=date,
+                round_ids=round_ids,
+                round_text=self._round_text,
+                anchors_by_round=self._round_anchors,
+                embed=self._embed,
+            )
+            self._episode_directory.add(entry)
+            log.info(
+                "  episode_directory session=%s rounds=%d anchors=%d chars=%d embedded=%s",
+                session_id,
+                len(entry.round_ids),
+                entry.anchor_count,
+                len(entry.text),
+                bool(entry.vector),
+            )
+        log.info(
+            "Episode directory built: entries=%d sessions=%d",
+            len(self._episode_directory),
+            len(self._session_rounds),
+        )
+
     def process_all_sessions(self, dataset: Any) -> None:
         """Build task-agnostic typed evidence anchors for all sessions."""
         self._ensure()
@@ -416,6 +454,8 @@ class EVISystem:
             "evi_image_round_search_k": self._image_round_search_k,
             "evi_image_round_fusion": self._image_round_fusion,
             "evi_use_episode_set_retrieval": self._use_episode_set_retrieval,
+            "evi_enable_episode_directory_diagnostic": self._enable_episode_directory_diagnostic,
+            "evi_episode_directory_search_k": self._episode_directory_search_k,
             "evi_episode_search_k": self._episode_search_k,
             "evi_episode_round_search_k": self._episode_round_search_k,
             "evi_use_evidence_organizer": self._use_evidence_organizer,
@@ -523,6 +563,8 @@ class EVISystem:
 
                 prior_rounds_text.append(round_text)
 
+        self._build_episode_directory_index()
+
         type_counts: Dict[str, int] = {}
         for anchor in self._index.anchors:
             type_counts[anchor.evidence_type] = type_counts.get(anchor.evidence_type, 0) + 1
@@ -535,6 +577,8 @@ class EVISystem:
         trace_json(log, "indexing_done", {
             "num_anchors": len(self._index),
             "num_rounds": len(self._round_order),
+            "episode_directory_enabled": self._enable_episode_directory_diagnostic,
+            "episode_directory_entries": len(self._episode_directory),
             "type_counts": dict(sorted(type_counts.items())),
             "sample_anchors": anchors_summary(self._index.anchors, max_items=self._debug_top_k),
         })
@@ -2008,11 +2052,63 @@ class EVISystem:
             facets.append((facet, 1.0))
             seen.add(key)
 
+        full_question_query_vec = self._embed(question_stem)
+        episode_directory_trace: Dict[str, Any] = {"enabled": False}
+        if self._enable_episode_directory_diagnostic:
+            directory_hits = self._episode_directory.search(
+                full_question_query_vec,
+                self._round_anchors,
+                top_k=self._episode_directory_search_k,
+            )
+            directory_rows = [
+                {
+                    **dict(hit),
+                    "rank": rank,
+                    "score": round(float(hit["score"]), 6),
+                    "witness_score": (
+                        round(float(hit["witness_score"]), 6)
+                        if hit.get("witness_score") is not None
+                        else None
+                    ),
+                }
+                for rank, hit in enumerate(directory_hits, start=1)
+            ]
+            episode_directory_trace = {
+                "enabled": True,
+                "version": "holistic_episode_directory_v1",
+                "query_policy": "full_question_only",
+                "document_policy": "ordered_raw_dialogue_and_deduplicated_existing_anchors",
+                "search_k": self._episode_directory_search_k,
+                "num_expected_sessions": len(self._session_rounds),
+                "num_indexed_sessions": len(self._episode_directory),
+                "ranked_sessions": directory_rows,
+            }
+            log.info(
+                "QDMO-EVI holistic episode directory query=%s ranked_sessions=%s",
+                question_stem,
+                [item["session_id"] for item in directory_rows],
+            )
+            for item in directory_rows[: self._debug_top_k]:
+                log.info(
+                    "  episode_directory[%02d] session=%s score=%.4f witness_round=%s witness_score=%s witness=%s",
+                    int(item["rank"]),
+                    item["session_id"],
+                    float(item["score"]),
+                    item["witness_round_id"],
+                    item["witness_score"],
+                    str(item["witness_text"]).replace("\n", " ")[:180],
+                )
+            trace_json(log, "episode_directory_retrieval", episode_directory_trace)
+
         facet_results: List[Tuple[str, List[Dict[str, Any]]]] = []
         episode_facet_results: List[Tuple[str, List[Dict[str, Any]]]] = []
         all_retrieved: List[EvidenceAnchor] = []
         for idx, (facet, weight) in enumerate(facets, start=1):
-            query_vec = self._embed(facet)
+            query_vec = (
+                full_question_query_vec
+                if facet == question_stem
+                else self._embed(facet)
+            )
             round_hits = self._search_rounds_for_text(
                 facet, self._facet_search_k, query_vec=query_vec
             )
@@ -2283,6 +2379,7 @@ class EVISystem:
             "anchor_ranked_round_ids": anchor_ranked_rounds,
             "pre_image_ranked_round_ids": pre_image_ranked_rounds,
             "episode_set_retrieval": episode_trace,
+            "episode_directory": episode_directory_trace,
             "image_fusion": image_fusion_trace,
             "rounds": round_trace,
         }

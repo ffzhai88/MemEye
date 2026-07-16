@@ -174,6 +174,13 @@ session MAP/nDCG/Recall@M, reranking by saved episode score fields, oracle-cardi
 Top-M, whole-session oracle expansion, parameter-free balanced oracle expansion,
 and the clue-round capacity limit at the requested K.
 
+Run the holistic episode-directory diagnostic with
+`config/methods/evi_retrieval_episode_directory_diagnostic.yaml`. It builds one
+cached, query-independent embedding per natural session from ordered raw dialogue
+and deduplicated existing anchors. The full question ranks these entries, and the
+ranking is written only to `retrieval_trace.episode_directory`; it does not alter
+round retrieval, image reranking, or final QA.
+
 Retrieval-only runs do not belong under individual benchmark task directories. A single-task run writes to:
 
 ```text
