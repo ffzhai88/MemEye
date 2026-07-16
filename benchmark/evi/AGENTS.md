@@ -142,7 +142,10 @@ stronger session directory. It keeps only annotated clue sessions, preserves the
 saved relative order, and replays the existing member expansion, reciprocal-rank
 fusion, and image reranking. Its result is an oracle-assisted headroom estimate,
 not a strict mathematical upper bound. The report separates absent sessions,
-episode-path budget misses, intra-session misses, and fusion displacement.
+episode-path budget misses, intra-session misses, and fusion displacement. It also
+compares current Top-M selection, whole-session oracle expansion, and round-robin
+balanced oracle expansion under the same total round budget. Treat these as
+counterfactual diagnostics, not deployable retrieval policies.
 ## Research Notes
 
 The paper-facing story should distinguish:

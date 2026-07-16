@@ -169,7 +169,10 @@ python analyze_episode_oracle.py \
 This is an offline diagnostic and does not call a model. It writes
 `episode_oracle_metrics.json`, `episode_oracle_questions.jsonl`, and
 `episode_oracle_report.md` into the suite. Annotated clue sessions are used only
-as an evaluation oracle and never enter the retrieval method.
+as an evaluation oracle and never enter the retrieval method. The report includes
+session MAP/nDCG/Recall@M, reranking by saved episode score fields, oracle-cardinality
+Top-M, whole-session oracle expansion, parameter-free balanced oracle expansion,
+and the clue-round capacity limit at the requested K.
 
 Retrieval-only runs do not belong under individual benchmark task directories. A single-task run writes to:
 

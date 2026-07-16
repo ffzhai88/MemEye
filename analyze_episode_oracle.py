@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 from collections import Counter
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
@@ -110,6 +111,86 @@ def _build_episode_path(
             if len(rows) >= limit:
                 return [str(item["round_id"]) for item in rows], rows
     return [str(item["round_id"]) for item in rows], rows
+
+
+def _build_balanced_episode_path(
+    episodes: List[Dict[str, Any]], direct_round_ids: List[str], limit: int
+) -> Tuple[List[str], List[Dict[str, Any]]]:
+    """Allocate one round per episode per pass under the unchanged total budget."""
+    direct_ranks = {
+        round_id: rank for rank, round_id in enumerate(direct_round_ids, start=1)
+    }
+    ordered_members: List[Tuple[str, List[str]]] = []
+    for episode in episodes:
+        session_id = str(episode["session_id"])
+        members = [str(value) for value in episode.get("member_round_ids", []) or []]
+        member_order = {round_id: index for index, round_id in enumerate(members)}
+        members.sort(
+            key=lambda round_id: (
+                direct_ranks.get(round_id, len(direct_ranks) + len(members) + 1),
+                member_order[round_id],
+            )
+        )
+        ordered_members.append((session_id, members))
+
+    rows: List[Dict[str, Any]] = []
+    local_index = 0
+    while len(rows) < limit:
+        added = False
+        for episode_rank, (session_id, members) in enumerate(ordered_members, start=1):
+            if local_index >= len(members):
+                continue
+            round_id = members[local_index]
+            rows.append(
+                {
+                    "round_id": round_id,
+                    "session_id": session_id,
+                    "episode_rank": episode_rank,
+                    "local_rank": local_index + 1,
+                    "direct_rank": direct_ranks.get(round_id),
+                }
+            )
+            added = True
+            if len(rows) >= limit:
+                break
+        if not added:
+            break
+        local_index += 1
+    return [str(item["round_id"]) for item in rows], rows
+
+
+def _rank_episode_sessions(
+    episodes: List[Dict[str, Any]], strategy: str
+) -> List[Dict[str, Any]]:
+    if strategy == "current":
+        return list(episodes)
+    fields = {
+        "max_score": "max_score",
+        "consensus_score": "consensus_score",
+        "matched_facets": "matched_facets",
+    }
+    if strategy not in fields:
+        raise ValueError(f"Unknown session reranking strategy: {strategy}")
+    field = fields[strategy]
+    indexed = list(enumerate(episodes))
+    indexed.sort(
+        key=lambda pair: (-float(pair[1].get(field, 0.0) or 0.0), pair[0])
+    )
+    return [episode for _, episode in indexed]
+
+
+def _replay_episode_selection(
+    episodes: List[Dict[str, Any]],
+    direct_ids: List[str],
+    image_trace: Dict[str, Any],
+    episode_limit: int,
+    balanced: bool = False,
+) -> Tuple[List[str], List[str], List[Dict[str, Any]]]:
+    build_path = _build_balanced_episode_path if balanced else _build_episode_path
+    episode_ids, episode_rows = build_path(episodes, direct_ids, episode_limit)
+    pool_size = max(episode_limit, len(direct_ids), len(_image_ids(image_trace)), 1)
+    pre_image_ids = _fuse_direct_episode(direct_ids, episode_ids, pool_size)
+    return _fuse_image(pre_image_ids, image_trace), episode_ids, episode_rows
 
 
 def _fuse_direct_episode(
@@ -237,7 +318,11 @@ def _classify_misses(
     return output
 
 
-def _session_metrics(rows: List[Dict[str, Any]], ks: Iterable[int]) -> Dict[str, Any]:
+def _session_metrics(
+    rows: List[Dict[str, Any]],
+    ks: Iterable[int],
+    ranked_field: str = "current_ranked_session_ids",
+) -> Dict[str, Any]:
     output: Dict[str, Any] = {}
     for k in ks:
         clue_total = hit_total = 0
@@ -247,7 +332,7 @@ def _session_metrics(rows: List[Dict[str, Any]], ks: Iterable[int]) -> Dict[str,
         reciprocal_ranks: List[float] = []
         for row in rows:
             targets = list(row["clue_session_ids"])
-            ranked = list(row["current_ranked_session_ids"])
+            ranked = list(row[ranked_field])
             selected = set(ranked[:k])
             found = sum(1 for value in targets if value in selected)
             clue_total += len(targets)
@@ -271,6 +356,108 @@ def _session_metrics(rows: List[Dict[str, Any]], ks: Iterable[int]) -> Dict[str,
             "num_target_sessions": clue_total,
         }
     return output
+
+
+def _session_ranking_quality(
+    rows: List[Dict[str, Any]], ranked_field: str
+) -> Dict[str, Any]:
+    target_total = selected_hits = 0
+    recall_at_m: List[float] = []
+    precision_at_m: List[float] = []
+    f1_at_m: List[float] = []
+    average_precisions: List[float] = []
+    ndcg_values: List[float] = []
+    first_ranks: List[int] = []
+    last_ranks: List[int] = []
+    noise_before_last: List[int] = []
+    complete_rankings = 0
+    for row in rows:
+        targets = set(row["clue_session_ids"])
+        ranked = list(row[ranked_field])
+        m = len(targets)
+        selected = ranked[:m]
+        found = sum(1 for value in selected if value in targets)
+        recall = found / m if m else 0.0
+        precision = found / len(selected) if selected else 0.0
+        f1 = 2.0 * recall * precision / (recall + precision) if recall + precision else 0.0
+        target_total += m
+        selected_hits += found
+        recall_at_m.append(recall)
+        precision_at_m.append(precision)
+        f1_at_m.append(f1)
+
+        relevant_seen = 0
+        precision_sum = 0.0
+        dcg = 0.0
+        target_ranks: List[int] = []
+        for rank, session_id in enumerate(ranked, start=1):
+            if session_id not in targets:
+                continue
+            relevant_seen += 1
+            target_ranks.append(rank)
+            precision_sum += relevant_seen / rank
+            dcg += 1.0 / math.log2(rank + 1)
+        average_precisions.append(precision_sum / m if m else 0.0)
+        ideal_dcg = sum(1.0 / math.log2(rank + 1) for rank in range(1, m + 1))
+        ndcg_values.append(dcg / ideal_dcg if ideal_dcg else 0.0)
+        if target_ranks:
+            first_ranks.append(min(target_ranks))
+        if len(target_ranks) == m and m:
+            complete_rankings += 1
+            last_rank = max(target_ranks)
+            last_ranks.append(last_rank)
+            noise_before_last.append(last_rank - m)
+
+    count = len(rows)
+    return {
+        "session_recall_at_oracle_cardinality_micro": (
+            selected_hits / target_total if target_total else 0.0
+        ),
+        "session_recall_at_oracle_cardinality_macro": (
+            sum(recall_at_m) / count if count else 0.0
+        ),
+        "session_precision_at_oracle_cardinality_macro": (
+            sum(precision_at_m) / count if count else 0.0
+        ),
+        "session_f1_at_oracle_cardinality_macro": (
+            sum(f1_at_m) / count if count else 0.0
+        ),
+        "session_map": sum(average_precisions) / count if count else 0.0,
+        "session_ndcg": sum(ndcg_values) / count if count else 0.0,
+        "mean_first_target_rank": sum(first_ranks) / len(first_ranks) if first_ranks else None,
+        "mean_last_target_rank": sum(last_ranks) / len(last_ranks) if last_ranks else None,
+        "mean_irrelevant_sessions_before_last_target": (
+            sum(noise_before_last) / len(noise_before_last) if noise_before_last else None
+        ),
+        "full_target_session_ranking_coverage_rate": (
+            complete_rankings / count if count else 0.0
+        ),
+        "num_questions": count,
+        "num_target_sessions": target_total,
+    }
+
+
+def _round_capacity_metrics(rows: List[Dict[str, Any]], k: int) -> Dict[str, Any]:
+    clue_total = sum(len(row["clue_round_ids"]) for row in rows)
+    capacity_hits = sum(min(k, len(row["clue_round_ids"])) for row in rows)
+    macro_limits = [
+        min(k, len(row["clue_round_ids"])) / len(row["clue_round_ids"])
+        for row in rows
+        if row["clue_round_ids"]
+    ]
+    return {
+        "max_clue_round_recall_micro_at_k": capacity_hits / clue_total if clue_total else 0.0,
+        "max_clue_round_recall_macro_at_k": (
+            sum(macro_limits) / len(macro_limits) if macro_limits else 0.0
+        ),
+        "full_coverage_feasible_rate": (
+            sum(1 for row in rows if len(row["clue_round_ids"]) <= k) / len(rows)
+            if rows else 0.0
+        ),
+        "num_questions_over_capacity": sum(
+            1 for row in rows if len(row["clue_round_ids"]) > k
+        ),
+    }
 
 
 def _aggregate_failure_counts(rows: List[Dict[str, Any]], field: str) -> Dict[str, int]:
@@ -322,13 +509,21 @@ def _oracle_row(task_name: str, row: Dict[str, Any], k: int) -> Optional[Dict[st
     episode_limit = int(episode_trace.get("episode_round_search_k", 0) or 0)
     if episode_limit <= 0:
         episode_limit = max(len(episode_trace.get("episode_ranked_round_ids", []) or []), 1)
-    oracle_episode_ids, oracle_episode_rows = _build_episode_path(
-        oracle_sessions, direct_ids, episode_limit
-    )
     image_trace = trace.get("image_fusion", {}) or {}
-    pool_size = max(episode_limit, len(direct_ids), len(_image_ids(image_trace)), 1)
-    oracle_pre_image_ids = _fuse_direct_episode(direct_ids, oracle_episode_ids, pool_size)
-    oracle_final_ids = _fuse_image(oracle_pre_image_ids, image_trace)
+    oracle_final_ids, oracle_episode_ids, oracle_episode_rows = _replay_episode_selection(
+        oracle_sessions, direct_ids, image_trace, episode_limit
+    )
+    oracle_balanced_final_ids, oracle_balanced_episode_ids, oracle_balanced_rows = (
+        _replay_episode_selection(
+            oracle_sessions, direct_ids, image_trace, episode_limit, balanced=True
+        )
+    )
+    current_top_m_sessions = episodes[: len(clue_sessions)]
+    current_top_m_final_ids, current_top_m_episode_ids, current_top_m_rows = (
+        _replay_episode_selection(
+            current_top_m_sessions, direct_ids, image_trace, episode_limit
+        )
+    )
 
     current_episode_ids = [
         str(value) for value in episode_trace.get("episode_ranked_round_ids", []) or []
@@ -350,6 +545,12 @@ def _oracle_row(task_name: str, row: Dict[str, Any], k: int) -> Optional[Dict[st
 
     current_stats = _question_stats(current_final_ids, clues, k)
     oracle_stats = _question_stats(oracle_final_ids, clues, k)
+    oracle_balanced_stats = _question_stats(oracle_balanced_final_ids, clues, k)
+    current_top_m_stats = _question_stats(current_top_m_final_ids, clues, k)
+    reranked_sessions = {
+        strategy: [str(item["session_id"]) for item in _rank_episode_sessions(episodes, strategy)]
+        for strategy in ("max_score", "consensus_score", "matched_facets")
+    }
     return {
         "task_name": task_name,
         "idx": row.get("idx"),
@@ -360,14 +561,43 @@ def _oracle_row(task_name: str, row: Dict[str, Any], k: int) -> Optional[Dict[st
         "clue_session_ids": clue_sessions,
         "oracle_available": True,
         "current_ranked_session_ids": ranked_sessions,
+        "max_score_ranked_session_ids": reranked_sessions["max_score"],
+        "consensus_score_ranked_session_ids": reranked_sessions["consensus_score"],
+        "matched_facets_ranked_session_ids": reranked_sessions["matched_facets"],
         "current_expanded_session_ids": current_expanded_sessions,
+        "current_top_m_session_ids": [
+            str(item["session_id"]) for item in current_top_m_sessions
+        ],
         "oracle_ranked_session_ids": [str(item["session_id"]) for item in oracle_sessions],
         "oracle_expanded_session_ids": oracle_expanded_sessions,
         "current_ranked_round_ids": current_final_ids,
+        "current_top_m_ranked_round_ids": current_top_m_final_ids,
         "oracle_ranked_round_ids": oracle_final_ids,
+        "oracle_balanced_ranked_round_ids": oracle_balanced_final_ids,
         "current": current_stats,
+        "current_top_m": current_top_m_stats,
         "oracle": oracle_stats,
+        "oracle_balanced": oracle_balanced_stats,
         "recall_delta": oracle_stats["recall"] - current_stats["recall"],
+        "counterfactual_recall_deltas": {
+            "current_top_m": current_top_m_stats["recall"] - current_stats["recall"],
+            "oracle_whole": oracle_stats["recall"] - current_stats["recall"],
+            "oracle_balanced": oracle_balanced_stats["recall"] - current_stats["recall"],
+        },
+        "counterfactual_episode_paths": {
+            "current_top_m": current_top_m_episode_ids,
+            "oracle_whole": oracle_episode_ids,
+            "oracle_balanced": oracle_balanced_episode_ids,
+        },
+        "counterfactual_expanded_sessions": {
+            "current_top_m": _ordered_unique(
+                str(item.get("session_id", "")) for item in current_top_m_rows
+            ),
+            "oracle_whole": oracle_expanded_sessions,
+            "oracle_balanced": _ordered_unique(
+                str(item.get("session_id", "")) for item in oracle_balanced_rows
+            ),
+        },
         "current_failure_types": _classify_misses(
             clues, current_final_ids, direct_ids, current_episode_ids,
             ranked_sessions, current_expanded_sessions, round_sessions, k,
@@ -388,12 +618,35 @@ def _dataset_result(
     task_name: str, rows: List[Dict[str, Any]], k: int, session_ks: List[int]
 ) -> Dict[str, Any]:
     eligible = [row for row in rows if row.get("oracle_available")]
-    current = _metric_block(eligible, "current_ranked_round_ids", k)
-    oracle = _metric_block(eligible, "oracle_ranked_round_ids", k)
+    variant_fields = {
+        "current": "current_ranked_round_ids",
+        "current_top_m": "current_top_m_ranked_round_ids",
+        "oracle": "oracle_ranked_round_ids",
+        "oracle_balanced": "oracle_balanced_ranked_round_ids",
+    }
+    variants = {
+        name: _metric_block(eligible, field, k)
+        for name, field in variant_fields.items()
+    }
+    current = variants["current"]
+    oracle = variants["oracle"]
     metric_keys = (
         "clue_round_recall_micro", "clue_round_recall_macro", "hit_rate",
         "full_clue_coverage_rate", "mrr",
     )
+    session_fields = {
+        "current": "current_ranked_session_ids",
+        "max_score": "max_score_ranked_session_ids",
+        "consensus_score": "consensus_score_ranked_session_ids",
+        "matched_facets": "matched_facets_ranked_session_ids",
+    }
+    session_diagnostics = {
+        name: {
+            "by_k": _session_metrics(eligible, session_ks, field),
+            "ranking_quality": _session_ranking_quality(eligible, field),
+        }
+        for name, field in session_fields.items()
+    }
     return {
         "task_name": task_name,
         "num_questions": len(rows),
@@ -404,12 +657,38 @@ def _dataset_result(
         ),
         "current": current,
         "oracle": oracle,
+        "retrieval_counterfactuals": variants,
+        "counterfactual_deltas": {
+            name: {
+                key: float(metrics[key]) - float(current[key])
+                for key in metric_keys
+            }
+            for name, metrics in variants.items()
+            if name != "current"
+        },
         "delta": {key: float(oracle[key]) - float(current[key]) for key in metric_keys},
         "current_session_routing": _session_metrics(eligible, session_ks),
+        "session_ranking_diagnostics": session_diagnostics,
+        "round_capacity_at_k": _round_capacity_metrics(eligible, k),
         "current_failure_counts": _aggregate_failure_counts(eligible, "current_failure_types"),
         "oracle_failure_counts": _aggregate_failure_counts(eligible, "oracle_failure_types"),
         "num_question_gains": sum(1 for row in eligible if row["recall_delta"] > 0.0),
         "num_question_losses": sum(1 for row in eligible if row["recall_delta"] < 0.0),
+        "counterfactual_question_changes": {
+            name: {
+                "gains": sum(
+                    1
+                    for row in eligible
+                    if row[name]["recall"] > row["current"]["recall"]
+                ),
+                "losses": sum(
+                    1
+                    for row in eligible
+                    if row[name]["recall"] < row["current"]["recall"]
+                ),
+            }
+            for name in ("current_top_m", "oracle", "oracle_balanced")
+        },
     }
 
 
@@ -420,11 +699,14 @@ def _macro_dataset_metrics(datasets: List[Dict[str, Any]]) -> Dict[str, Any]:
     )
     return {
         side: {
-            key: sum(float(item[side][key]) for item in datasets) / len(datasets)
+            key: sum(
+                float(item["retrieval_counterfactuals"][side][key])
+                for item in datasets
+            ) / len(datasets)
             if datasets else 0.0
             for key in keys
         }
-        for side in ("current", "oracle")
+        for side in ("current", "current_top_m", "oracle", "oracle_balanced")
     }
 
 
@@ -453,6 +735,20 @@ def _write_report(path: Path, payload: Dict[str, Any]) -> None:
             f"{fail.get('fusion_displacement', 0)} |"
         )
     lines.extend([
+        "", "## Retrieval Counterfactuals", "",
+        "| Dataset | Current | Current Top-M | Oracle whole | Oracle balanced | Capacity max |",
+        "| --- | ---: | ---: | ---: | ---: | ---: |",
+    ])
+    for item in payload["datasets"]:
+        variants = item["retrieval_counterfactuals"]
+        lines.append(
+            f"| {item['task_name']} | {variants['current']['clue_round_recall_micro']:.4f} | "
+            f"{variants['current_top_m']['clue_round_recall_micro']:.4f} | "
+            f"{variants['oracle']['clue_round_recall_micro']:.4f} | "
+            f"{variants['oracle_balanced']['clue_round_recall_micro']:.4f} | "
+            f"{item['round_capacity_at_k']['max_clue_round_recall_micro_at_k']:.4f} |"
+        )
+    lines.extend([
         "", "## Current Session Routing", "",
         "| Dataset | Hit@1 | Full@1 | Hit@3 | Full@3 | Question gains | Question losses |",
         "| --- | ---: | ---: | ---: | ---: | ---: | ---: |",
@@ -467,16 +763,56 @@ def _write_report(path: Path, payload: Dict[str, Any]) -> None:
             f"{at3['target_session_full_coverage_rate']:.4f} | "
             f"{item['num_question_gains']} | {item['num_question_losses']} |"
         )
+    lines.extend([
+        "", "## Session Score Reranking", "",
+        "Recall@M uses the annotated number of target sessions only as an evaluation cutoff.",
+        "", "| Dataset | Current R@M | Max-score R@M | Consensus R@M | Matched-facets R@M | Current MAP | Best MAP |",
+        "| --- | ---: | ---: | ---: | ---: | ---: | ---: |",
+    ])
+    for item in payload["datasets"]:
+        diagnostics = item["session_ranking_diagnostics"]
+        qualities = {
+            name: value["ranking_quality"] for name, value in diagnostics.items()
+        }
+        best_map = max(value["session_map"] for value in qualities.values())
+        lines.append(
+            f"| {item['task_name']} | "
+            f"{qualities['current']['session_recall_at_oracle_cardinality_micro']:.4f} | "
+            f"{qualities['max_score']['session_recall_at_oracle_cardinality_micro']:.4f} | "
+            f"{qualities['consensus_score']['session_recall_at_oracle_cardinality_micro']:.4f} | "
+            f"{qualities['matched_facets']['session_recall_at_oracle_cardinality_micro']:.4f} | "
+            f"{qualities['current']['session_map']:.4f} | {best_map:.4f} |"
+        )
     pooled = payload["pooled"]
+    pooled_variants = pooled["retrieval_counterfactuals"]
+    pooled_session = pooled["session_ranking_diagnostics"]
+    best_session_strategy, best_session_values = max(
+        pooled_session.items(),
+        key=lambda item: item[1]["ranking_quality"]["session_map"],
+    )
     lines.extend([
         "", "## Pooled Result", "",
         f"- Current clue-round Recall@{k}: {pooled['current']['clue_round_recall_micro']:.4f}",
+        f"- Current Top-M Recall@{k}: {pooled_variants['current_top_m']['clue_round_recall_micro']:.4f}",
         f"- Oracle clue-round Recall@{k}: {pooled['oracle']['clue_round_recall_micro']:.4f}",
+        f"- Oracle balanced Recall@{k}: {pooled_variants['oracle_balanced']['clue_round_recall_micro']:.4f}",
         f"- Delta: {pooled['delta']['clue_round_recall_micro']:+.4f}",
         f"- Current full coverage: {pooled['current']['full_clue_coverage_rate']:.4f}",
         f"- Oracle full coverage: {pooled['oracle']['full_clue_coverage_rate']:.4f}",
         f"- Replay mismatches: {payload['replay_mismatch_count']}",
+        f"- Capacity-limited maximum Recall@{k}: {pooled['round_capacity_at_k']['max_clue_round_recall_micro_at_k']:.4f}",
+        f"- Questions with more than {k} clues: {pooled['round_capacity_at_k']['num_questions_over_capacity']}",
+        f"- Current session Recall@M: {pooled_session['current']['ranking_quality']['session_recall_at_oracle_cardinality_micro']:.4f}",
+        f"- Best existing-field session MAP: {max(value['ranking_quality']['session_map'] for value in pooled_session.values()):.4f}",
+        "", "## Observed Findings", "",
+        f"- Oracle cardinality alone changes Recall@{k} by {pooled['counterfactual_deltas']['current_top_m']['clue_round_recall_micro']:+.4f}; stopping at the correct number of sessions does not repair the current ordering.",
+        f"- Oracle target-session filtering changes Recall@{k} by {pooled['counterfactual_deltas']['oracle']['clue_round_recall_micro']:+.4f}; suppressing irrelevant episodes has substantial headroom.",
+        f"- Balanced oracle expansion changes Recall@{k} by {pooled['counterfactual_deltas']['oracle_balanced']['clue_round_recall_micro']:+.4f}; whole-session expansion wastes part of the candidate budget.",
+        f"- The best saved-field reranker is `{best_session_strategy}` with MAP {best_session_values['ranking_quality']['session_map']:.4f}, versus {pooled_session['current']['ranking_quality']['session_map']:.4f} for the current ranking.",
         "", "## Interpretation", "",
+        "- Current Top-M isolates oracle stopping cardinality while retaining the current session order.",
+        "- Oracle whole keeps only target sessions but expands each session completely before the next.",
+        "- Oracle balanced uses the same total path budget and round scores, but allocates rounds across target sessions round-robin.",
         "- Session absent: the clue session was absent from the saved episode ranking.",
         "- Path budget: the clue session was ranked, but earlier episodes exhausted the expansion budget.",
         "- Intra-session miss: the session was expanded, but the clue round fell outside the path budget.",
@@ -509,8 +845,18 @@ def analyze_suite(suite_dir: Path, k: int, session_ks: List[int]) -> Dict[str, A
         datasets.append(_dataset_result(task_name, analyzed, k, session_ks))
 
     eligible = [row for row in all_rows if row.get("oracle_available")]
-    pooled_current = _metric_block(eligible, "current_ranked_round_ids", k)
-    pooled_oracle = _metric_block(eligible, "oracle_ranked_round_ids", k)
+    pooled_variant_fields = {
+        "current": "current_ranked_round_ids",
+        "current_top_m": "current_top_m_ranked_round_ids",
+        "oracle": "oracle_ranked_round_ids",
+        "oracle_balanced": "oracle_balanced_ranked_round_ids",
+    }
+    pooled_variants = {
+        name: _metric_block(eligible, field, k)
+        for name, field in pooled_variant_fields.items()
+    }
+    pooled_current = pooled_variants["current"]
+    pooled_oracle = pooled_variants["oracle"]
     metric_keys = (
         "clue_round_recall_micro", "clue_round_recall_macro", "hit_rate",
         "full_clue_coverage_rate", "mrr",
@@ -531,11 +877,33 @@ def analyze_suite(suite_dir: Path, k: int, session_ks: List[int]) -> Dict[str, A
         "pooled": {
             "current": pooled_current,
             "oracle": pooled_oracle,
+            "retrieval_counterfactuals": pooled_variants,
+            "counterfactual_deltas": {
+                name: {
+                    key: float(metrics[key]) - float(pooled_current[key])
+                    for key in metric_keys
+                }
+                for name, metrics in pooled_variants.items()
+                if name != "current"
+            },
             "delta": {
                 key: float(pooled_oracle[key]) - float(pooled_current[key])
                 for key in metric_keys
             },
             "current_session_routing": _session_metrics(eligible, session_ks),
+            "session_ranking_diagnostics": {
+                name: {
+                    "by_k": _session_metrics(eligible, session_ks, field),
+                    "ranking_quality": _session_ranking_quality(eligible, field),
+                }
+                for name, field in {
+                    "current": "current_ranked_session_ids",
+                    "max_score": "max_score_ranked_session_ids",
+                    "consensus_score": "consensus_score_ranked_session_ids",
+                    "matched_facets": "matched_facets_ranked_session_ids",
+                }.items()
+            },
+            "round_capacity_at_k": _round_capacity_metrics(eligible, k),
             "current_failure_counts": _aggregate_failure_counts(eligible, "current_failure_types"),
             "oracle_failure_counts": _aggregate_failure_counts(eligible, "oracle_failure_types"),
         },
