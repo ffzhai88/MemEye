@@ -535,6 +535,8 @@ def _available_session_ranking_fields(
     }
     if rows and all(row.get("episode_directory_complete") for row in rows):
         fields["holistic_directory"] = "directory_ranked_session_ids"
+    if rows and all(row.get("episode_directory_v2_complete") for row in rows):
+        fields["round_packet_directory"] = "packet_directory_ranked_session_ids"
     return fields
 
 
@@ -597,6 +599,28 @@ def _oracle_row(task_name: str, row: Dict[str, Any], k: int) -> Optional[Dict[st
         and directory_expected > 0
         and directory_indexed == directory_expected
         and len(set(directory_ranked_sessions)) == directory_expected
+    )
+    packet_directory_trace = trace.get("episode_directory_v2", {}) or {}
+    packet_directory_enabled = bool(packet_directory_trace.get("enabled"))
+    packet_directory_rows = list(
+        packet_directory_trace.get("ranked_sessions", []) or []
+    )
+    packet_directory_ranked_sessions = [
+        str(item.get("session_id", ""))
+        for item in packet_directory_rows
+        if str(item.get("session_id", ""))
+    ]
+    packet_directory_expected = int(
+        packet_directory_trace.get("num_expected_sessions", 0) or 0
+    )
+    packet_directory_indexed = int(
+        packet_directory_trace.get("num_indexed_sessions", 0) or 0
+    )
+    packet_directory_complete = (
+        packet_directory_enabled
+        and packet_directory_expected > 0
+        and packet_directory_indexed == packet_directory_expected
+        and len(set(packet_directory_ranked_sessions)) == packet_directory_expected
     )
     target_set = set(clue_sessions)
     oracle_sessions = [episodes_by_session[value] for value in ranked_sessions if value in target_set]
@@ -661,6 +685,15 @@ def _oracle_row(task_name: str, row: Dict[str, Any], k: int) -> Optional[Dict[st
         "episode_directory_indexed_sessions": directory_indexed,
         "directory_ranked_session_ids": directory_ranked_sessions,
         "episode_directory_rows": directory_rows,
+        "episode_directory_v2_enabled": packet_directory_enabled,
+        "episode_directory_v2_complete": packet_directory_complete,
+        "episode_directory_v2_expected_sessions": packet_directory_expected,
+        "episode_directory_v2_indexed_sessions": packet_directory_indexed,
+        "episode_directory_v2_indexed_packets": int(
+            packet_directory_trace.get("num_indexed_packets", 0) or 0
+        ),
+        "packet_directory_ranked_session_ids": packet_directory_ranked_sessions,
+        "episode_directory_v2_rows": packet_directory_rows,
         "max_score_ranked_session_ids": reranked_sessions["max_score"],
         "consensus_score_ranked_session_ids": reranked_sessions["consensus_score"],
         "matched_facets_ranked_session_ids": reranked_sessions["matched_facets"],
@@ -742,15 +775,13 @@ def _dataset_result(
         }
         for name, field in session_fields.items()
     }
-    directory_bootstrap = (
-        _paired_session_bootstrap(
-            eligible,
-            "directory_ranked_session_ids",
-            "current_ranked_session_ids",
+    directory_bootstraps = {
+        name: _paired_session_bootstrap(
+            eligible, field, "current_ranked_session_ids"
         )
-        if "holistic_directory" in session_fields
-        else None
-    )
+        for name, field in session_fields.items()
+        if name in {"holistic_directory", "round_packet_directory"}
+    }
     return {
         "task_name": task_name,
         "num_questions": len(rows),
@@ -761,6 +792,12 @@ def _dataset_result(
             for row in eligible
             if row.get("episode_directory_enabled")
             and not row.get("episode_directory_complete")
+        ),
+        "num_directory_v2_incomplete": sum(
+            1
+            for row in eligible
+            if row.get("episode_directory_v2_enabled")
+            and not row.get("episode_directory_v2_complete")
         ),
         "replay_mismatch_count": sum(
             1 for row in eligible if not row["replay_validation"]["matches_saved_ranking"]
@@ -779,7 +816,10 @@ def _dataset_result(
         "delta": {key: float(oracle[key]) - float(current[key]) for key in metric_keys},
         "current_session_routing": _session_metrics(eligible, session_ks),
         "session_ranking_diagnostics": session_diagnostics,
-        "directory_vs_current_bootstrap": directory_bootstrap,
+        "directory_vs_current_bootstrap": directory_bootstraps.get(
+            "holistic_directory"
+        ),
+        "directory_bootstraps_vs_current": directory_bootstraps,
         "round_capacity_at_k": _round_capacity_metrics(eligible, k),
         "current_failure_counts": _aggregate_failure_counts(eligible, "current_failure_types"),
         "oracle_failure_counts": _aggregate_failure_counts(eligible, "oracle_failure_types"),
@@ -877,8 +917,8 @@ def _write_report(path: Path, payload: Dict[str, Any]) -> None:
     lines.extend([
         "", "## Session Score Reranking", "",
         "Recall@M uses the annotated number of target sessions only as an evaluation cutoff.",
-        "", "| Dataset | Current R@M | Max-score R@M | Consensus R@M | Matched-facets R@M | Directory R@M | Current MAP | Directory MAP | Best MAP |",
-        "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+        "", "| Dataset | Current R@M | Max-score R@M | Consensus R@M | Matched-facets R@M | Global-dir R@M | Packet-dir R@M | Current MAP | Global-dir MAP | Packet-dir MAP | Best MAP |",
+        "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
     ])
     for item in payload["datasets"]:
         diagnostics = item["session_ranking_diagnostics"]
@@ -892,6 +932,17 @@ def _write_report(path: Path, payload: Dict[str, Any]) -> None:
             else "-"
         )
         directory_map = f"{directory['session_map']:.4f}" if directory is not None else "-"
+        packet_directory = qualities.get("round_packet_directory")
+        packet_directory_recall = (
+            f"{packet_directory['session_recall_at_oracle_cardinality_micro']:.4f}"
+            if packet_directory is not None
+            else "-"
+        )
+        packet_directory_map = (
+            f"{packet_directory['session_map']:.4f}"
+            if packet_directory is not None
+            else "-"
+        )
         best_map = max(value["session_map"] for value in qualities.values())
         lines.append(
             f"| {item['task_name']} | "
@@ -899,8 +950,9 @@ def _write_report(path: Path, payload: Dict[str, Any]) -> None:
             f"{qualities['max_score']['session_recall_at_oracle_cardinality_micro']:.4f} | "
             f"{qualities['consensus_score']['session_recall_at_oracle_cardinality_micro']:.4f} | "
             f"{qualities['matched_facets']['session_recall_at_oracle_cardinality_micro']:.4f} | "
-            f"{directory_recall} | {qualities['current']['session_map']:.4f} | "
-            f"{directory_map} | {best_map:.4f} |"
+            f"{directory_recall} | {packet_directory_recall} | "
+            f"{qualities['current']['session_map']:.4f} | "
+            f"{directory_map} | {packet_directory_map} | {best_map:.4f} |"
         )
     pooled = payload["pooled"]
     pooled_variants = pooled["retrieval_counterfactuals"]
@@ -918,6 +970,16 @@ def _write_report(path: Path, payload: Dict[str, Any]) -> None:
             f"- Holistic directory Recall@M delta: {directory_bootstrap['recall_at_m_delta_mean']:+.4f}, paired bootstrap 95% CI [{recall_ci[0]:+.4f}, {recall_ci[1]:+.4f}].",
             f"- Holistic directory MAP delta: {directory_bootstrap['map_delta_mean']:+.4f}, paired bootstrap 95% CI [{map_ci[0]:+.4f}, {map_ci[1]:+.4f}].",
         ]
+    packet_bootstrap = pooled.get("directory_bootstraps_vs_current", {}).get(
+        "round_packet_directory"
+    )
+    if packet_bootstrap:
+        recall_ci = packet_bootstrap["recall_at_m_delta_ci95"]
+        map_ci = packet_bootstrap["map_delta_ci95"]
+        directory_findings.extend([
+            f"- Round-packet directory Recall@M delta: {packet_bootstrap['recall_at_m_delta_mean']:+.4f}, paired bootstrap 95% CI [{recall_ci[0]:+.4f}, {recall_ci[1]:+.4f}].",
+            f"- Round-packet directory MAP delta: {packet_bootstrap['map_delta_mean']:+.4f}, paired bootstrap 95% CI [{map_ci[0]:+.4f}, {map_ci[1]:+.4f}].",
+        ])
     lines.extend([
         "", "## Pooled Result", "",
         f"- Current clue-round Recall@{k}: {pooled['current']['clue_round_recall_micro']:.4f}",
@@ -929,6 +991,7 @@ def _write_report(path: Path, payload: Dict[str, Any]) -> None:
         f"- Oracle full coverage: {pooled['oracle']['full_clue_coverage_rate']:.4f}",
         f"- Replay mismatches: {payload['replay_mismatch_count']}",
         f"- Directory-incomplete questions: {payload['num_directory_incomplete']}",
+        f"- Round-packet-directory-incomplete questions: {payload['num_directory_v2_incomplete']}",
         f"- Capacity-limited maximum Recall@{k}: {pooled['round_capacity_at_k']['max_clue_round_recall_micro_at_k']:.4f}",
         f"- Questions with more than {k} clues: {pooled['round_capacity_at_k']['num_questions_over_capacity']}",
         f"- Current session Recall@M: {pooled_session['current']['ranking_quality']['session_recall_at_oracle_cardinality_micro']:.4f}",
@@ -1007,6 +1070,12 @@ def analyze_suite(suite_dir: Path, k: int, session_ks: List[int]) -> Dict[str, A
             if row.get("episode_directory_enabled")
             and not row.get("episode_directory_complete")
         ),
+        "num_directory_v2_incomplete": sum(
+            1
+            for row in eligible
+            if row.get("episode_directory_v2_enabled")
+            and not row.get("episode_directory_v2_complete")
+        ),
         "replay_mismatch_count": sum(
             1 for row in eligible if not row["replay_validation"]["matches_saved_ranking"]
         ),
@@ -1044,6 +1113,13 @@ def analyze_suite(suite_dir: Path, k: int, session_ks: List[int]) -> Dict[str, A
                 if "holistic_directory" in pooled_session_fields
                 else None
             ),
+            "directory_bootstraps_vs_current": {
+                name: _paired_session_bootstrap(
+                    eligible, field, "current_ranked_session_ids"
+                )
+                for name, field in pooled_session_fields.items()
+                if name in {"holistic_directory", "round_packet_directory"}
+            },
             "round_capacity_at_k": _round_capacity_metrics(eligible, k),
             "current_failure_counts": _aggregate_failure_counts(eligible, "current_failure_types"),
             "oracle_failure_counts": _aggregate_failure_counts(eligible, "oracle_failure_types"),

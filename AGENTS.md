@@ -181,6 +181,13 @@ and deduplicated existing anchors. The full question ranks these entries, and th
 ranking is written only to `retrieval_trace.episode_directory`; it does not alter
 round retrieval, image reranking, or final QA.
 
+Run `config/methods/evi_retrieval_episode_directory_v2_diagnostic.yaml` to
+compare that holistic directory against a query-independent multi-vector
+directory in the same retrieval run. V2 embeds one packet per natural round
+from raw dialogue and deduplicated visual evidence, scores each session by its
+best packet, and writes the complete ranking to
+`retrieval_trace.episode_directory_v2`. It is also diagnostic-only.
+
 Retrieval-only runs do not belong under individual benchmark task directories. A single-task run writes to:
 
 ```text

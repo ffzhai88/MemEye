@@ -21,6 +21,16 @@ class EpisodeDirectoryEntry:
     anchor_count: int
 
 
+@dataclass
+class EpisodeDirectoryPacket:
+    session_id: str
+    date: str
+    round_id: str
+    text: str
+    vector: List[float]
+    anchor_count: int
+
+
 class EpisodeDirectoryIndex:
     """Query-independent holistic embeddings for natural dialogue sessions."""
 
@@ -71,6 +81,56 @@ class EpisodeDirectoryIndex:
         return ranked[:top_k] if top_k > 0 else ranked
 
 
+class EpisodeDirectoryPacketIndex:
+    """Multi-vector session directory with one query-independent packet per round."""
+
+    def __init__(self) -> None:
+        self._packets_by_session: Dict[str, List[EpisodeDirectoryPacket]] = {}
+
+    def __len__(self) -> int:
+        return len(self._packets_by_session)
+
+    @property
+    def packet_count(self) -> int:
+        return sum(len(values) for values in self._packets_by_session.values())
+
+    def extend(self, packets: Iterable[EpisodeDirectoryPacket]) -> None:
+        for packet in packets:
+            if not packet.vector:
+                continue
+            self._packets_by_session.setdefault(packet.session_id, []).append(packet)
+
+    def search(
+        self,
+        query_vec: List[float],
+        top_k: int = 0,
+    ) -> List[Dict[str, object]]:
+        ranked: List[Dict[str, object]] = []
+        for session_id, packets in self._packets_by_session.items():
+            scored = [
+                (cosine(query_vec, packet.vector), packet)
+                for packet in packets
+            ]
+            score, best_packet = max(
+                scored,
+                key=lambda item: item[0],
+            )
+            ranked.append(
+                {
+                    "session_id": session_id,
+                    "date": best_packet.date,
+                    "score": score,
+                    "packet_count": len(packets),
+                    "best_packet_round_id": best_packet.round_id,
+                    "best_packet_text": best_packet.text,
+                    "best_packet_text_chars": len(best_packet.text),
+                    "best_packet_anchor_count": best_packet.anchor_count,
+                }
+            )
+        ranked.sort(key=lambda item: (-float(item["score"]), str(item["session_id"])))
+        return ranked[:top_k] if top_k > 0 else ranked
+
+
 def build_episode_directory_entry(
     session_id: str,
     date: str,
@@ -115,3 +175,55 @@ def build_episode_directory_entry(
         vector=embed(text),
         anchor_count=anchor_count,
     )
+
+
+def build_episode_directory_packets(
+    session_id: str,
+    date: str,
+    round_ids: Iterable[str],
+    round_text: Dict[str, str],
+    anchors_by_round: Dict[str, List[EvidenceAnchor]],
+    embed: Callable[[str], List[float]],
+) -> List[EpisodeDirectoryPacket]:
+    packets: List[EpisodeDirectoryPacket] = []
+    for round_id_value in round_ids:
+        round_id = str(round_id_value)
+        dialogue = str(round_text.get(round_id, "") or "").strip()
+        dialogue_key = _normalized_text(dialogue)
+        lines = [f"Session {session_id} on {date}.", f"Round {round_id}"]
+        if dialogue:
+            lines.extend(["Dialogue:", dialogue])
+
+        evidence_lines: List[str] = []
+        seen_text = set()
+        for anchor in anchors_by_round.get(round_id, []):
+            key = _normalized_text(anchor.text)
+            if not key or key in seen_text:
+                continue
+            seen_text.add(key)
+            is_wrapped_dialogue = (
+                not anchor.image_path
+                and dialogue_key
+                and dialogue_key in key
+            )
+            if is_wrapped_dialogue:
+                continue
+            source = "visual" if anchor.image_path else "dialogue"
+            text = " ".join(str(anchor.text).split())
+            evidence_lines.append(f"- [{source}/{anchor.evidence_type}] {text}")
+        if evidence_lines:
+            lines.append("Memory evidence:")
+            lines.extend(evidence_lines)
+
+        text = "\n".join(lines).strip()
+        packets.append(
+            EpisodeDirectoryPacket(
+                session_id=session_id,
+                date=date,
+                round_id=round_id,
+                text=text,
+                vector=embed(text),
+                anchor_count=len(evidence_lines),
+            )
+        )
+    return packets

@@ -27,7 +27,7 @@ This design is intended to preserve item-level evidence for counting while recov
 - `extractor.py`: task-agnostic offline visual anchor extraction.
 - `indexes.py`: in-memory anchor vector index and type-aware retrieval scoring.
 - `episode_retrieval.py`: pure session-set merge, member expansion, and direct/episode reciprocal-rank fusion.
-- `episode_directory.py`: diagnostic query-independent holistic session documents, embeddings, and full-question session ranking.
+- `episode_directory.py`: diagnostic query-independent session indexes: one holistic vector per session (v1) and one packet vector per natural round with max-packet session scoring (v2).
 - `sets.py`: builds ordered local `EpisodicMemorySet` objects from retrieved anchors using session/round provenance.
 - `states.py`: cached VLM readout from an episodic memory set into itemized `EpisodicState` evidence.
 - `candidates.py`: legacy candidate consolidation for `evi_pipeline: candidate_assertion`.
@@ -98,8 +98,11 @@ Important keys:
 - `evi_episode_round_search_k`: maximum expanded episode-round path depth before direct/episode fusion.
 - `evi_enable_episode_directory_diagnostic`: build and query the holistic session directory without applying its ranking.
 - `evi_episode_directory_search_k`: directory ranking depth; zero preserves the complete ranking for MAP/nDCG.
+- `evi_enable_episode_directory_packet_diagnostic`: build and query the v2 round-packet directory without applying its ranking.
+- `evi_episode_directory_packet_search_k`: v2 ranking depth; zero preserves the complete session ranking.
 - `config/methods/evi_retrieval_episode_set_image_rerank.yaml`: retrieval-only direct + episode-set + raw-image corroboration ablation.
 - `config/methods/evi_retrieval_episode_directory_diagnostic.yaml`: unchanged final retrieval plus diagnostic holistic directory ranking.
+- `config/methods/evi_retrieval_episode_directory_v2_diagnostic.yaml`: runs the unchanged retrieval with both v1 holistic and v2 round-packet directory traces.
 - `use_image_embedding_cache`: cache raw-image and image-query embeddings under `~/.cache/memeye/raw_image_embeddings` by default.
 - `multimodal_clip_fallback_model`: local CLIP fallback used when SigLIP loading or encoding fails.
 - `use_memory_brief_cache`: enable legacy candidate brief cache.
@@ -116,6 +119,7 @@ The default debug trace is `<run_dir>/evi_debug.log` when runtime paths are avai
 - `raw_retrieval_clue_coverage` when QA clue metadata exists
 - `episode_set_retrieval` with per-facet witness rounds, expanded members, and direct/episode fusion
 - `episode_directory_retrieval` with full-question holistic session ranking and diagnostic witness anchors
+- `episode_directory_v2_retrieval` with max-packet session ranking and the best witness round per session
 - clue coverage for `direct_anchor_top10`, `episode_path_top10`, `direct_episode_fused_top10`, and `final_retrieval_top10`; each trace includes both exact round coverage and target-session coverage
 - `episodic_memory_sets`
 - `episodic_set_clue_coverage` when QA clue metadata exists

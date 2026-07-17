@@ -15,7 +15,12 @@ from ._utils import extract_json
 from .briefs import generate_memory_briefs
 from .candidates import consolidate_candidates
 from .extractor import extract_image_anchors
-from .episode_directory import EpisodeDirectoryIndex, build_episode_directory_entry
+from .episode_directory import (
+    EpisodeDirectoryIndex,
+    EpisodeDirectoryPacketIndex,
+    build_episode_directory_entry,
+    build_episode_directory_packets,
+)
 from .episode_retrieval import (
     build_episode_round_path,
     fuse_direct_episode_rounds,
@@ -150,6 +155,7 @@ class EVISystem:
 
         self._index = EvidenceIndex()
         self._episode_directory = EpisodeDirectoryIndex()
+        self._episode_directory_packets = EpisodeDirectoryPacketIndex()
         self._vlm: Optional[VLMCallable] = None
         self._embedder: Optional[Any] = None
         self._answer_routers: Dict[str, Any] = {}
@@ -218,6 +224,12 @@ class EVISystem:
         )
         self._episode_directory_search_k = int(
             cfg.get("evi_episode_directory_search_k", 0) or 0
+        )
+        self._enable_episode_directory_packet_diagnostic = self._as_bool(
+            cfg.get("evi_enable_episode_directory_packet_diagnostic"), False
+        )
+        self._episode_directory_packet_search_k = int(
+            cfg.get("evi_episode_directory_packet_search_k", 0) or 0
         )
         self._episode_search_k = int(cfg.get("evi_episode_search_k", self._facet_search_k))
         self._episode_round_search_k = int(
@@ -386,33 +398,61 @@ class EVISystem:
 
     def _build_episode_directory_index(self) -> None:
         self._episode_directory = EpisodeDirectoryIndex()
-        if not self._enable_episode_directory_diagnostic:
-            return
-        log.info("Building query-independent holistic episode directory ...")
-        for session_id, round_ids in self._session_rounds.items():
-            date = self._round_date.get(round_ids[0], "unknown") if round_ids else "unknown"
-            entry = build_episode_directory_entry(
-                session_id=session_id,
-                date=date,
-                round_ids=round_ids,
-                round_text=self._round_text,
-                anchors_by_round=self._round_anchors,
-                embed=self._embed,
-            )
-            self._episode_directory.add(entry)
+        self._episode_directory_packets = EpisodeDirectoryPacketIndex()
+        if self._enable_episode_directory_diagnostic:
+            log.info("Building query-independent holistic episode directory ...")
+            for session_id, round_ids in self._session_rounds.items():
+                date = self._round_date.get(round_ids[0], "unknown") if round_ids else "unknown"
+                entry = build_episode_directory_entry(
+                    session_id=session_id,
+                    date=date,
+                    round_ids=round_ids,
+                    round_text=self._round_text,
+                    anchors_by_round=self._round_anchors,
+                    embed=self._embed,
+                )
+                self._episode_directory.add(entry)
+                log.info(
+                    "  episode_directory session=%s rounds=%d anchors=%d chars=%d embedded=%s",
+                    session_id,
+                    len(entry.round_ids),
+                    entry.anchor_count,
+                    len(entry.text),
+                    bool(entry.vector),
+                )
             log.info(
-                "  episode_directory session=%s rounds=%d anchors=%d chars=%d embedded=%s",
-                session_id,
-                len(entry.round_ids),
-                entry.anchor_count,
-                len(entry.text),
-                bool(entry.vector),
+                "Episode directory built: entries=%d sessions=%d",
+                len(self._episode_directory),
+                len(self._session_rounds),
             )
-        log.info(
-            "Episode directory built: entries=%d sessions=%d",
-            len(self._episode_directory),
-            len(self._session_rounds),
-        )
+
+        if self._enable_episode_directory_packet_diagnostic:
+            log.info("Building query-independent round-packet episode directory ...")
+            for session_id, round_ids in self._session_rounds.items():
+                date = self._round_date.get(round_ids[0], "unknown") if round_ids else "unknown"
+                packets = build_episode_directory_packets(
+                    session_id=session_id,
+                    date=date,
+                    round_ids=round_ids,
+                    round_text=self._round_text,
+                    anchors_by_round=self._round_anchors,
+                    embed=self._embed,
+                )
+                self._episode_directory_packets.extend(packets)
+                log.info(
+                    "  episode_directory_v2 session=%s packets=%d anchors=%d chars=%d embedded=%d",
+                    session_id,
+                    len(packets),
+                    sum(packet.anchor_count for packet in packets),
+                    sum(len(packet.text) for packet in packets),
+                    sum(1 for packet in packets if packet.vector),
+                )
+            log.info(
+                "Round-packet episode directory built: sessions=%d packets=%d expected_sessions=%d",
+                len(self._episode_directory_packets),
+                self._episode_directory_packets.packet_count,
+                len(self._session_rounds),
+            )
 
     def process_all_sessions(self, dataset: Any) -> None:
         """Build task-agnostic typed evidence anchors for all sessions."""
@@ -456,6 +496,8 @@ class EVISystem:
             "evi_use_episode_set_retrieval": self._use_episode_set_retrieval,
             "evi_enable_episode_directory_diagnostic": self._enable_episode_directory_diagnostic,
             "evi_episode_directory_search_k": self._episode_directory_search_k,
+            "evi_enable_episode_directory_packet_diagnostic": self._enable_episode_directory_packet_diagnostic,
+            "evi_episode_directory_packet_search_k": self._episode_directory_packet_search_k,
             "evi_episode_search_k": self._episode_search_k,
             "evi_episode_round_search_k": self._episode_round_search_k,
             "evi_use_evidence_organizer": self._use_evidence_organizer,
@@ -579,6 +621,9 @@ class EVISystem:
             "num_rounds": len(self._round_order),
             "episode_directory_enabled": self._enable_episode_directory_diagnostic,
             "episode_directory_entries": len(self._episode_directory),
+            "episode_directory_v2_enabled": self._enable_episode_directory_packet_diagnostic,
+            "episode_directory_v2_sessions": len(self._episode_directory_packets),
+            "episode_directory_v2_packets": self._episode_directory_packets.packet_count,
             "type_counts": dict(sorted(type_counts.items())),
             "sample_anchors": anchors_summary(self._index.anchors, max_items=self._debug_top_k),
         })
@@ -2100,6 +2145,49 @@ class EVISystem:
                 )
             trace_json(log, "episode_directory_retrieval", episode_directory_trace)
 
+        episode_directory_v2_trace: Dict[str, Any] = {"enabled": False}
+        if self._enable_episode_directory_packet_diagnostic:
+            packet_hits = self._episode_directory_packets.search(
+                full_question_query_vec,
+                top_k=self._episode_directory_packet_search_k,
+            )
+            packet_rows = [
+                {
+                    **dict(hit),
+                    "rank": rank,
+                    "score": round(float(hit["score"]), 6),
+                }
+                for rank, hit in enumerate(packet_hits, start=1)
+            ]
+            episode_directory_v2_trace = {
+                "enabled": True,
+                "version": "round_packet_episode_directory_v2",
+                "query_policy": "full_question_only",
+                "document_policy": "one_packet_per_natural_round_with_raw_dialogue_and_deduplicated_visual_evidence",
+                "session_score_policy": "max_packet_cosine",
+                "search_k": self._episode_directory_packet_search_k,
+                "num_expected_sessions": len(self._session_rounds),
+                "num_indexed_sessions": len(self._episode_directory_packets),
+                "num_indexed_packets": self._episode_directory_packets.packet_count,
+                "ranked_sessions": packet_rows,
+            }
+            log.info(
+                "QDMO-EVI round-packet episode directory query=%s ranked_sessions=%s",
+                question_stem,
+                [item["session_id"] for item in packet_rows],
+            )
+            for item in packet_rows[: self._debug_top_k]:
+                log.info(
+                    "  episode_directory_v2[%02d] session=%s score=%.4f best_packet_round=%s packets=%d packet=%s",
+                    int(item["rank"]),
+                    item["session_id"],
+                    float(item["score"]),
+                    item["best_packet_round_id"],
+                    int(item["packet_count"]),
+                    str(item["best_packet_text"]).replace("\n", " ")[:180],
+                )
+            trace_json(log, "episode_directory_v2_retrieval", episode_directory_v2_trace)
+
         facet_results: List[Tuple[str, List[Dict[str, Any]]]] = []
         episode_facet_results: List[Tuple[str, List[Dict[str, Any]]]] = []
         all_retrieved: List[EvidenceAnchor] = []
@@ -2380,6 +2468,7 @@ class EVISystem:
             "pre_image_ranked_round_ids": pre_image_ranked_rounds,
             "episode_set_retrieval": episode_trace,
             "episode_directory": episode_directory_trace,
+            "episode_directory_v2": episode_directory_v2_trace,
             "image_fusion": image_fusion_trace,
             "rounds": round_trace,
         }
