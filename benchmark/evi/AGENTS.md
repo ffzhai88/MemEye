@@ -120,6 +120,7 @@ The default debug trace is `<run_dir>/evi_debug.log` when runtime paths are avai
 - `episode_set_retrieval` with per-facet witness rounds, expanded members, and direct/episode fusion
 - `episode_directory_retrieval` with full-question holistic session ranking and diagnostic witness anchors
 - `episode_directory_v2_retrieval` with max-packet session ranking and the best witness round per session
+- New v2 traces also contain compact `packet_scores` and natural `packet_round_ids` for offline aggregation and exact expansion replay.
 - clue coverage for `direct_anchor_top10`, `episode_path_top10`, `direct_episode_fused_top10`, and `final_retrieval_top10`; each trace includes both exact round coverage and target-session coverage
 - `episodic_memory_sets`
 - `episodic_set_clue_coverage` when QA clue metadata exists

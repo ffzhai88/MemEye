@@ -56,6 +56,8 @@ evi_episode_directory_search_k: 0
 evi_enable_episode_directory_packet_diagnostic: true
 # Zero retains every session and its best witness packet for offline evaluation.
 evi_episode_directory_packet_search_k: 0
+# The trace retains compact scores for every packet so max/mean/Top-N session
+# aggregation can be compared offline without re-embedding or model calls.
 
 # Retrieval-only ablation: anchor + facet retrieval -> ranked top-10 raw multimodal
 # rounds -> the same QA history format as semantic_rag_multimodal. It does not call

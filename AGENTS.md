@@ -22,6 +22,7 @@ The README is the public-facing overview. This file is the practical guide for a
 - `run_retrieval_suite.py`: retrieval-only evaluation and aggregation over multiple tasks.
 - `analyze_retrieval_comparison.py`: compares two retrieval suites using clue-round metrics and writes per-dataset/per-question deltas.
 - `analyze_episode_oracle.py`: replays an EVI episode suite with annotated clue-session filtering to measure session-routing headroom and diagnose routing, expansion-budget, and fusion failures.
+- `analyze_episode_directory_v2.py`: compares v2 packet-score aggregations, current/v2 reciprocal-rank fusion, image-session ranking, session-length bias, and fixed-pipeline replay.
 - `score_locked_llm_judge.py`: post-hoc LLM-as-a-judge scoring for open-ended outputs.
 - `register_external_data.py`: creates task configs from an external MemEye data checkout.
 - `benchmark/`: core benchmark package.
@@ -165,6 +166,19 @@ python analyze_episode_oracle.py \
   --suite runs/retrieval/<episode-suite> \
   --k 10
 ```
+
+Analyze v2 packet-directory aggregation and replay:
+
+```bash
+python analyze_episode_directory_v2.py \
+  --suite runs/retrieval/<v2-suite> \
+  --k 10
+```
+
+New v2 traces retain compact per-packet scores for every session. The analyzer
+compares max, mean, Top-2 mean, and Top-3 mean aggregation, plus parameter-free
+reciprocal-rank fusion with the current episode order. Legacy v2 suites contain
+only the max score and remain analyzable with a reduced strategy set.
 
 This is an offline diagnostic and does not call a model. It writes
 `episode_oracle_metrics.json`, `episode_oracle_questions.jsonl`, and

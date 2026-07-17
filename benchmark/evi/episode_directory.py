@@ -29,6 +29,8 @@ class EpisodeDirectoryPacket:
     text: str
     vector: List[float]
     anchor_count: int
+    visual_anchor_count: int
+    dialogue_anchor_count: int
 
 
 class EpisodeDirectoryIndex:
@@ -111,10 +113,10 @@ class EpisodeDirectoryPacketIndex:
                 (cosine(query_vec, packet.vector), packet)
                 for packet in packets
             ]
-            score, best_packet = max(
-                scored,
-                key=lambda item: item[0],
+            scored.sort(
+                key=lambda item: (-item[0], item[1].round_id),
             )
+            score, best_packet = scored[0]
             ranked.append(
                 {
                     "session_id": session_id,
@@ -125,6 +127,18 @@ class EpisodeDirectoryPacketIndex:
                     "best_packet_text": best_packet.text,
                     "best_packet_text_chars": len(best_packet.text),
                     "best_packet_anchor_count": best_packet.anchor_count,
+                    "packet_round_ids": [packet.round_id for packet in packets],
+                    "packet_scores": [
+                        {
+                            "round_id": packet.round_id,
+                            "score": round(float(packet_score), 6),
+                            "anchor_count": packet.anchor_count,
+                            "visual_anchor_count": packet.visual_anchor_count,
+                            "dialogue_anchor_count": packet.dialogue_anchor_count,
+                            "text_chars": len(packet.text),
+                        }
+                        for packet_score, packet in scored
+                    ],
                 }
             )
         ranked.sort(key=lambda item: (-float(item["score"]), str(item["session_id"])))
@@ -195,6 +209,8 @@ def build_episode_directory_packets(
             lines.extend(["Dialogue:", dialogue])
 
         evidence_lines: List[str] = []
+        visual_anchor_count = 0
+        dialogue_anchor_count = 0
         seen_text = set()
         for anchor in anchors_by_round.get(round_id, []):
             key = _normalized_text(anchor.text)
@@ -209,6 +225,10 @@ def build_episode_directory_packets(
             if is_wrapped_dialogue:
                 continue
             source = "visual" if anchor.image_path else "dialogue"
+            if anchor.image_path:
+                visual_anchor_count += 1
+            else:
+                dialogue_anchor_count += 1
             text = " ".join(str(anchor.text).split())
             evidence_lines.append(f"- [{source}/{anchor.evidence_type}] {text}")
         if evidence_lines:
@@ -224,6 +244,8 @@ def build_episode_directory_packets(
                 text=text,
                 vector=embed(text),
                 anchor_count=len(evidence_lines),
+                visual_anchor_count=visual_anchor_count,
+                dialogue_anchor_count=dialogue_anchor_count,
             )
         )
     return packets
