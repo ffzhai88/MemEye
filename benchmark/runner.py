@@ -432,7 +432,7 @@ def run_benchmark(
     method_cfg["_eval_cfg"] = dict(cfg.get("eval", {}))
     # 获取具体 memory method 实例；agentic 方法会自行处理推理流程，非 agentic 方法走统一的 router.answer。
     method = get_method(
-        str(method_cfg.get("name", "full_context_multimodal")),
+        str(method_cfg.get("method") or method_cfg.get("name", "full_context_multimodal")),
         config=method_cfg,
     )
     # Agentic methods (for example M2A) own end-to-end inference via answer().
