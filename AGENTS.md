@@ -22,7 +22,7 @@ The README is the public-facing overview. This file is the practical guide for a
 - `run_retrieval_suite.py`: retrieval-only evaluation and aggregation over multiple tasks.
 - `analyze_retrieval_comparison.py`: compares two retrieval suites using clue-round metrics and writes per-dataset/per-question deltas.
 - `analyze_episode_oracle.py`: replays an EVI episode suite with annotated clue-session filtering to measure session-routing headroom and diagnose routing, expansion-budget, and fusion failures.
-- `analyze_episode_directory_v2.py`: compares v2 packet-score aggregations, current/v2 reciprocal-rank fusion, image-session ranking, session-length bias, and fixed-pipeline replay.
+- `analyze_episode_directory_v2.py`: compares v2 packet-score and v3 session-card rankings, reciprocal-rank fusion, image-session ranking, session-length bias, and fixed-pipeline replay.
 - `score_locked_llm_judge.py`: post-hoc LLM-as-a-judge scoring for open-ended outputs.
 - `register_external_data.py`: creates task configs from an external MemEye data checkout.
 - `benchmark/`: core benchmark package.
@@ -201,6 +201,12 @@ directory in the same retrieval run. V2 embeds one packet per natural round
 from raw dialogue and deduplicated visual evidence, scores each session by its
 best packet, and writes the complete ranking to
 `retrieval_trace.episode_directory_v2`. It is also diagnostic-only.
+
+Run `config/methods/evi_retrieval_episode_directory_card_diagnostic.yaml` for
+the minimum v3 representation experiment. It adds one cached, query-independent
+LLM retrieval card per natural session while retaining the unchanged v1/v2
+diagnostics and online round retrieval. Cards never receive a QA and never enter
+final QA context.
 
 Retrieval-only runs do not belong under individual benchmark task directories. A single-task run writes to:
 

@@ -1,4 +1,4 @@
-"""Evaluate v2 packet-directory aggregations and fixed-pipeline replay.
+"""Evaluate packet and session-card directories with fixed-pipeline replay.
 
 The analysis uses clue sessions only for evaluation. It never changes retrieval
 artifacts and never calls a model.
@@ -291,6 +291,20 @@ def _question_row(
     rankings["fusion_current_packet_max_image"] = _rrf(
         [current, rankings["packet_max"], image]
     )
+    card_trace = trace.get("episode_directory_v3", {}) or {}
+    card_rows = list(card_trace.get("ranked_sessions", []) or [])
+    if card_trace.get("enabled") and card_rows:
+        rankings["session_card"] = [
+            str(item.get("session_id", ""))
+            for item in card_rows
+            if str(item.get("session_id", ""))
+        ]
+        rankings["fusion_current_session_card"] = _rrf(
+            [current, rankings["session_card"]]
+        )
+        rankings["fusion_current_session_card_image"] = _rrf(
+            [current, rankings["session_card"], image]
+        )
 
     session_metrics = {
         strategy: _session_question_metrics(ranking, clue_session_ids)
@@ -307,7 +321,8 @@ def _question_row(
     for strategy, ranking in rankings.items():
         if strategy in {"current", "image"}:
             continue
-        final_ids, synthesized, missing = _replay(ranking, trace, directory_rows)
+        replay_rows = card_rows if "session_card" in strategy else directory_rows
+        final_ids, synthesized, missing = _replay(ranking, trace, replay_rows)
         round_metrics[strategy] = _question_stats(final_ids, clue_round_ids, k)
         replay_diagnostics[strategy] = {
             "synthesized_sessions": synthesized,
@@ -322,6 +337,7 @@ def _question_row(
         "clue_round_ids": clue_round_ids,
         "clue_session_ids": clue_session_ids,
         "has_complete_packet_scores": has_packet_scores,
+        "has_session_card_ranking": bool(card_trace.get("enabled") and card_rows),
         "directory_rows": directory_rows,
         "session_rankings": rankings,
         "session_metrics": session_metrics,
@@ -342,6 +358,9 @@ def _summarize(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
         "num_questions_with_complete_packet_scores": sum(
             row["has_complete_packet_scores"] for row in rows
         ),
+        "num_questions_with_session_card_ranking": sum(
+            row["has_session_card_ranking"] for row in rows
+        ),
         "session_metrics": {
             strategy: _aggregate_session_metrics(rows, strategy)
             for strategy in session_strategies
@@ -357,7 +376,7 @@ def _summarize(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
 def _write_report(path: Path, payload: Dict[str, Any]) -> None:
     pooled = payload["pooled"]
     lines = [
-        "# Episode Directory V2 Offline Analysis",
+        "# Episode Directory Offline Analysis",
         "",
         f"Suite: `{payload['suite_dir']}`",
         f"Evaluation K: {payload['k']}",
@@ -393,8 +412,8 @@ def _write_report(path: Path, payload: Dict[str, Any]) -> None:
         "",
         "## Dataset Replay",
         "",
-        "| Dataset | Current | Packet max | Current + packet max | Current + packet max + image |",
-        "| --- | ---: | ---: | ---: | ---: |",
+        "| Dataset | Current | Packet max | Current + packet max | Session card | Current + card | Current + card + image |",
+        "| --- | ---: | ---: | ---: | ---: | ---: | ---: |",
     ])
     for dataset in payload["datasets"]:
         metrics = dataset["round_replay_metrics"]
@@ -406,7 +425,8 @@ def _write_report(path: Path, payload: Dict[str, Any]) -> None:
         lines.append(
             f"| {dataset['task_name']} | {value('current')} | "
             f"{value('packet_max')} | {value('fusion_current_packet_max')} | "
-            f"{value('fusion_current_packet_max_image')} |"
+            f"{value('session_card')} | {value('fusion_current_session_card')} | "
+            f"{value('fusion_current_session_card_image')} |"
         )
     lines.extend([
         "",
@@ -512,7 +532,7 @@ def analyze_suite(suite_dir: Path, k: int) -> Dict[str, Any]:
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Analyze v2 packet directory aggregation and pipeline replay."
+        description="Analyze packet/card directory rankings and pipeline replay."
     )
     parser.add_argument("--suite", required=True, type=Path)
     parser.add_argument("--k", type=int, default=10)
