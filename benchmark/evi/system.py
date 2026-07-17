@@ -26,10 +26,12 @@ from .episode_cards import (
     SESSION_CARD_POSTPROCESS_VERSION,
     SESSION_CARD_PROMPT_VERSION,
     build_session_retrieval_card,
+    compact_session_retrieval_card,
 )
 from .episode_retrieval import (
     build_episode_round_path,
     fuse_direct_episode_rounds,
+    fuse_session_rankings,
     merge_facet_sessions,
 )
 from .indexes import EvidenceIndex, embed_text, normalize_type
@@ -163,6 +165,7 @@ class EVISystem:
         self._episode_directory = EpisodeDirectoryIndex()
         self._episode_directory_packets = EpisodeDirectoryPacketIndex()
         self._episode_directory_cards = EpisodeDirectoryIndex()
+        self._episode_directory_compact_cards = EpisodeDirectoryIndex()
         self._episode_directory_card_text: Dict[str, str] = {}
         self._vlm: Optional[VLMCallable] = None
         self._embedder: Optional[Any] = None
@@ -242,6 +245,9 @@ class EVISystem:
         self._enable_episode_directory_card_diagnostic = self._as_bool(
             cfg.get("evi_enable_episode_directory_card_diagnostic"), False
         )
+        self._apply_episode_directory_compact_card = self._as_bool(
+            cfg.get("evi_apply_episode_directory_compact_card"), False
+        )
         self._episode_directory_card_search_k = int(
             cfg.get("evi_episode_directory_card_search_k", 0) or 0
         )
@@ -249,6 +255,11 @@ class EVISystem:
             cfg.get("use_episode_directory_card_cache"), True
         )
         self._episode_search_k = int(cfg.get("evi_episode_search_k", self._facet_search_k))
+        if self._apply_episode_directory_compact_card and not self._use_episode_set_retrieval:
+            raise ValueError(
+                "evi_apply_episode_directory_compact_card requires "
+                "evi_use_episode_set_retrieval=true"
+            )
         self._episode_round_search_k = int(
             cfg.get(
                 "evi_episode_round_search_k",
@@ -417,6 +428,7 @@ class EVISystem:
         self._episode_directory = EpisodeDirectoryIndex()
         self._episode_directory_packets = EpisodeDirectoryPacketIndex()
         self._episode_directory_cards = EpisodeDirectoryIndex()
+        self._episode_directory_compact_cards = EpisodeDirectoryIndex()
         self._episode_directory_card_text = {}
         if self._enable_episode_directory_diagnostic:
             log.info("Building query-independent holistic episode directory ...")
@@ -473,7 +485,7 @@ class EVISystem:
                 len(self._session_rounds),
             )
 
-        if self._enable_episode_directory_card_diagnostic:
+        if self._enable_episode_directory_card_diagnostic or self._apply_episode_directory_compact_card:
             if self._vlm is None:
                 raise RuntimeError("VLM not initialized for session retrieval cards")
             log.info("Building cached query-independent session retrieval cards ...")
@@ -494,10 +506,25 @@ class EVISystem:
                     date=date,
                     round_ids=list(round_ids),
                     text=card.text,
-                    vector=self._embed(card.text),
+                    vector=(
+                        self._embed(card.text)
+                        if self._enable_episode_directory_card_diagnostic
+                        else []
+                    ),
                     anchor_count=sum(len(self._round_anchors.get(rid, [])) for rid in round_ids),
                 )
-                self._episode_directory_cards.add(entry)
+                if self._enable_episode_directory_card_diagnostic:
+                    self._episode_directory_cards.add(entry)
+                compact_text = compact_session_retrieval_card(card.text)
+                compact_entry = EpisodeDirectoryEntry(
+                    session_id=session_id,
+                    date=date,
+                    round_ids=list(round_ids),
+                    text=compact_text,
+                    vector=self._embed(compact_text),
+                    anchor_count=entry.anchor_count,
+                )
+                self._episode_directory_compact_cards.add(compact_entry)
                 self._episode_directory_card_text[session_id] = card.text
                 log.info(
                     "  episode_directory_v3 session=%s rounds=%d source_chars=%d card_chars=%d cache_hit=%s canonicalized_round_ids=%s missing_round_ids=%s embedded=%s",
@@ -506,9 +533,10 @@ class EVISystem:
                     card.missing_round_ids, bool(entry.vector),
                 )
                 log.info("  episode_directory_v3_card session=%s\n%s", session_id, card.text)
+                log.info("  episode_directory_compact_card session=%s chars=%d\n%s", session_id, len(compact_text), compact_text)
             log.info(
-                "Session retrieval-card directory built: entries=%d expected_sessions=%d",
-                len(self._episode_directory_cards), len(self._session_rounds),
+                "Session retrieval-card directory built: full_entries=%d compact_entries=%d expected_sessions=%d",
+                len(self._episode_directory_cards), len(self._episode_directory_compact_cards), len(self._session_rounds),
             )
 
     def process_all_sessions(self, dataset: Any) -> None:
@@ -556,6 +584,7 @@ class EVISystem:
             "evi_enable_episode_directory_packet_diagnostic": self._enable_episode_directory_packet_diagnostic,
             "evi_episode_directory_packet_search_k": self._episode_directory_packet_search_k,
             "evi_enable_episode_directory_card_diagnostic": self._enable_episode_directory_card_diagnostic,
+            "evi_apply_episode_directory_compact_card": self._apply_episode_directory_compact_card,
             "evi_episode_directory_card_search_k": self._episode_directory_card_search_k,
             "use_episode_directory_card_cache": self._use_episode_directory_card_cache,
             "episode_directory_card_prompt_version": SESSION_CARD_PROMPT_VERSION,
@@ -688,6 +717,7 @@ class EVISystem:
             "episode_directory_v2_packets": self._episode_directory_packets.packet_count,
             "episode_directory_v3_enabled": self._enable_episode_directory_card_diagnostic,
             "episode_directory_v3_entries": len(self._episode_directory_cards),
+            "episode_directory_compact_entries": len(self._episode_directory_compact_cards),
             "type_counts": dict(sorted(type_counts.items())),
             "sample_anchors": anchors_summary(self._index.anchors, max_items=self._debug_top_k),
         })
@@ -2422,6 +2452,41 @@ class EVISystem:
             merged_episodes = merge_facet_sessions(
                 episode_facet_results, self._facet_round_fusion
             )
+            compact_card_rows: List[Dict[str, Any]] = []
+            session_fusion_rows: List[Dict[str, Any]] = []
+            if self._apply_episode_directory_compact_card:
+                compact_card_hits = self._episode_directory_compact_cards.search(
+                    full_question_query_vec,
+                    self._round_anchors,
+                    top_k=0,
+                )
+                compact_card_rows = [
+                    {
+                        **dict(hit),
+                        "rank": rank,
+                        "score": round(float(hit["score"]), 6),
+                    }
+                    for rank, hit in enumerate(compact_card_hits, start=1)
+                ]
+                merged_episodes, session_fusion_rows = fuse_session_rankings(
+                    merged_episodes,
+                    compact_card_rows,
+                )
+                log.info(
+                    "QDMO-EVI compact-card session fusion compact_card_sessions=%s fused_sessions=%s",
+                    [item["session_id"] for item in compact_card_rows],
+                    [item["session_id"] for item in merged_episodes],
+                )
+                for rank, item in enumerate(session_fusion_rows[: self._debug_top_k], start=1):
+                    log.info(
+                        "  compact_card_session_fusion[%02d] session=%s score=%.4f episode_rank=%s card_rank=%s matched_paths=%d",
+                        rank,
+                        item["session_id"],
+                        float(item["score"]),
+                        item["primary_rank"],
+                        item["secondary_rank"],
+                        int(item["matched_paths"]),
+                    )
             episode_round_ids, episode_round_rows = build_episode_round_path(
                 merged_episodes,
                 anchor_ranked_rounds,
@@ -2480,6 +2545,9 @@ class EVISystem:
                 "episode_rounds": episode_round_rows,
                 "direct_episode_fused_round_ids": pre_image_ranked_rounds,
                 "direct_episode_fusion_rows": direct_episode_rows,
+                "compact_card_applied": self._apply_episode_directory_compact_card,
+                "compact_card_ranked_sessions": compact_card_rows,
+                "episode_compact_card_fusion_rows": session_fusion_rows,
             }
             log.info(
                 "QDMO-EVI episode-set fusion episodes=%s episode_rounds=%s direct_rounds=%s fused_rounds=%s",

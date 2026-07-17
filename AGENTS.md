@@ -242,6 +242,21 @@ runs/retrieval/<timestamp>_<model-config>_<method-config>/
 
 Use `retrievals.jsonl` for per-question rankings and `retrieval_metrics.json` for task-level Recall@K, Precision@K, Hit@K, full clue coverage, and MRR. Use `suite_metrics.json` for pooled and dataset-macro summaries. Image late-fusion runs also write component rankings per question and `component_diagnostics` (anchor recall, image recall, image-unique clue hits, and oracle-union recall) in task metrics. Retrieval suite metadata can contain an absolute path from a different machine; `analyze_retrieval_comparison.py` falls back to the local stable `runs/<task>/retrieval/<run-name>` layout when analyzing legacy suites.
 
+## End-to-End QA Suites
+
+Run all eight registered datasets with one model/method pair using:
+sh eval_qa_suite.sh config/models/qwen3_vl_8b_openrouter.yaml config/methods/evi_compact_card_episode_image_rerank.yaml mcq runs
+
+QA suites are separate from retrieval-only suites and write to
+runs/QA/<timestamp>_<model-config>_<method-config>/. The suite root contains
+suite_config.json, suite_metrics.json, and suite_runs.json. Each task
+subdirectory contains qa_run.log, config.json, metrics.json,
+predictions.jsonl, and, for EVI, evi_debug.log.
+
+run_qa_suite.py accepts repeated --task-config arguments. The shell script
+passes the eight standard external tasks explicitly. Card text and retrieval
+diagnostics must not be injected into final QA context.
+
 ## Data Format
 
 MemEye task JSONs contain:

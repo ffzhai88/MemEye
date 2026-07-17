@@ -400,6 +400,7 @@ def run_benchmark(
     enable_bert_score: bool = False,
     enable_llm_judge: bool = False,
     judge_config: Optional[Dict[str, Any]] = None,
+    run_dir: Optional[Path] = None,
 ) -> Dict[str, Any]:
     """
     执行一次完整的 benchmark 跑通流程。
@@ -415,7 +416,7 @@ def run_benchmark(
     mode = str(cfg.get("eval", {}).get("mode", "open"))
     max_questions = int(cfg.get("eval", {}).get("max_questions", 0))
     # 第二步：生成这次运行的独立目录，避免不同实验结果互相覆盖。
-    run_dir = default_run_dir(cfg, paths["output_root"])
+    run_dir = run_dir or default_run_dir(cfg, paths["output_root"])
     run_dir.mkdir(parents=True, exist_ok=True)
 
     # 第三步：加载任务数据集，准备题目列表与图像路径解析能力。
@@ -833,6 +834,7 @@ def run_modular_benchmark(
     enable_bert_score: bool = False,
     enable_llm_judge: bool = False,
     judge_config: Optional[Dict[str, Any]] = None,
+    run_dir: Optional[Path] = None,
 ) -> Dict[str, Any]:
     cfg = compose_modular_config(
         task_config_path=task_config_path,
@@ -849,6 +851,7 @@ def run_modular_benchmark(
         enable_bert_score=enable_bert_score,
         enable_llm_judge=enable_llm_judge,
         judge_config=judge_config,
+        run_dir=run_dir,
     )
 
 

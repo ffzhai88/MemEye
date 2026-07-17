@@ -7,11 +7,13 @@ from analyze_episode_oracle import (
     _build_balanced_episode_path,
     _paired_session_bootstrap,
 )
+from benchmark.evi.episode_cards import compact_session_retrieval_card
 from benchmark.evi.episode_directory import (
     EpisodeDirectoryEntry,
     EpisodeDirectoryIndex,
     build_episode_directory_entry,
 )
+from benchmark.evi.episode_retrieval import fuse_session_rankings
 from benchmark.evi.schemas import EvidenceAnchor
 
 
@@ -125,6 +127,40 @@ class EpisodeDirectoryTests(unittest.TestCase):
         self.assertEqual(bootstrap["recall_at_m_delta_mean"], 1.0)
         self.assertEqual(bootstrap["map_delta_mean"], 0.5)
 
+
+class CompactCardRetrievalTests(unittest.TestCase):
+    def test_compact_card_excludes_ordered_progression(self) -> None:
+        card = """Episode identity: route A
+Ordered progression:
+- S1:R1: first
+- S1:R2: second
+Distinctive evidence: red sign"""
+        compact = compact_session_retrieval_card(card)
+
+        self.assertEqual(
+            compact,
+            """Episode identity: route A
+
+Distinctive evidence: red sign""",
+        )
+        self.assertNotIn("Ordered progression", compact)
+
+    def test_session_rrf_reorders_only_primary_candidates(self) -> None:
+        primary = [
+            {"session_id": "S1", "score": 0.9},
+            {"session_id": "S2", "score": 0.8},
+        ]
+        card = [
+            {"session_id": "S2", "score": 0.95},
+            {"session_id": "S3", "score": 0.90},
+            {"session_id": "S1", "score": 0.85},
+        ]
+
+        fused, rows = fuse_session_rankings(primary, card)
+
+        self.assertEqual([item["session_id"] for item in fused], ["S2", "S1"])
+        self.assertEqual([item["session_id"] for item in rows], ["S2", "S1"])
+        self.assertNotIn("S3", [item["session_id"] for item in fused])
 
 if __name__ == "__main__":
     unittest.main()

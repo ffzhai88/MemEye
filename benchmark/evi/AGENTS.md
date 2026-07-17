@@ -175,6 +175,22 @@ Distinctive evidence`. It re-embeds only saved query-independent text, performs
 no VLM calls, and replays current/packet/Card RRF variants through the saved
 round expansion and image-reranking pipeline. Run it where the configured text
 embedding model is available; the analysis cache is stored inside the suite.
+## Compact Card Online Path
+
+config/methods/evi_compact_card_episode_image_rerank.yaml applies the cached
+query-independent session Card online. Only Episode identity and Distinctive
+evidence are embedded. The complete Card remains a provenance/debug artifact.
+
+The full-question compact-Card session ranking is fused with the existing
+episode-set session ranking using parameter-free reciprocal ranks. The fusion
+only reorders sessions already supported by the episode-set path. It then reuses
+the unchanged session expansion, direct-round fusion, raw-image candidate
+reranking, and Top-10 raw multimodal QA path. Never send Card text to final QA.
+
+The trace records compact-Card session ranks and
+episode_compact_card_fusion_rows; the existing final retrieval clue-coverage
+trace remains the end-to-end retrieval diagnostic.
+
 ## Research Notes
 
 The paper-facing story should distinguish:

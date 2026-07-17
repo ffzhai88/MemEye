@@ -77,6 +77,23 @@ def _contains_round_id(text: str, round_id: str) -> bool:
     ) is not None
 
 
+def compact_session_retrieval_card(card_text: str) -> str:
+    """Keep the query-independent session identity and distinctive evidence."""
+    text = str(card_text or "").strip()
+    lower = text.casefold()
+    identity_start = lower.find("episode identity:")
+    progression_start = lower.find("ordered progression:")
+    evidence_start = lower.find("distinctive evidence:")
+
+    identity = ""
+    if identity_start >= 0:
+        identity_end = progression_start if progression_start > identity_start else len(text)
+        identity = text[identity_start:identity_end].strip()
+    evidence = text[evidence_start:].strip() if evidence_start >= 0 else ""
+    compact = "\n\n".join(part for part in (identity, evidence) if part)
+    return compact or text
+
+
 def _canonicalize_round_ids(
     card_text: str,
     ordered_rounds: List[str],

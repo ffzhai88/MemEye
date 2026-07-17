@@ -5,6 +5,57 @@ from typing import Any, Dict, List, Tuple
 from .schemas import EvidenceAnchor
 
 
+def fuse_session_rankings(
+    primary: List[Dict[str, Any]],
+    secondary: List[Dict[str, Any]],
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    """Fuse two complete session rankings with parameter-free reciprocal ranks."""
+    primary_ranks = {
+        str(item["session_id"]): rank for rank, item in enumerate(primary, start=1)
+    }
+    secondary_ranks = {
+        str(item["session_id"]): rank for rank, item in enumerate(secondary, start=1)
+    }
+    primary_by_id = {str(item["session_id"]): item for item in primary}
+    secondary_by_id = {str(item["session_id"]): item for item in secondary}
+    session_ids = list(primary_ranks)
+    rows: List[Dict[str, Any]] = []
+    for session_id in session_ids:
+        primary_rank = primary_ranks.get(session_id)
+        secondary_rank = secondary_ranks.get(session_id)
+        rows.append(
+            {
+                "session_id": session_id,
+                "primary_rank": primary_rank,
+                "secondary_rank": secondary_rank,
+                "matched_paths": int(primary_rank is not None) + int(secondary_rank is not None),
+                "score": (
+                    (1.0 / primary_rank if primary_rank is not None else 0.0)
+                    + (1.0 / secondary_rank if secondary_rank is not None else 0.0)
+                ),
+            }
+        )
+    fallback_rank = len(session_ids) + 1
+    rows.sort(
+        key=lambda item: (
+            -float(item["score"]),
+            -int(item["matched_paths"]),
+            int(item["primary_rank"] or fallback_rank),
+            int(item["secondary_rank"] or fallback_rank),
+            str(item["session_id"]),
+        )
+    )
+    fused: List[Dict[str, Any]] = []
+    for row in rows:
+        session_id = str(row["session_id"])
+        source = primary_by_id.get(session_id) or secondary_by_id[session_id]
+        item = dict(source)
+        item["score"] = float(row["score"])
+        item["session_fusion"] = dict(row)
+        fused.append(item)
+    return fused, rows
+
+
 def merge_facet_sessions(
     facet_results: List[Tuple[str, List[Dict[str, Any]]]],
     facet_round_fusion: str,
