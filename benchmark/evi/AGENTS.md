@@ -146,6 +146,11 @@ Legacy pipeline traces include `candidate_pool`, `candidate_clue_coverage`, `mem
 - Raw VLM calls: `EVI_VLM_CACHE_DIR`, default `~/.cache/evi_vlm`.
 - Session retrieval cards: `EVI_EPISODE_CARD_CACHE_DIR`, default `~/.cache/evi_episode_cards`.
 
+Session-card cache keys include separate prompt and postprocessing versions. The
+postprocessor canonicalizes local model IDs such as `R1` to full provenance IDs
+before completeness checks, so formatting variation does not trigger duplicate
+raw-dialogue fallback.
+
 State cache keys include prompt version, model namespace, question stem, memory set content, selected anchors, and image-use settings.
 
 ## Retrieval-Only Episode-Set Path

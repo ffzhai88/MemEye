@@ -22,7 +22,11 @@ from .episode_directory import (
     build_episode_directory_entry,
     build_episode_directory_packets,
 )
-from .episode_cards import SESSION_CARD_PROMPT_VERSION, build_session_retrieval_card
+from .episode_cards import (
+    SESSION_CARD_POSTPROCESS_VERSION,
+    SESSION_CARD_PROMPT_VERSION,
+    build_session_retrieval_card,
+)
 from .episode_retrieval import (
     build_episode_round_path,
     fuse_direct_episode_rounds,
@@ -496,9 +500,10 @@ class EVISystem:
                 self._episode_directory_cards.add(entry)
                 self._episode_directory_card_text[session_id] = card.text
                 log.info(
-                    "  episode_directory_v3 session=%s rounds=%d source_chars=%d card_chars=%d cache_hit=%s missing_round_ids=%s embedded=%s",
+                    "  episode_directory_v3 session=%s rounds=%d source_chars=%d card_chars=%d cache_hit=%s canonicalized_round_ids=%s missing_round_ids=%s embedded=%s",
                     session_id, len(round_ids), card.source_chars, len(card.text),
-                    card.cache_hit, card.missing_round_ids, bool(entry.vector),
+                    card.cache_hit, card.canonicalized_round_ids,
+                    card.missing_round_ids, bool(entry.vector),
                 )
                 log.info("  episode_directory_v3_card session=%s\n%s", session_id, card.text)
             log.info(
@@ -554,6 +559,7 @@ class EVISystem:
             "evi_episode_directory_card_search_k": self._episode_directory_card_search_k,
             "use_episode_directory_card_cache": self._use_episode_directory_card_cache,
             "episode_directory_card_prompt_version": SESSION_CARD_PROMPT_VERSION,
+            "episode_directory_card_postprocess_version": SESSION_CARD_POSTPROCESS_VERSION,
             "evi_episode_search_k": self._episode_search_k,
             "evi_episode_round_search_k": self._episode_round_search_k,
             "evi_use_evidence_organizer": self._use_evidence_organizer,
@@ -2266,6 +2272,7 @@ class EVISystem:
             episode_directory_v3_trace = {
                 "enabled": True,
                 "version": SESSION_CARD_PROMPT_VERSION,
+                "postprocess_version": SESSION_CARD_POSTPROCESS_VERSION,
                 "query_policy": "full_question_only",
                 "document_policy": "cached_query_independent_llm_session_retrieval_card",
                 "application_policy": "diagnostic_only",
