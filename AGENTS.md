@@ -23,6 +23,7 @@ The README is the public-facing overview. This file is the practical guide for a
 - `analyze_retrieval_comparison.py`: compares two retrieval suites using clue-round metrics and writes per-dataset/per-question deltas.
 - `analyze_episode_oracle.py`: replays an EVI episode suite with annotated clue-session filtering to measure session-routing headroom and diagnose routing, expansion-budget, and fusion failures.
 - `analyze_episode_directory_v2.py`: compares v2 packet-score and v3 session-card rankings, reciprocal-rank fusion, image-session ranking, session-length bias, and fixed-pipeline replay.
+- `analyze_session_card_ablation.py`: re-embeds saved Card sections without VLM calls to compare identity-only, identity-plus-distinctive-evidence, and full-Card session retrieval and replay.
 - `score_locked_llm_judge.py`: post-hoc LLM-as-a-judge scoring for open-ended outputs.
 - `register_external_data.py`: creates task configs from an external MemEye data checkout.
 - `benchmark/`: core benchmark package.
@@ -174,6 +175,18 @@ python analyze_episode_directory_v2.py \
   --suite runs/retrieval/<v2-suite> \
   --k 10
 ```
+
+Run the saved Session Card representation ablation on a Linux/GPU environment:
+
+```bash
+python analyze_session_card_ablation.py \
+  --suite runs/retrieval/<card-diagnostic-suite> \
+  --k 10
+```
+
+The script reads the embedding model from the saved task config, never calls a
+VLM, and caches newly computed vectors under
+`<suite>/session_card_ablation_embedding_cache/`.
 
 New v2 traces retain compact per-packet scores for every session. The analyzer
 compares max, mean, Top-2 mean, and Top-3 mean aggregation, plus parameter-free

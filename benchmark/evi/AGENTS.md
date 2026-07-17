@@ -168,6 +168,13 @@ episode-path budget misses, intra-session misses, and fusion displacement. It al
 compares current Top-M selection, whole-session oracle expansion, and round-robin
 balanced oracle expansion under the same total round budget. Treat these as
 counterfactual diagnostics, not deployable retrieval policies.
+
+Use `analyze_session_card_ablation.py` on a completed v3 Card suite to compare
+the saved full Card against `Episode identity` and `Episode identity +
+Distinctive evidence`. It re-embeds only saved query-independent text, performs
+no VLM calls, and replays current/packet/Card RRF variants through the saved
+round expansion and image-reranking pipeline. Run it where the configured text
+embedding model is available; the analysis cache is stored inside the suite.
 ## Research Notes
 
 The paper-facing story should distinguish:
