@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import contextlib
+import io
+import logging
 import os
 import tempfile
 import unittest
 from unittest.mock import patch
 
 from router.base import BaseRouter
+from benchmark.evi.trace import setup_evi_debug_logging
 from router.cache import CachedAnswerRouter
 
 
@@ -66,6 +70,40 @@ B. one""")
             self.assertEqual(backend.calls, 2)
             self.assertFalse(router.last_cache_hit)
 
+
+class EVILoggingLifecycleTests(unittest.TestCase):
+    def test_console_handler_rebinds_between_task_streams(self) -> None:
+        logger = logging.getLogger("benchmark.evi")
+        with tempfile.TemporaryDirectory() as root:
+            first_stream = io.StringIO()
+            with contextlib.redirect_stderr(first_stream):
+                setup_evi_debug_logging(
+                    {
+                        "evi_debug": True,
+                        "evi_debug_console": True,
+                        "evi_debug_log_path": os.path.join(root, "first.log"),
+                    }
+                )
+                logger.info("first task")
+            first_stream.close()
+
+            second_stream = io.StringIO()
+            with contextlib.redirect_stderr(second_stream):
+                setup_evi_debug_logging(
+                    {
+                        "evi_debug": True,
+                        "evi_debug_console": True,
+                        "evi_debug_log_path": os.path.join(root, "second.log"),
+                    }
+                )
+                logger.info("second task")
+
+            self.assertIn("second task", second_stream.getvalue())
+
+            for handler in list(logger.handlers):
+                logger.removeHandler(handler)
+                if not getattr(handler, "_evi_debug_console", False):
+                    handler.close()
 
 if __name__ == "__main__":
     unittest.main()

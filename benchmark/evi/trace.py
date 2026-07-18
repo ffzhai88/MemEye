@@ -46,7 +46,6 @@ def setup_evi_debug_logging(config: Optional[Dict[str, Any]] = None) -> Optional
     logger = logging.getLogger("benchmark.evi")
     logger.setLevel(logging.DEBUG)
     has_file_handler = False
-    has_console_handler = False
     for handler in list(logger.handlers):
         handler_path = getattr(handler, _HANDLER_MARK, None)
         if handler_path and handler_path != str(path):
@@ -56,7 +55,10 @@ def setup_evi_debug_logging(config: Optional[Dict[str, Any]] = None) -> Optional
         if handler_path == str(path):
             has_file_handler = True
         if getattr(handler, _CONSOLE_MARK, False):
-            has_console_handler = True
+            # QA suites redirect stderr to a task-local Tee. Never retain that
+            # stream after its task log has been closed.
+            logger.removeHandler(handler)
+            continue
     if not has_file_handler:
         mode = "a" if as_bool(cfg.get("evi_debug_append"), True) else "w"
         file_handler = logging.FileHandler(path, mode=mode, encoding="utf-8")
@@ -65,7 +67,7 @@ def setup_evi_debug_logging(config: Optional[Dict[str, Any]] = None) -> Optional
         file_handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s"))
         logger.addHandler(file_handler)
 
-    if as_bool(cfg.get("evi_debug_console"), True) and not has_console_handler:
+    if as_bool(cfg.get("evi_debug_console"), True):
         console_handler = logging.StreamHandler()
         setattr(console_handler, _CONSOLE_MARK, True)
         console_handler.setLevel(logging.INFO)
