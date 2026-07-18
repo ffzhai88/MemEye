@@ -257,6 +257,8 @@ run_qa_suite.py accepts repeated --task-config arguments. The shell script
 passes the eight standard external tasks explicitly. Card text and retrieval
 diagnostics must not be injected into final QA context.
 
+Final Semantic RAG and EVI QA routers use the same persistent exact-input cache by default. Set use_qa_cache: false in a model config to disable it, or set MEMEYE_QA_CACHE_DIR to relocate the default ~/.cache/memeye_qa_answers directory.
+
 ## Data Format
 
 MemEye task JSONs contain:

@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from router import GeminiAPIRouter, OpenAIAPIRouter, QwenLocalRouter
+from router import CachedAnswerRouter, GeminiAPIRouter, OpenAIAPIRouter, QwenLocalRouter
 
 from .common import (
     REPO_ROOT,
@@ -124,17 +124,17 @@ def load_sys_prompt(mode: str = "open", method_cfg: Optional[Dict[str, Any]] = N
 
 
 def instantiate_router(model_cfg: Dict[str, Any], system_prompt: str = ""):
-    # 根据模型提供方选择不同的推理路由器，统一封装 OpenAI / Gemini / 本地 Qwen 的调用入口。
     provider = model_cfg.get("provider", "qwen_local")
+    cache_enabled = bool(model_cfg.get("use_qa_cache", True))
     if provider == "qwen_local":
-        return QwenLocalRouter(
+        router = QwenLocalRouter(
             model_path=str(model_cfg["model_path"]),
             max_new_tokens=int(model_cfg.get("max_new_tokens", 128)),
             system_prompt=system_prompt,
             max_time=model_cfg.get("max_time", 25),
         )
-    if provider == "openai_api":
-        return OpenAIAPIRouter(
+    elif provider == "openai_api":
+        router = OpenAIAPIRouter(
             model=str(model_cfg["model"]),
             api_key=str(model_cfg.get("api_key", "")),
             api_key_env=str(model_cfg.get("api_key_env", "OPENAI_API_KEY")),
@@ -143,8 +143,8 @@ def instantiate_router(model_cfg: Dict[str, Any], system_prompt: str = ""):
             timeout=int(model_cfg.get("timeout", 90)),
             system_prompt=system_prompt,
         )
-    if provider == "gemini_api":
-        return GeminiAPIRouter(
+    elif provider == "gemini_api":
+        router = GeminiAPIRouter(
             model=str(model_cfg["model"]),
             api_key=str(model_cfg.get("api_key", "")),
             api_key_env=str(model_cfg.get("api_key_env", "GEMINI_API_KEY")),
@@ -153,7 +153,9 @@ def instantiate_router(model_cfg: Dict[str, Any], system_prompt: str = ""):
             timeout=int(model_cfg.get("timeout", 90)),
             system_prompt=system_prompt,
         )
-    raise ValueError(f"Unsupported provider: {provider}")
+    else:
+        raise ValueError(f"Unsupported provider: {provider}")
+    return CachedAnswerRouter(router, enabled=cache_enabled)
 
 
 

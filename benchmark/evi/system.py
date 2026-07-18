@@ -8,7 +8,7 @@ import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from router import GeminiAPIRouter, OpenAIAPIRouter, QwenLocalRouter
+from router import CachedAnswerRouter, GeminiAPIRouter, OpenAIAPIRouter, QwenLocalRouter
 
 from ..dataset import history_from_round_ids
 from ._utils import extract_json
@@ -1077,6 +1077,10 @@ class EVISystem:
             )
         else:
             raise ValueError(f"Unsupported provider for EVI final answer: {provider}")
+        router = CachedAnswerRouter(
+            router,
+            enabled=self._as_bool(model_cfg.get("use_qa_cache"), True),
+        )
         self._answer_routers[mode] = router
         return router
 

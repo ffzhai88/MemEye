@@ -5,3 +5,4 @@ api_key_env: OPENAI_API_KEY
 base_url: https://api.siliconflow.cn/v1
 max_new_tokens: 128
 timeout: 90
+use_qa_cache: true
