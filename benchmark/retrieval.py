@@ -336,7 +336,11 @@ class _DenseTextRetriever(_BaseRetriever):
         # 读取配置里指定的 embedding 模型名；默认使用项目内置的 text embedder。
         self.text_embedding_model = str(config.get("text_embedding_model", TextEmbedder.DEFAULT_MODEL))
         # 初始化文本 embedding 器，用于把问题和候选轮次都转换成向量。
-        self.text_embedder = TextEmbedder(self.text_embedding_model)
+        text_embedding_kwargs = dict(config.get("text_embedding_kwargs") or {})
+        self.text_embedder = TextEmbedder(
+            self.text_embedding_model,
+            **text_embedding_kwargs,
+        )
         # 把候选语料从父类的 corpus_rows 复制出来，方便逐轮计算相似度。
         self.round_texts: List[Tuple[str, str]] = list(self.corpus_rows)
         # 把所有候选轮次的文本一次性编码成向量，避免每次检索都重复计算。
@@ -408,8 +412,11 @@ class _DenseMultimodalRetriever(_BaseRetriever):
         self.mm_model = str(
             config.get("multimodal_embedding_model", "siglip2-base-patch16-384")
         )
+        text_embedding_kwargs = dict(config.get("text_embedding_kwargs") or {})
         self.text_embedder = (
-            TextEmbedder(self.text_embedding_model) if self.text_dense_weight > 0 else None
+            TextEmbedder(self.text_embedding_model, **text_embedding_kwargs)
+            if self.text_dense_weight > 0
+            else None
         )
         self.image_index = (
             RawImageRoundIndex(dataset, config) if self.image_dense_weight > 0 else None
