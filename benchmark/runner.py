@@ -403,6 +403,7 @@ def run_benchmark(
     enable_llm_judge: bool = False,
     judge_config: Optional[Dict[str, Any]] = None,
     run_dir: Optional[Path] = None,
+    qa_indices: Optional[List[int]] = None,
 ) -> Dict[str, Any]:
     """
     执行一次完整的 benchmark 跑通流程。
@@ -463,6 +464,12 @@ def run_benchmark(
 
     # 第六步：得到待评测的 QA 列表；如果配置了 max_questions，则只跑前 N 题，方便调试和小规模验证。
     qas = dataset.iter_qas(limit=max_questions)
+    if qa_indices:
+        requested_indices = {int(value) for value in qa_indices if int(value) > 0}
+        qas = [
+            qa for original_idx, qa in enumerate(qas, start=1)
+            if original_idx in requested_indices
+        ]
     results: List[Dict[str, Any]] = []
 
     # 对于与问题无关的全量历史方法，缓存 build_history 的结果，避免每个 QA 都重复拼接长上下文。
@@ -837,6 +844,7 @@ def run_modular_benchmark(
     enable_llm_judge: bool = False,
     judge_config: Optional[Dict[str, Any]] = None,
     run_dir: Optional[Path] = None,
+    qa_indices: Optional[List[int]] = None,
 ) -> Dict[str, Any]:
     cfg = compose_modular_config(
         task_config_path=task_config_path,
@@ -854,6 +862,7 @@ def run_modular_benchmark(
         enable_llm_judge=enable_llm_judge,
         judge_config=judge_config,
         run_dir=run_dir,
+        qa_indices=qa_indices,
     )
 
 

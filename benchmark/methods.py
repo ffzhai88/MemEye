@@ -1,4 +1,6 @@
+import json
 from abc import ABC, abstractmethod
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from .dataset import MemoryBenchmarkDataset, history_from_round_ids, validate_text_only_captions
@@ -279,6 +281,109 @@ class _RetrievalHistoryMethod(_MemGalleryHistoryMethod):
         return history
 
 
+class SavedContextReplayMethod(_MemGalleryHistoryMethod):
+    """Diagnostic-only replay of saved retrieval contexts and clue-oracle variants."""
+
+    name = "saved_context_replay"
+    fixed_modality = "multimodal"
+    history_source = "saved_context_replay"
+
+    def __init__(self, config: Optional[Dict[str, Any]] = None) -> None:
+        super().__init__(config)
+        source_path = Path(str(self.config.get("source_predictions_jsonl", ""))).expanduser()
+        if not source_path.is_file():
+            raise FileNotFoundError(f"Saved context predictions not found: {source_path}")
+        self.variant = str(self.config.get("context_variant", "evi_replay_control")).strip()
+        self.top_k = int(self.config.get("context_top_k", 10))
+        self._rows_by_question: Dict[str, Dict[str, Any]] = {}
+        with source_path.open("r", encoding="utf-8") as handle:
+            for line in handle:
+                if not line.strip():
+                    continue
+                row = json.loads(line)
+                question = str(row.get("question", "")).strip()
+                if question:
+                    self._rows_by_question[question] = row
+
+    @staticmethod
+    def _unique(values: List[Any]) -> List[str]:
+        out: List[str] = []
+        seen = set()
+        for value in values:
+            round_id = str(value).strip()
+            if round_id and round_id not in seen:
+                out.append(round_id)
+                seen.add(round_id)
+        return out
+
+    def _select_round_ids(self, qa: Dict[str, Any]) -> tuple[List[str], Dict[str, Any]]:
+        question = str(qa.get("question", "")).strip()
+        source = self._rows_by_question.get(question)
+        if source is None:
+            raise KeyError(f"Question missing from saved context predictions: {question[:160]}")
+
+        retrieved = self._unique(list(source.get("context_round_ids", []) or []))
+        clues = self._unique(list(qa.get("clue", []) or []))
+        clue_set = set(clues)
+        capacity_exceeded = len(clues) > self.top_k
+
+        if self.variant == "evi_replay_control":
+            selected = retrieved[: self.top_k]
+        elif self.variant == "retrieved_clues_only":
+            selected = [round_id for round_id in retrieved if round_id in clue_set]
+        elif self.variant == "oracle_complete_top10":
+            if capacity_exceeded:
+                selected = clues[: self.top_k]
+            else:
+                selected = clues + [
+                    round_id for round_id in retrieved
+                    if round_id not in clue_set
+                ][: max(0, self.top_k - len(clues))]
+        elif self.variant == "oracle_clue_only":
+            selected = clues
+        else:
+            raise ValueError(f"Unsupported saved context variant: {self.variant}")
+
+        selected = self._unique(selected)
+        source_idx = int(source.get("idx", 0) or 0)
+        return selected, {
+            "context_variant": self.variant,
+            "source_prediction_idx": source_idx,
+            "source_context_round_ids": retrieved,
+            "selected_round_ids": selected,
+            "clue_round_ids": clues,
+            "clue_capacity_exceeded": capacity_exceeded,
+            "context_top_k": self.top_k,
+            "removed_round_ids": [round_id for round_id in retrieved if round_id not in set(selected)],
+            "added_round_ids": [round_id for round_id in selected if round_id not in set(retrieved)],
+        }
+
+    def build_history(self, dataset: MemoryBenchmarkDataset, qa: Dict[str, Any]) -> List[Dict[str, Any]]:
+        selected_round_ids, trace = self._select_round_ids(qa)
+        allowed = set(selected_round_ids)
+        history: List[Dict[str, Any]] = []
+        for session_id in dataset.session_order():
+            history.extend(
+                history_from_round_ids(
+                    dataset.get_session(session_id),
+                    dataset.rounds,
+                    allowed,
+                    modality="multimodal",
+                )
+            )
+        self.runtime_info.update(trace)
+        self._update_history_runtime(history)
+        print(
+            f"[CONTEXT-REPLAY] variant={self.variant} "
+            f"source_idx={trace['source_prediction_idx']} "
+            f"selected={selected_round_ids} "
+            f"added={trace['added_round_ids']} "
+            f"removed={trace['removed_round_ids']} "
+            f"clues={trace['clue_round_ids']} "
+            f"capacity_exceeded={trace['clue_capacity_exceeded']}"
+        )
+        return history
+
 class SemanticRAGTextMethod(_RetrievalHistoryMethod):
     name = "semantic_rag_text_only"
     fixed_modality = "text_only"
@@ -413,6 +518,7 @@ def get_method(method_name: str, config: Optional[Dict[str, Any]] = None) -> His
         QuestionOnlyMethod.name: QuestionOnlyMethod,
         TargetSessionContextMethod.name: TargetSessionContextMethod,
         ClueOnlyContextMethod.name: ClueOnlyContextMethod,
+        SavedContextReplayMethod.name: SavedContextReplayMethod,
         SemanticRAGTextMethod.name: SemanticRAGTextMethod,
         SemanticRAGMultimodalMethod.name: SemanticRAGMultimodalMethod,
         M2AAgentMethod.name: M2AAgentMethod,
