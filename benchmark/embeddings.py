@@ -198,12 +198,14 @@ class TextEmbedder:
                 max_length=self._nv_max_length,
                 instruction=instruction,
             )
+            if hasattr(chunk_result, "detach"):
+                chunk_result = chunk_result.detach().cpu()
             all_results.append(chunk_result)
             pbar.update(len(chunk))
         pbar.close()
 
         if all_results and hasattr(all_results[0], "cpu"):
-            result = torch.cat(all_results, dim=0).cpu().numpy()
+            result = torch.cat(all_results, dim=0).numpy()
         elif all_results:
             result = np.concatenate(all_results, axis=0)
         else:
