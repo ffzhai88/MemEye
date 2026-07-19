@@ -284,6 +284,7 @@ Non-agentic baselines:
 - `clue_only_context`: oracle clue rounds.
 - `semantic_rag_text_only`: text dense retrieval.
 - `semantic_rag_multimodal`: multimodal dense retrieval.
+- semantic_rag_multimodal_nvembed: encoder-controlled Semantic RAG using NV-Embed-v2 for text while preserving the canonical 0.5 text/image fusion.
 - `semantic_rag_dialogue_control`: retrieval-only dialogue-text control without captions.
 - `semantic_rag_image_only`: retrieval-only raw-image control.
 - `evi_retrieval_image_late_fusion`: EVI anchor/facet ranking fused with full-question raw-image ranking at round level.

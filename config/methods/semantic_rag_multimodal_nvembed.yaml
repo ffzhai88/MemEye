@@ -1,7 +1,11 @@
-name: semantic_rag_multimodal
+method: semantic_rag_multimodal
+name: semantic_rag_multimodal_nvembed
 modality: multimodal
 retrieval_backend: dense_multimodal
-# Following Mem-Gallery (Bei et al., 2025): default retrieval size K=10
+
+# Encoder-controlled Semantic RAG baseline. This keeps the canonical
+# multimodal retrieval and equal text/image fusion unchanged, replacing only
+# MiniLM with the same NV-Embed-v2 text encoder used by EVI experiments.
 top_k: 10
 neighbor_window: 0
 text_embedding_model: nvidia/NV-Embed-v2

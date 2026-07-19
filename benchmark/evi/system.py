@@ -1051,7 +1051,7 @@ class EVISystem:
         if provider == "qwen_local":
             router = QwenLocalRouter(
                 model_path=str(model_cfg["model_path"]),
-                max_new_tokens=int(model_cfg.get("round_selector_max_new_tokens", 512)),
+                max_new_tokens=int(model_cfg.get("max_new_tokens", 128)),
                 system_prompt=system_prompt,
                 max_time=model_cfg.get("max_time", 25),
             )
@@ -1061,7 +1061,7 @@ class EVISystem:
                 api_key=str(model_cfg.get("api_key", "")),
                 api_key_env=str(model_cfg.get("api_key_env", "OPENAI_API_KEY")),
                 base_url=str(model_cfg.get("base_url", "https://api.openai.com/v1")),
-                max_new_tokens=int(model_cfg.get("round_selector_max_new_tokens", 512)),
+                max_new_tokens=int(model_cfg.get("max_new_tokens", 128)),
                 timeout=int(model_cfg.get("timeout", 90)),
                 system_prompt=system_prompt,
             )
@@ -1071,7 +1071,7 @@ class EVISystem:
                 api_key=str(model_cfg.get("api_key", "")),
                 api_key_env=str(model_cfg.get("api_key_env", "GEMINI_API_KEY")),
                 base_url=str(model_cfg.get("base_url", "https://generativelanguage.googleapis.com/v1beta")),
-                max_new_tokens=int(model_cfg.get("round_selector_max_new_tokens", 512)),
+                max_new_tokens=int(model_cfg.get("max_new_tokens", 128)),
                 timeout=int(model_cfg.get("timeout", 90)),
                 system_prompt=system_prompt,
             )
