@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, Dict, List
 
 from benchmark.common import REPO_ROOT, SCRIPT_DIR, get_git_commit, resolve_config_path, write_json
+from benchmark.retrieval import clear_retriever_cache
 from benchmark.runner import run_modular_benchmark
 
 
@@ -80,21 +81,24 @@ def main() -> None:
         task_dir = suite_dir / resolve_config_path(task_config).stem
         task_dir.mkdir(parents=True, exist_ok=False)
         log_path = task_dir / "qa_run.log"
-        with log_path.open("w", encoding="utf-8") as log_file:
-            tee_out = Tee(sys.stdout, log_file)
-            tee_err = Tee(sys.stderr, log_file)
-            with contextlib.redirect_stdout(tee_out), contextlib.redirect_stderr(tee_err):
-                print(f"[QA-SUITE] task={task_config}")
-                payload = run_modular_benchmark(
-                    task_config_path=task_config,
-                    model_config_path=args.model_config,
-                    method_config_path=args.method_config,
-                    output_root=str(output_root),
-                    mode=args.mode,
-                    max_questions=args.max_questions,
-                    enable_bert_score=args.enable_bert_score,
-                    run_dir=task_dir,
-                )
+        try:
+            with log_path.open("w", encoding="utf-8") as log_file:
+                tee_out = Tee(sys.stdout, log_file)
+                tee_err = Tee(sys.stderr, log_file)
+                with contextlib.redirect_stdout(tee_out), contextlib.redirect_stderr(tee_err):
+                    print(f"[QA-SUITE] task={task_config}")
+                    payload = run_modular_benchmark(
+                        task_config_path=task_config,
+                        model_config_path=args.model_config,
+                        method_config_path=args.method_config,
+                        output_root=str(output_root),
+                        mode=args.mode,
+                        max_questions=args.max_questions,
+                        enable_bert_score=args.enable_bert_score,
+                        run_dir=task_dir,
+                    )
+        finally:
+            clear_retriever_cache()
         task_payloads.append(payload)
         write_json(
             suite_dir / "suite_runs.json",

@@ -559,9 +559,19 @@ def _get_retriever(dataset: MemoryBenchmarkDataset, config: Dict[str, Any]) -> _
 
 
 def clear_retriever_cache() -> None:
-    """Release all cached retrievers and their embedding vectors."""
+    """Release cached retrievers, embedding models, and CUDA allocations."""
     # 清空全局缓存，释放内存中的检索器和 embedding 向量。
     _RETRIEVER_CACHE.clear()
+    import gc
+
+    gc.collect()
+    try:
+        import torch
+
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    except ImportError:
+        pass
 
 
 def select_round_ids_for_qa(
