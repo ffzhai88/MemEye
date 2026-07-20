@@ -467,7 +467,8 @@ def run_benchmark(
     if qa_indices:
         requested_indices = {int(value) for value in qa_indices if int(value) > 0}
         qas = [
-            qa for original_idx, qa in enumerate(qas, start=1)
+            {**qa, "_benchmark_idx": original_idx}
+            for original_idx, qa in enumerate(qas, start=1)
             if original_idx in requested_indices
         ]
     results: List[Dict[str, Any]] = []

@@ -296,6 +296,7 @@ class SavedContextReplayMethod(_MemGalleryHistoryMethod):
         self.variant = str(self.config.get("context_variant", "evi_replay_control")).strip()
         self.top_k = int(self.config.get("context_top_k", 10))
         self._rows_by_question: Dict[str, Dict[str, Any]] = {}
+        self._rows_by_idx: Dict[int, Dict[str, Any]] = {}
         with source_path.open("r", encoding="utf-8") as handle:
             for line in handle:
                 if not line.strip():
@@ -304,6 +305,9 @@ class SavedContextReplayMethod(_MemGalleryHistoryMethod):
                 question = str(row.get("question", "")).strip()
                 if question:
                     self._rows_by_question[question] = row
+                source_idx = int(row.get("idx", 0) or 0)
+                if source_idx:
+                    self._rows_by_idx[source_idx] = row
 
     @staticmethod
     def _unique(values: List[Any]) -> List[str]:
@@ -318,7 +322,10 @@ class SavedContextReplayMethod(_MemGalleryHistoryMethod):
 
     def _select_round_ids(self, qa: Dict[str, Any]) -> tuple[List[str], Dict[str, Any]]:
         question = str(qa.get("question", "")).strip()
-        source = self._rows_by_question.get(question)
+        benchmark_idx = int(qa.get("_benchmark_idx", 0) or 0)
+        source = self._rows_by_idx.get(benchmark_idx) if benchmark_idx else None
+        if source is None:
+            source = self._rows_by_question.get(question)
         if source is None:
             raise KeyError(f"Question missing from saved context predictions: {question[:160]}")
 
