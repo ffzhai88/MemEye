@@ -531,6 +531,9 @@ def get_method(method_name: str, config: Optional[Dict[str, Any]] = None) -> His
         SavedContextReplayMethod.name: SavedContextReplayMethod,
         SemanticRAGTextMethod.name: SemanticRAGTextMethod,
         SemanticRAGMultimodalMethod.name: SemanticRAGMultimodalMethod,
+        "semantic_rag_multimodal_session_markers": SemanticRAGMultimodalMethod,
+        "semantic_rag_multimodal_nvembed": SemanticRAGMultimodalMethod,
+        "semantic_rag_multimodal_nvembed_session_markers": SemanticRAGMultimodalMethod,
         M2AAgentMethod.name: M2AAgentMethod,
         MMAAgentMethod.name: MMAAgentMethod,
     }

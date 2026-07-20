@@ -1,0 +1,14 @@
+method: semantic_rag_multimodal
+name: semantic_rag_multimodal_session_markers
+modality: multimodal
+retrieval_backend: dense_multimodal
+
+top_k: 10
+neighbor_window: 0
+text_embedding_model: all-MiniLM-L6-v2
+multimodal_embedding_model: siglip2-base-patch16-384
+text_dense_weight: 0.5
+image_dense_weight: 0.5
+
+# Final-QA provenance ablation; retrieval scores and round order are unchanged.
+include_session_markers: true
