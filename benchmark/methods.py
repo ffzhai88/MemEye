@@ -247,6 +247,7 @@ class _RetrievalHistoryMethod(_MemGalleryHistoryMethod):
         history: List[Dict[str, Any]] = []
         # 把检索到的 round_id 转成集合，便于后续快速匹配。
         allowed_round_ids = set(selected_round_ids)
+        include_session_markers = bool(self.config.get("include_session_markers", False))
         # 遍历所有会话，把命中的轮次转成 history 条目。
         # history: 是一个list，每个元素是一个dict，包含role（user/assistant）、text（文本内容）、images（图片路径列表）等信息，具体格式由history_from_round_ids函数统一处理。
         for sid in dataset.session_order():
@@ -260,6 +261,7 @@ class _RetrievalHistoryMethod(_MemGalleryHistoryMethod):
                     allowed_round_ids,
                     # 根据当前方法的模态决定是文本还是多模态历史。
                     modality=self.modality,
+                    include_session_marker=include_session_markers,
                 )
             )
         # 把检索结果的运行时信息写回 runtime_info，方便后续统计与分析。
@@ -275,6 +277,7 @@ class _RetrievalHistoryMethod(_MemGalleryHistoryMethod):
                 "images_loaded": self.modality == "multimodal",
                 # 检索后最终保留的历史轮次数量。
                 "history_turns_after_truncation": len(history),
+                "include_session_markers": include_session_markers,
             }
         )
         # 返回最终拼好的历史上下文列表，供 router.answer() 使用。

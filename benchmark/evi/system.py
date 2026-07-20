@@ -223,6 +223,9 @@ class EVISystem:
         self._use_retrieval_facets = self._as_bool(cfg.get("evi_use_retrieval_facets"), True)
         self._use_image_anchors = self._as_bool(cfg.get("evi_use_image_anchors"), True)
         self._retrieval_only = self._as_bool(cfg.get("evi_retrieval_only"), False)
+        self._include_session_markers = self._as_bool(
+            cfg.get("include_session_markers"), False
+        )
         self._use_raw_image_retrieval = self._as_bool(
             cfg.get("evi_use_raw_image_retrieval"), False
         )
@@ -575,6 +578,7 @@ class EVISystem:
             "evi_use_retrieval_facets": self._use_retrieval_facets,
             "evi_use_image_anchors": self._use_image_anchors,
             "evi_retrieval_only": self._retrieval_only,
+            "include_session_markers": self._include_session_markers,
             "evi_use_raw_image_retrieval": self._use_raw_image_retrieval,
             "evi_image_round_search_k": self._image_round_search_k,
             "evi_image_round_fusion": self._image_round_fusion,
@@ -1253,7 +1257,11 @@ class EVISystem:
         trace_json(log, "round_selector_prompt", {"prompt_chars": len(prompt), "prompt_preview": prompt_preview})
 
         candidate_round_ids = [rid for memory_set in memory_sets for rid in memory_set.round_ids]
-        selector_history = self._build_semantic_style_history(dataset, candidate_round_ids)
+        selector_history = self._build_semantic_style_history(
+            dataset,
+            candidate_round_ids,
+            include_session_markers=False,
+        )
         selector_preview = [
             {
                 "role": item.get("role"),
@@ -1376,8 +1384,19 @@ class EVISystem:
     @property
     def last_context_round_ids(self) -> List[str]:
         return list(self._last_context_round_ids)
-    def _build_semantic_style_history(self, dataset: Any, selected_round_ids: List[str]) -> List[Dict[str, Any]]:
+    def _build_semantic_style_history(
+        self,
+        dataset: Any,
+        selected_round_ids: List[str],
+        *,
+        include_session_markers: Optional[bool] = None,
+    ) -> List[Dict[str, Any]]:
         allowed = set(selected_round_ids)
+        marker_enabled = (
+            self._include_session_markers
+            if include_session_markers is None
+            else include_session_markers
+        )
         history: List[Dict[str, Any]] = []
         for session_id in dataset.session_order():
             history.extend(
@@ -1386,6 +1405,7 @@ class EVISystem:
                     dataset.rounds,
                     allowed,
                     modality="multimodal",
+                    include_session_marker=marker_enabled,
                 )
             )
         return history
@@ -2059,6 +2079,7 @@ class EVISystem:
                 dataset.rounds,
                 allowed,
                 modality="multimodal",
+                include_session_marker=self._include_session_markers,
             )
             for msg in session_history:
                 rid = str(msg.get("round_id", "")).strip()
@@ -2770,13 +2791,15 @@ class EVISystem:
             "history_turns": len(history),
             "history_preview": history_preview,
             "final_include_evidence_images": True,
+            "include_session_markers": self._include_session_markers,
         })
         log.info(
-            "QDMO-EVI final history mode=%s turns=%d selected_rounds=%s include_images=%s",
+            "QDMO-EVI final history mode=%s turns=%d selected_rounds=%s include_images=%s include_session_markers=%s",
             "faceted_top10_raw" if self._retrieval_only else "organized_evidence",
             len(history),
             selected_round_ids,
             True,
+            self._include_session_markers,
         )
         for idx, item in enumerate(history_preview, start=1):
             log.info(

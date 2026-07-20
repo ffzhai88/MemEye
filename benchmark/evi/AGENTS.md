@@ -91,6 +91,7 @@ Important keys:
 - `use_final_memory_images`: attach selected memory images to the final answer call; default false.
 - `use_dataset_captions`: include benchmark-provided captions only for ablation/upper-information runs.
 - `use_embedding_cache`: enable disk cache for text embeddings.
+- `include_session_markers`: prefix the first selected turn of each natural session with its session id/date in final QA history only; selector and retrieval inputs remain unchanged.
 - `evi_use_raw_image_retrieval`: enable independent full-question text-to-image retrieval.
 - `evi_image_round_search_k`: candidate depth for both EVI and raw-image rankings before fusion.
 - `evi_image_round_fusion`: `reciprocal_rank` uses the anchor/image union; `anchor_candidate_reciprocal_rank` reranks only anchor candidates.

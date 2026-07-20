@@ -1,0 +1,22 @@
+method: semantic_rag_multimodal
+name: semantic_rag_multimodal_nvembed_session_markers
+modality: multimodal
+retrieval_backend: dense_multimodal
+
+# Encoder-controlled Semantic RAG baseline. This keeps the canonical
+# multimodal retrieval and equal text/image fusion unchanged, replacing only
+# MiniLM with the same NV-Embed-v2 text encoder used by EVI experiments.
+top_k: 10
+neighbor_window: 0
+text_embedding_model: nvidia/NV-Embed-v2
+text_embedding_kwargs:
+  # Round-level dialogue packets are far shorter than NV-Embed's 32K limit.
+  # A small batch avoids latent-attention OOM without changing retrieval semantics.
+  max_length: 4096
+  batch_size: 4
+multimodal_embedding_model: siglip2-base-patch16-384
+text_dense_weight: 0.5
+image_dense_weight: 0.5
+
+# Final-QA provenance ablation; retrieval scores and round order are unchanged.
+include_session_markers: true

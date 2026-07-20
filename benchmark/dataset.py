@@ -170,6 +170,7 @@ def history_from_round_ids(
     rounds: Dict[str, Dict[str, Any]],
     allowed_round_ids: Optional[set[str]] = None,
     modality: str = "multimodal",
+    include_session_marker: bool = False,
 ) -> List[Dict[str, Any]]:
     # 初始化输出列表，用来保存最终拼好的历史消息。
     history: List[Dict[str, Any]] = []
@@ -211,6 +212,20 @@ def history_from_round_ids(
         # 如果 assistant 文本存在，就把它作为一条 assistant 消息加入 history。
         if assistant_text:
             history.append({"role": "assistant", "text": assistant_text, "images": [], "round_id": rid})
+
+    if include_session_marker and history:
+        session_id = str(session.get("session_id", "") or "").strip()
+        session_date = str(session.get("date", "") or "").strip()
+        marker_fields = ["Memory session"]
+        if session_id:
+            marker_fields.append(f"id: {session_id}")
+        if session_date:
+            marker_fields.append(f"date: {session_date}")
+        marker = "[" + " | ".join(marker_fields) + "]"
+        first = dict(history[0])
+        first_text = str(first.get("text", "") or "").strip()
+        first["text"] = f"{marker}\n{first_text}" if first_text else marker
+        history[0] = first
     # 返回构造好的历史上下文列表，供后续推理使用。
     return history
 
