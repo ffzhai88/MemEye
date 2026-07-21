@@ -126,7 +126,7 @@ def _run(args: argparse.Namespace, experiment_dir: Path) -> None:
                 all_memeye_rows.append({"task_name": payload["task_name"], **row})
             completed.append(f"memeye/{task_name}")
             write_json(experiment_dir / "joint_status.json", {"status": "running", "completed": completed})
-            clear_retriever_cache()
+            clear_retriever_cache(keep_embedding_models=True)
             gc.collect()
 
         memeye_metrics = {
@@ -140,7 +140,7 @@ def _run(args: argparse.Namespace, experiment_dir: Path) -> None:
         }
         write_json(memeye_dir / "suite_metrics.json", memeye_metrics)
 
-        clear_retriever_cache()
+        clear_retriever_cache(keep_embedding_models=True)
         gc.collect()
         print(f"[JOINT][MEMLENS] manifest={args.memlens_manifest}")
         run_memlens_retrieval_suite(

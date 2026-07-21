@@ -18,6 +18,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--run-dir", default="", help="Existing directory to resume, or an explicit new directory.")
     parser.add_argument("--max-questions", type=int, default=0)
     parser.add_argument("--clear-cache-every", type=int, default=1, help="0 disables per-item retriever cleanup.")
+    parser.add_argument(
+        "--unload-embedding-models", action="store_true",
+        help="Also unload shared embedding weights during per-item cleanup.",
+    )
     parser.add_argument("--fail-fast", action="store_true")
     parser.add_argument("--skip-judge", action="store_true")
     parser.add_argument("--official-dir", default="third_party/MEMLENS")

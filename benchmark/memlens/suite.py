@@ -204,6 +204,8 @@ def run_suite(args: Any) -> Path:
         "max_questions": args.max_questions, "selected_questions": len(items),
         "git_commit": get_git_commit(REPO_ROOT), "run_dir": str(run_dir),
         "question_date_in_query": True,
+        "keep_embedding_models": not bool(getattr(args, "unload_embedding_models", False)),
+        "cleanup_policy": "drop per-item methods and retrievers; retain shared embedding backends",
         "judge": {"enabled": not args.skip_judge, "model": args.judge_model,
                   "base_url": args.judge_base_url, "key_env": args.judge_key_env,
                   "key_available": bool(os.environ.get(args.judge_key_env)), "workers": args.judge_workers},
@@ -283,7 +285,11 @@ def run_suite(args: Any) -> Path:
                 finally:
                     method = None
                     if args.clear_cache_every > 0 and index % args.clear_cache_every == 0:
-                        clear_retriever_cache()
+                        clear_retriever_cache(
+                            keep_embedding_models=not bool(
+                                getattr(args, "unload_embedding_models", False)
+                            )
+                        )
                         gc.collect()
             ordered = [existing[str(item.get("question_id", ""))] for item in items if str(item.get("question_id", "")) in existing]
             metrics = aggregate_predictions(ordered)

@@ -13,7 +13,15 @@ import os
 import warnings
 from contextlib import contextmanager
 from pathlib import Path
-from typing import List, Optional, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
+
+
+_SHARED_EMBEDDING_BACKENDS: Dict[Tuple[Any, ...], Dict[str, Any]] = {}
+
+
+def clear_embedding_model_cache() -> None:
+    """Drop process-local shared model backends so CUDA memory can be reclaimed."""
+    _SHARED_EMBEDDING_BACKENDS.clear()
 
 
 @contextmanager
@@ -96,14 +104,27 @@ class TextEmbedder:
 
     def _load_sentence_transformers(self) -> None:
         """Load via sentence-transformers (all-MiniLM-L6-v2 or similar)."""
+        cache_key = ("sentence_transformers", self._model_name)
+        cached = _SHARED_EMBEDDING_BACKENDS.get(cache_key)
+        if cached is not None:
+            self._model = cached["model"]
+            return
         from sentence_transformers import SentenceTransformer  # type: ignore
 
         cache_folder = os.environ.get("HF_HOME") or os.environ.get("TRANSFORMERS_CACHE")
         with _sanitized_hf_token_env():
             self._model = SentenceTransformer(self._model_name, cache_folder=cache_folder)
+        _SHARED_EMBEDDING_BACKENDS[cache_key] = {"model": self._model}
 
     def _load_nvembed(self) -> None:
         """Load via transformers + trust_remote_code (nvidia/NV-Embed-v2)."""
+        cache_key = ("nv_embed", self._model_name, self._nv_dtype)
+        cached = _SHARED_EMBEDDING_BACKENDS.get(cache_key)
+        if cached is not None:
+            self._model = cached["model"]
+            self._embedding_dim = cached["embedding_dim"]
+            self._device = cached["device"]
+            return
         import torch
         from transformers import AutoModel
 
@@ -127,6 +148,11 @@ class TextEmbedder:
             f"[TextEmbedder] Loaded NV-Embed-v2: {self._model_name} "
             f"({self._embedding_dim}-dim) on {self._device}"
         )
+        _SHARED_EMBEDDING_BACKENDS[cache_key] = {
+            "model": self._model,
+            "embedding_dim": self._embedding_dim,
+            "device": self._device,
+        }
 
     @property
     def is_available(self) -> bool:
@@ -236,6 +262,13 @@ class MultimodalEmbedder:
     def _load(self) -> None:
         if self._model is not None:
             return
+        cache_key = ("siglip", self._model_name)
+        cached = _SHARED_EMBEDDING_BACKENDS.get(cache_key)
+        if cached is not None:
+            self._model = cached["model"]
+            self._processor = cached["processor"]
+            self._device = cached["device"]
+            return
         import torch
         from transformers import AutoModel, AutoProcessor  # type: ignore
 
@@ -257,6 +290,11 @@ class MultimodalEmbedder:
 
         self._model = self._model.to(self._device)
         self._model.eval()
+        _SHARED_EMBEDDING_BACKENDS[cache_key] = {
+            "model": self._model,
+            "processor": self._processor,
+            "device": self._device,
+        }
         print(f"[MultimodalEmbedder] Loaded {self._model_name} on {self._device}")
 
     @property
@@ -344,6 +382,13 @@ class LocalCLIPEmbedder:
 
     def _load(self) -> None:
         if self._model is None:
+            cache_key = ("clip", self._model_name, self._local_files_only)
+            cached = _SHARED_EMBEDDING_BACKENDS.get(cache_key)
+            if cached is not None:
+                self._model = cached["model"]
+                self._processor = cached["processor"]
+                self._device = cached["device"]
+                return
             import torch
             from transformers import CLIPModel, CLIPProcessor  # type: ignore
 
@@ -370,6 +415,11 @@ class LocalCLIPEmbedder:
 
             self._model = self._model.to(self._device)
             self._model.eval()
+            _SHARED_EMBEDDING_BACKENDS[cache_key] = {
+                "model": self._model,
+                "processor": self._processor,
+                "device": self._device,
+            }
 
     @property
     def is_available(self) -> bool:

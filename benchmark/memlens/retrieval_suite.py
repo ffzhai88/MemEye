@@ -92,6 +92,7 @@ def run_memlens_retrieval_suite(
     method_config: str, output_root: Path, max_questions: int = 0,
     k_values: Iterable[int] = (1, 3, 5, 10, 20), run_dir: Optional[Path] = None,
     clear_cache_every: int = 1, fail_fast: bool = False,
+    keep_embedding_models: bool = True,
 ) -> Path:
     manifest_path = manifest_path.resolve()
     image_root = image_root.resolve()
@@ -120,6 +121,8 @@ def run_memlens_retrieval_suite(
         "k_values": ks, "max_questions": max_questions,
         "selected_questions": len(items), "question_date_in_query": True,
         "git_commit": get_git_commit(REPO_ROOT), "run_dir": str(run_dir),
+        "keep_embedding_models": keep_embedding_models,
+        "cleanup_policy": "drop per-item retrievers and indexes; retain shared embedding backends",
         "answer_refusal_policy": "retained in rows; excluded from clue/session recall when annotations are empty",
     }
     write_json(run_dir / "suite_config.json", config)
@@ -198,7 +201,9 @@ def run_memlens_retrieval_suite(
             finally:
                 retriever = None
                 if clear_cache_every > 0 and index % clear_cache_every == 0:
-                    clear_retriever_cache()
+                    clear_retriever_cache(
+                        keep_embedding_models=keep_embedding_models
+                    )
                     gc.collect()
 
     ordered = [existing[str(item.get("question_id", ""))] for item in items if str(item.get("question_id", "")) in existing]

@@ -558,17 +558,21 @@ def _get_retriever(dataset: MemoryBenchmarkDataset, config: Dict[str, Any]) -> _
     return retriever
 
 
-def clear_retriever_cache() -> None:
-    """Release cached retrievers, embedding models, and CUDA allocations."""
+def clear_retriever_cache(*, keep_embedding_models: bool = False) -> None:
+    """Release cached indexes, optionally retaining shared embedding weights."""
     # 清空全局缓存，释放内存中的检索器和 embedding 向量。
     _RETRIEVER_CACHE.clear()
+    if not keep_embedding_models:
+        from .embeddings import clear_embedding_model_cache
+
+        clear_embedding_model_cache()
     import gc
 
     gc.collect()
     try:
         import torch
 
-        if torch.cuda.is_available():
+        if torch.cuda.is_available() and not keep_embedding_models:
             torch.cuda.empty_cache()
     except ImportError:
         pass

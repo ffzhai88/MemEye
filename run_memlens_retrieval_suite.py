@@ -26,6 +26,10 @@ def main() -> None:
     parser.add_argument("--max-questions", type=int, default=0)
     parser.add_argument("--ks", type=parse_ks, default=[1, 3, 5, 10, 20])
     parser.add_argument("--clear-cache-every", type=int, default=1)
+    parser.add_argument(
+        "--unload-embedding-models", action="store_true",
+        help="Also unload shared embedding weights during periodic cleanup.",
+    )
     parser.add_argument("--fail-fast", action="store_true")
     args = parser.parse_args()
     run_memlens_retrieval_suite(
@@ -34,6 +38,7 @@ def main() -> None:
         output_root=Path(args.output_root), max_questions=args.max_questions,
         k_values=args.ks, run_dir=Path(args.run_dir) if args.run_dir else None,
         clear_cache_every=args.clear_cache_every, fail_fast=args.fail_fast,
+        keep_embedding_models=not args.unload_embedding_models,
     )
 
 
