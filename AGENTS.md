@@ -20,6 +20,7 @@ The README is the public-facing overview. This file is the practical guide for a
 - `run_matrix.py`: model x method comparison entry point.
 - `run_retrieval_benchmark.py`: retrieval-only evaluation for one task; it never calls final QA.
 - `run_retrieval_suite.py`: retrieval-only evaluation and aggregation over multiple tasks.
+- `run_joint_retrieval_suite.py`: runs the MemEye retrieval suite and converted MEMLENS subset under one experiment directory with a shared log/status/summary.
 - `analyze_retrieval_comparison.py`: compares two retrieval suites using clue-round metrics and writes per-dataset/per-question deltas.
 - `analyze_episode_oracle.py`: replays an EVI episode suite with annotated clue-session filtering to measure session-routing headroom and diagnose routing, expansion-budget, and fusion failures.
 - `analyze_episode_directory_v2.py`: compares v2 packet-score and v3 session-card rankings, reciprocal-rank fusion, image-session ranking, session-length bias, and fixed-pipeline replay.
@@ -150,6 +151,21 @@ python run_retrieval_suite.py \
   --model-config config/models/gpt_4_1_nano.yaml \
   --method-config config/methods/evi.yaml
 ```
+
+Run the standard MemEye tasks and MEMLENS as one retrieval experiment:
+
+```bash
+bash eval_joint_retrieval.sh \
+  config/models/qwen3_vl_8b_openrouter.yaml \
+  config/methods/evi_retrieval_multifacet_multimodal.yaml \
+  runs
+```
+
+The shared directory is `runs/JOINT-retrieval/<timestamp>_<model>_<method>/`.
+It contains `joint_run.log`, `joint_config.json`, `joint_status.json`,
+`joint_metrics.json`, the MemEye suite under `memeye/`, and MEMLENS artifacts
+under `memlens/`. Metrics remain side-by-side because the two benchmarks use
+different annotation semantics.
 
 Compare retrieval suites at `K=10`:
 

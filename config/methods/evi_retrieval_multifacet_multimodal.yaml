@@ -1,0 +1,60 @@
+# EVI retrieval driven by query facets and provenance-bound multimodal evidence.
+method: evi
+name: evi_retrieval_multifacet_multimodal
+modality: multimodal
+evi_pipeline: faceted_topk
+
+# Every full question and extracted facet independently scores all memory rounds.
+# Dialogue anchors form the text branch. VLM visual anchors and raw-image
+# similarity are first combined into one visual branch. Query-local empirical
+# midranks make the heterogeneous similarities comparable without fitted weights.
+evi_facet_round_scorer: multimodal_anchor_early_fusion
+facet_max_facets: 4
+facet_search_k: 30
+facet_round_fusion: max_similarity_times_reciprocal_rank_consensus
+facet_full_question_weight: 1.0
+evi_use_retrieval_facets: true
+use_facet_cache: true
+
+# This experiment isolates retrieval; no session oracle, question-type router,
+# compact card, evidence organizer, or post-retrieval image reranker is applied.
+evi_retrieval_only: true
+evi_use_episode_set_retrieval: false
+evi_enable_episode_directory_diagnostic: false
+evi_enable_episode_directory_packet_diagnostic: false
+evi_enable_episode_directory_card_diagnostic: false
+evi_use_scope_interpretation: false
+evi_use_evidence_organizer: false
+
+# Raw images are queried by each facet inside the early fusion. The legacy image
+# fusion value remains syntactically valid but is deliberately bypassed.
+evi_use_raw_image_retrieval: true
+evi_image_round_search_k: 30
+evi_image_round_fusion: reciprocal_rank
+multimodal_embedding_model: siglip2-base-patch16-384
+multimodal_clip_fallback_model: openai/clip-vit-base-patch32
+multimodal_clip_local_files_only: true
+use_image_embedding_cache: true
+
+text_embedding_model: allMiniLM-L6-v2
+use_embedding_cache: true
+evi_use_image_anchors: true
+use_dataset_captions: false
+include_session_markers: false
+
+raw_search_k: 120
+max_candidates: 20
+max_candidate_anchors: 8
+evi_final_max_rounds: 10
+min_selected_rounds: 1
+max_answer_images: 12
+use_final_memory_images: false
+
+vlm_max_new_tokens: 1024
+vlm_timeout: 90
+use_memory_brief_cache: true
+evi_debug: true
+evi_debug_console: true
+evi_debug_append: true
+evi_debug_top_k: 50
+evi_debug_prompt_chars: 12000

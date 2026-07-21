@@ -26,6 +26,7 @@ This design is intended to preserve item-level evidence for counting while recov
 - `schemas.py`: dataclasses for anchors, legacy candidates/briefs, episodic memory sets, and episodic states.
 - `extractor.py`: task-agnostic offline visual anchor extraction.
 - `indexes.py`: in-memory anchor vector index and type-aware retrieval scoring.
+- `facet_multimodal.py`: query-local calibration and early round-level fusion of dialogue anchors, visual anchors, and raw-image retrieval for each facet.
 - `episode_retrieval.py`: pure session-set merge, member expansion, and direct/episode reciprocal-rank fusion.
 - `episode_directory.py`: diagnostic query-independent session indexes: one holistic vector per session (v1) and one packet vector per natural round with max-packet session scoring (v2).
 - `episode_cards.py`: cached query-independent LLM session retrieval cards (v3); cards are retrieval representations only and are not QA evidence.
@@ -93,6 +94,7 @@ Important keys:
 - `use_embedding_cache`: enable disk cache for text embeddings.
 - `include_session_markers`: prefix the first selected turn of each natural session with its session id/date in final QA history only; selector and retrieval inputs remain unchanged.
 - `evi_use_raw_image_retrieval`: enable independent full-question text-to-image retrieval.
+- `evi_facet_round_scorer`: `anchor` preserves legacy retrieval; `multimodal_anchor_early_fusion` queries every modality per facet, combines the two visual views, then combines text and visual branches before facet consensus.
 - `evi_image_round_search_k`: candidate depth for both EVI and raw-image rankings before fusion.
 - `evi_image_round_fusion`: `reciprocal_rank` uses the anchor/image union; `anchor_candidate_reciprocal_rank` reranks only anchor candidates.
 - `evi_use_episode_set_retrieval`: add a soft session-set retrieval path without filtering direct round candidates.
@@ -109,6 +111,7 @@ Important keys:
 - `config/methods/evi_retrieval_episode_directory_diagnostic.yaml`: unchanged final retrieval plus diagnostic holistic directory ranking.
 - `config/methods/evi_retrieval_episode_directory_v2_diagnostic.yaml`: runs the unchanged retrieval with both v1 holistic and v2 round-packet directory traces.
 - `config/methods/evi_retrieval_episode_directory_card_diagnostic.yaml`: adds v3 session-card traces while leaving online retrieval unchanged.
+- `config/methods/evi_retrieval_multifacet_multimodal.yaml`: dataset-agnostic multifacet multimodal retrieval with no question-type router or post-hoc image reranking.
 - `use_image_embedding_cache`: cache raw-image and image-query embeddings under `~/.cache/memeye/raw_image_embeddings` by default.
 - `multimodal_clip_fallback_model`: local CLIP fallback used when SigLIP loading or encoding fails.
 - `use_memory_brief_cache`: enable legacy candidate brief cache.
@@ -127,6 +130,7 @@ The default debug trace is `<run_dir>/evi_debug.log` when runtime paths are avai
 - `episode_directory_retrieval` with full-question holistic session ranking and diagnostic witness anchors
 - `episode_directory_v2_retrieval` with max-packet session ranking and the best witness round per session
 - `episode_directory_v3_retrieval` with full-question ranking over cached query-independent session cards
+- `facet_multimodal_round_scoring` with calibrated source scores and the per-facet round ranking
 - New v2 traces also contain compact `packet_scores` and natural `packet_round_ids` for offline aggregation and exact expansion replay.
 - clue coverage for `direct_anchor_top10`, `episode_path_top10`, `direct_episode_fused_top10`, and `final_retrieval_top10`; each trace includes both exact round coverage and target-session coverage
 - `episodic_memory_sets`

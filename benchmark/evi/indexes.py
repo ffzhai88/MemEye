@@ -216,6 +216,45 @@ class EvidenceIndex:
     def anchors(self) -> List[EvidenceAnchor]:
         return self._anchors
 
+    def score_rounds_by_source(
+        self,
+        query_vec: List[float],
+        session_ids: Optional[set[str]] = None,
+    ) -> List[Dict[str, Any]]:
+        """Score every indexed round independently for each evidence source.
+
+        Unlike search_rounds, this method performs no Top-K truncation and no
+        cross-source rank fusion. It is intended for callers that combine
+        dialogue, visual-anchor, and raw-image evidence at the round level before
+        selecting candidates.
+        """
+        by_round: Dict[str, Dict[str, Any]] = {}
+        for anchor in self._anchors:
+            if session_ids is not None and anchor.session_id not in session_ids:
+                continue
+            score = cosine(query_vec, anchor.vector)
+            source = "visual" if anchor.image_path else "dialogue"
+            item = by_round.setdefault(
+                anchor.round_id,
+                {
+                    "round_id": anchor.round_id,
+                    "session_id": anchor.session_id,
+                    "date": anchor.date,
+                    "source_scores": {},
+                    "source_anchors": {},
+                },
+            )
+            source_scores: Dict[str, float] = item["source_scores"]
+            source_anchors: Dict[str, EvidenceAnchor] = item["source_anchors"]
+            if source not in source_scores or score > float(source_scores[source]):
+                source_scores[source] = float(score)
+                source_anchors[source] = anchor
+
+        return sorted(
+            by_round.values(),
+            key=lambda item: str(item["round_id"]),
+        )
+
     def search(
         self,
         query_vec: List[float],

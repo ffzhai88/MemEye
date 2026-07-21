@@ -15,6 +15,7 @@ from ._utils import extract_json
 from .briefs import generate_memory_briefs
 from .candidates import consolidate_candidates
 from .extractor import extract_image_anchors
+from .facet_multimodal import score_multimodal_facet_rounds
 from .episode_directory import (
     EpisodeDirectoryEntry,
     EpisodeDirectoryIndex,
@@ -217,6 +218,15 @@ class EVISystem:
             raise ValueError(
                 f"Unsupported facet_round_fusion={self._facet_round_fusion!r}; "
                 f"expected one of {sorted(valid_facet_round_fusions)}"
+            )
+        self._facet_round_scorer = str(
+            cfg.get("evi_facet_round_scorer", "anchor") or "anchor"
+        ).strip().lower()
+        valid_facet_round_scorers = {"anchor", "multimodal_anchor_early_fusion"}
+        if self._facet_round_scorer not in valid_facet_round_scorers:
+            raise ValueError(
+                f"Unsupported evi_facet_round_scorer={self._facet_round_scorer!r}; "
+                f"expected one of {sorted(valid_facet_round_scorers)}"
             )
 
         self._facet_full_question_weight = float(cfg.get("facet_full_question_weight", 1.0))
@@ -574,6 +584,7 @@ class EVISystem:
             "facet_max_facets": self._facet_max_facets,
             "facet_search_k": self._facet_search_k,
             "facet_round_fusion": self._facet_round_fusion,
+            "evi_facet_round_scorer": self._facet_round_scorer,
             "facet_full_question_weight": self._facet_full_question_weight,
             "evi_use_retrieval_facets": self._use_retrieval_facets,
             "evi_use_image_anchors": self._use_image_anchors,
@@ -2349,6 +2360,7 @@ class EVISystem:
             trace_json(log, "episode_directory_v3_retrieval", episode_directory_v3_trace)
 
         facet_results: List[Tuple[str, List[Dict[str, Any]]]] = []
+        multimodal_facet_traces: List[Dict[str, Any]] = []
         episode_facet_results: List[Tuple[str, List[Dict[str, Any]]]] = []
         all_retrieved: List[EvidenceAnchor] = []
         for idx, (facet, weight) in enumerate(facets, start=1):
@@ -2357,9 +2369,31 @@ class EVISystem:
                 if facet == question_stem
                 else self._embed(facet)
             )
-            round_hits = self._search_rounds_for_text(
-                facet, self._facet_search_k, query_vec=query_vec
-            )
+            if self._facet_round_scorer == "multimodal_anchor_early_fusion":
+                anchor_rows = self._index.score_rounds_by_source(query_vec)
+                if self._use_raw_image_retrieval:
+                    image_hits, image_meta = self._get_raw_image_index().search(
+                        facet, max(self._image_round_search_k, len(self._round_order))
+                    )
+                else:
+                    image_hits, image_meta = [], {"enabled": False}
+                round_hits, multimodal_trace = score_multimodal_facet_rounds(
+                    anchor_rows, image_hits, self._facet_search_k
+                )
+                multimodal_trace.update(
+                    {
+                        "facet_index": idx,
+                        "facet": facet,
+                        "weight": weight,
+                        "image_retrieval": image_meta,
+                    }
+                )
+                multimodal_facet_traces.append(multimodal_trace)
+                trace_json(log, "facet_multimodal_round_scoring", multimodal_trace)
+            else:
+                round_hits = self._search_rounds_for_text(
+                    facet, self._facet_search_k, query_vec=query_vec
+                )
             episode_hits = (
                 self._search_sessions_for_text(
                     facet, self._episode_search_k, query_vec=query_vec
@@ -2449,6 +2483,7 @@ class EVISystem:
                                 source: int(rank)
                                 for source, rank in hit.get("source_ranks", {}).items()
                             },
+                            "multimodal_scores": dict(hit.get("multimodal_scores", {})),
                             "best_anchor": anchors_summary([hit["best_anchor"]], max_items=1),
                         }
                         for hit in round_hits[: self._debug_top_k]
@@ -2615,13 +2650,21 @@ class EVISystem:
             )
 
         image_fusion_trace: Dict[str, Any] = {"enabled": False}
-        if self._use_raw_image_retrieval:
+        if (
+            self._use_raw_image_retrieval
+            and self._facet_round_scorer != "multimodal_anchor_early_fusion"
+        ):
             fused_rounds, image_fusion_trace = self._fuse_anchor_and_image_rounds(
                 question_stem, pre_image_ranked_rounds
             )
             ranked_rounds = fused_rounds[: self._max_candidates]
         else:
             ranked_rounds = pre_image_ranked_rounds[: self._max_candidates]
+            if self._facet_round_scorer == "multimodal_anchor_early_fusion":
+                image_fusion_trace = {
+                    "enabled": False,
+                    "application_policy": "already_applied_per_facet_before_round_fusion",
+                }
         if len(ranked_rounds) < max(1, self._min_selected_rounds):
             seen_rounds = set(ranked_rounds)
             for rid in self._round_order:
@@ -2660,6 +2703,11 @@ class EVISystem:
         trace = {
             "question_stem": question_stem,
             "facet_round_fusion": self._facet_round_fusion,
+            "facet_round_scorer": self._facet_round_scorer,
+            "facet_multimodal": {
+                "enabled": self._facet_round_scorer == "multimodal_anchor_early_fusion",
+                "facets": multimodal_facet_traces,
+            },
             "facets": [{"text": facet, "weight": weight} for facet, weight in facets],
             "ranked_round_ids": ranked_rounds,
             "anchor_ranked_round_ids": anchor_ranked_rounds,
