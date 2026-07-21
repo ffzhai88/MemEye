@@ -25,6 +25,7 @@ The README is the public-facing overview. This file is the practical guide for a
 - `analyze_episode_oracle.py`: replays an EVI episode suite with annotated clue-session filtering to measure session-routing headroom and diagnose routing, expansion-budget, and fusion failures.
 - `analyze_episode_directory_v2.py`: compares v2 packet-score and v3 session-card rankings, reciprocal-rank fusion, image-session ranking, session-length bias, and fixed-pipeline replay.
 - `analyze_session_card_ablation.py`: re-embeds saved Card sections without VLM calls to compare identity-only, identity-plus-distinctive-evidence, and full-Card session retrieval and replay.
+- `analyze_multifacet_fusion.py`: replays visual-corroborated best-source ranking from saved multifacet traces without embedding or model calls.
 - `score_locked_llm_judge.py`: post-hoc LLM-as-a-judge scoring for open-ended outputs.
 - `register_external_data.py`: creates task configs from an external MemEye data checkout.
 - `benchmark/`: core benchmark package.
@@ -157,7 +158,7 @@ Run the standard MemEye tasks and MEMLENS as one retrieval experiment:
 ```bash
 bash eval_joint_retrieval.sh \
   config/models/qwen3_vl_8b_openrouter.yaml \
-  config/methods/evi_retrieval_multifacet_multimodal.yaml \
+  config/methods/evi_retrieval_multifacet_visual_corroborated_best_source.yaml \
   runs
 ```
 

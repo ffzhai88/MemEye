@@ -1,6 +1,7 @@
 from benchmark.evi.facet_multimodal import (
     empirical_midrank_percentiles,
     score_multimodal_facet_rounds,
+    score_visual_corroborated_best_source_rounds,
 )
 from benchmark.evi.schemas import EvidenceAnchor
 from benchmark.evi.indexes import EvidenceIndex
@@ -73,3 +74,60 @@ def test_evidence_index_keeps_best_anchor_per_round_and_source():
     assert rows[0]["source_anchors"]["dialogue"].id == strong.id
     assert rows[0]["source_scores"]["dialogue"] == 1.0
     assert rows[0]["source_scores"]["visual"] > 0.0
+
+
+def test_visual_corroboration_reorders_only_visual_anchor_candidates():
+    ranked, trace = score_visual_corroborated_best_source_rounds(
+        [
+            _row("r1", visual=0.9),
+            _row("r2", visual=0.8),
+            _row("r3", visual=0.7),
+        ],
+        [
+            {"round_id": "r2", "score": 0.9, "best_image_path": "r2.jpg"},
+            {"round_id": "r3", "score": 0.8, "best_image_path": "r3.jpg"},
+            {"round_id": "r1", "score": 0.1, "best_image_path": "r1.jpg"},
+            {"round_id": "image-only", "score": 0.0},
+        ],
+        top_k=3,
+    )
+    by_id = {item["round_id"]: item for item in ranked}
+    assert by_id["r2"]["multimodal_ranks"]["corroborated_visual_rank"] == 1
+    assert "image-only" not in by_id
+    assert trace["excluded_image_only_round_ids"] == ["image-only"]
+
+
+def test_best_source_keeps_independent_top_k_candidate_budgets():
+    ranked, trace = score_visual_corroborated_best_source_rounds(
+        [
+            _row("dialogue", dialogue=1.0),
+            _row("visual", visual=1.0),
+            _row("weak", dialogue=0.1, visual=0.1),
+        ],
+        [{"round_id": "visual", "score": 1.0}],
+        top_k=1,
+    )
+    assert {item["round_id"] for item in ranked} == {"dialogue", "visual"}
+    assert trace["num_dialogue_candidates"] == 1
+    assert trace["num_visual_candidates"] == 1
+    by_id = {item["round_id"]: item for item in ranked}
+    assert by_id["dialogue"]["best_source"] == "dialogue"
+    assert by_id["visual"]["best_source"] == "visual"
+
+
+def test_best_source_hits_feed_existing_cross_facet_consensus():
+    first, _ = score_visual_corroborated_best_source_rounds(
+        [_row("shared", dialogue=0.9), _row("single", dialogue=0.8)], [], top_k=2
+    )
+    second, _ = score_visual_corroborated_best_source_rounds(
+        [_row("shared", visual=0.9), _row("other", visual=0.8)], [], top_k=2
+    )
+    from benchmark.evi.system import EVISystem
+
+    dummy = object.__new__(EVISystem)
+    dummy._facet_round_fusion = "max_similarity_times_best_source_rank_consensus"
+    dummy._max_candidate_anchors = 8
+    merged = dummy._merge_facet_rounds([("facet one", first), ("facet two", second)])
+    assert merged[0]["round_id"] == "shared"
+    assert merged[0]["matched_facets"] == 2
+    assert merged[0]["best_source_by_facet"] == {"f0": "dialogue", "f1": "visual"}

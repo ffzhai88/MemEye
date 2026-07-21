@@ -95,6 +95,7 @@ Important keys:
 - `include_session_markers`: prefix the first selected turn of each natural session with its session id/date in final QA history only; selector and retrieval inputs remain unchanged.
 - `evi_use_raw_image_retrieval`: enable independent full-question text-to-image retrieval.
 - `evi_facet_round_scorer`: `anchor` preserves legacy retrieval; `multimodal_anchor_early_fusion` queries every modality per facet, combines the two visual views, then combines text and visual branches before facet consensus.
+- `evi_facet_round_scorer: visual_corroborated_best_source` retains independent dialogue and visual candidate budgets; raw images rerank only visual-anchor candidates before the existing cross-facet best-source consensus.
 - `evi_image_round_search_k`: candidate depth for both EVI and raw-image rankings before fusion.
 - `evi_image_round_fusion`: `reciprocal_rank` uses the anchor/image union; `anchor_candidate_reciprocal_rank` reranks only anchor candidates.
 - `evi_use_episode_set_retrieval`: add a soft session-set retrieval path without filtering direct round candidates.
@@ -112,6 +113,7 @@ Important keys:
 - `config/methods/evi_retrieval_episode_directory_v2_diagnostic.yaml`: runs the unchanged retrieval with both v1 holistic and v2 round-packet directory traces.
 - `config/methods/evi_retrieval_episode_directory_card_diagnostic.yaml`: adds v3 session-card traces while leaving online retrieval unchanged.
 - `config/methods/evi_retrieval_multifacet_multimodal.yaml`: dataset-agnostic multifacet multimodal retrieval with no question-type router or post-hoc image reranking.
+- `config/methods/evi_retrieval_multifacet_visual_corroborated_best_source.yaml`: provenance-gated visual corroboration followed by facet-local best-source selection.
 - `use_image_embedding_cache`: cache raw-image and image-query embeddings under `~/.cache/memeye/raw_image_embeddings` by default.
 - `multimodal_clip_fallback_model`: local CLIP fallback used when SigLIP loading or encoding fails.
 - `use_memory_brief_cache`: enable legacy candidate brief cache.

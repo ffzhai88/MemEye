@@ -180,7 +180,10 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--task-config", action="append", dest="task_configs")
     parser.add_argument("--model-config", default="config/models/qwen3_vl_8b_openrouter.yaml")
-    parser.add_argument("--method-config", default="config/methods/evi_retrieval_multifacet_multimodal.yaml")
+    parser.add_argument(
+        "--method-config",
+        default="config/methods/evi_retrieval_multifacet_visual_corroborated_best_source.yaml",
+    )
     parser.add_argument("--output-root", default="runs")
     parser.add_argument("--run-dir", default="")
     parser.add_argument("--memeye-max-questions", type=int, default=0)
