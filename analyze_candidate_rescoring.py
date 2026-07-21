@@ -44,6 +44,17 @@ def _read_jsonl(path: Path) -> List[Dict[str, Any]]:
         return [json.loads(line) for line in handle if line.strip()]
 
 
+def discover_memeye_task_dirs(memeye_root: Path) -> List[Path]:
+    """Return only completed per-task retrieval directories."""
+    return sorted(
+        child
+        for child in memeye_root.iterdir()
+        if child.is_dir()
+        and (child / "retrievals.jsonl").is_file()
+        and (child / "config.json").is_file()
+    )
+
+
 def _cosine(left: Sequence[float], right: Sequence[float]) -> float:
     if not left or not right or len(left) != len(right):
         return 0.0
@@ -513,9 +524,13 @@ def main() -> None:
     data_root = Path(args.data_root).resolve()
     cache_root = Path(args.cache_dir).resolve() if args.cache_dir else output_dir / "embedding_cache"
 
-    task_dirs = sorted((input_dir / "memeye").glob("*/"))
+    memeye_root = input_dir / "memeye"
+    task_dirs = discover_memeye_task_dirs(memeye_root)
     if not task_dirs:
-        raise FileNotFoundError(f"No MemEye task directories found under {input_dir / 'memeye'}")
+        raise FileNotFoundError(
+            f"No completed MemEye task directories found under {memeye_root}; "
+            "each task directory must contain config.json and retrievals.jsonl"
+        )
     first_config = _read_json(task_dirs[0] / "config.json")
     method_cfg = _diagnostic_method_config(first_config, cache_root)
     text_model = str(method_cfg.get("text_embedding_model", TextEmbedder.DEFAULT_MODEL))

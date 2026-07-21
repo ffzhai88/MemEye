@@ -1,6 +1,10 @@
+from pathlib import Path
+from tempfile import TemporaryDirectory
+
 from analyze_candidate_rescoring import (
     candidate_round_ids,
     dedupe_facets,
+    discover_memeye_task_dirs,
     score_candidate_strategies,
 )
 
@@ -24,6 +28,18 @@ def test_candidate_round_ids_are_fixed_to_saved_trace_order():
         ]},
     }
     assert candidate_round_ids(row, 2) == ["r2", "r1"]
+
+
+def test_task_discovery_ignores_suite_json_files_and_incomplete_directories():
+    with TemporaryDirectory() as directory:
+        root = Path(directory)
+        (root / "suite_metrics.json").write_text("{}", encoding="utf-8")
+        (root / "incomplete").mkdir()
+        task = root / "complete_task"
+        task.mkdir()
+        (task / "config.json").write_text("{}", encoding="utf-8")
+        (task / "retrievals.jsonl").write_text("", encoding="utf-8")
+        assert discover_memeye_task_dirs(root) == [task]
 
 
 def test_fixed_multimodal_rewards_same_round_agreement():
