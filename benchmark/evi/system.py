@@ -39,6 +39,7 @@ from .episode_retrieval import (
     merge_facet_sessions,
 )
 from .indexes import EvidenceIndex, embed_text, normalize_type
+from .raw_multimodal import RawMultimodalCandidateReranker
 from .schemas import EpisodicState, EvidenceAnchor, MemoryBrief
 from .sets import build_episodic_memory_sets, build_session_memory_sets, build_session_memory_sets_from_candidates
 from .states import read_episodic_states
@@ -175,6 +176,7 @@ class EVISystem:
         self._embedder: Optional[Any] = None
         self._answer_routers: Dict[str, Any] = {}
         self._raw_image_index: Optional[Any] = None
+        self._raw_multimodal_reranker: Optional[RawMultimodalCandidateReranker] = None
 
         self._round_order: List[str] = []
         self._round_session: Dict[str, str] = {}
@@ -247,6 +249,22 @@ class EVISystem:
             cfg.get("evi_use_raw_image_retrieval"), False
         )
         self._image_round_search_k = int(cfg.get("evi_image_round_search_k", 30))
+        self._apply_raw_multimodal_candidate_rank_fusion = self._as_bool(
+            cfg.get("evi_apply_raw_multimodal_candidate_rank_fusion"), False
+        )
+        self._raw_multimodal_candidate_k = int(
+            cfg.get("evi_raw_multimodal_candidate_k", self._image_round_search_k)
+        )
+        if self._raw_multimodal_candidate_k <= 0:
+            raise ValueError("evi_raw_multimodal_candidate_k must be positive")
+        if (
+            self._apply_raw_multimodal_candidate_rank_fusion
+            and not self._use_raw_image_retrieval
+        ):
+            raise ValueError(
+                "evi_apply_raw_multimodal_candidate_rank_fusion requires "
+                "evi_use_raw_image_retrieval=true"
+            )
         self._use_episode_set_retrieval = self._as_bool(
             cfg.get("evi_use_episode_set_retrieval"), False
         )
@@ -598,6 +616,10 @@ class EVISystem:
             "evi_retrieval_only": self._retrieval_only,
             "include_session_markers": self._include_session_markers,
             "evi_use_raw_image_retrieval": self._use_raw_image_retrieval,
+            "evi_apply_raw_multimodal_candidate_rank_fusion": (
+                self._apply_raw_multimodal_candidate_rank_fusion
+            ),
+            "evi_raw_multimodal_candidate_k": self._raw_multimodal_candidate_k,
             "evi_image_round_search_k": self._image_round_search_k,
             "evi_image_round_fusion": self._image_round_fusion,
             "evi_use_episode_set_retrieval": self._use_episode_set_retrieval,
@@ -2120,6 +2142,58 @@ class EVISystem:
             self._raw_image_index = RawImageRoundIndex(self._current_dataset, self._cfg)
         return self._raw_image_index
 
+    def _get_raw_multimodal_reranker(self) -> RawMultimodalCandidateReranker:
+        if self._raw_multimodal_reranker is None:
+            if self._current_dataset is None or self._embedder is None:
+                raise RuntimeError(
+                    "Raw multimodal candidate fusion requires an initialized dataset "
+                    "and text embedder"
+                )
+            self._raw_multimodal_reranker = RawMultimodalCandidateReranker(
+                self._current_dataset,
+                self._embedder,
+                self._get_raw_image_index(),
+                self._cfg,
+                self._embed_cache_namespace,
+            )
+        return self._raw_multimodal_reranker
+
+    def _fuse_evi_and_raw_multimodal_rounds(
+        self,
+        question_stem: str,
+        evi_ranked_round_ids: List[str],
+    ) -> Tuple[List[str], Dict[str, Any]]:
+        candidate_ids = evi_ranked_round_ids[: self._raw_multimodal_candidate_k]
+        fused_ids, trace = self._get_raw_multimodal_reranker().rerank(
+            question_stem, candidate_ids
+        )
+        log.info(
+            "QDMO-EVI raw-multimodal candidate fusion candidates=%d "
+            "text_weight=%.3f image_weight=%.3f evi=%s raw_mm=%s fused=%s",
+            len(candidate_ids),
+            float(trace.get("text_weight", 0.0)),
+            float(trace.get("image_weight", 0.0)),
+            candidate_ids[: self._debug_top_k],
+            trace.get("raw_multimodal_ranked_round_ids", [])[: self._debug_top_k],
+            fused_ids[: self._debug_top_k],
+        )
+        for item in trace.get("rows", [])[: self._debug_top_k]:
+            log.info(
+                "  raw_mm_fused_round[%02d] round=%s mean_rank=%.2f "
+                "evi_rank=%d raw_mm_rank=%d text=%.4f image=%.4f raw_mm=%.4f has_image=%s",
+                int(item["final_rank"]),
+                item["round_id"],
+                float(item["mean_rank"]),
+                int(item["evi_rank"]),
+                int(item["raw_multimodal_rank"]),
+                float(item["text_score"]),
+                float(item["image_score"]),
+                float(item["raw_multimodal_score"]),
+                bool(item["has_image"]),
+            )
+        trace_json(log, "raw_multimodal_candidate_fusion", trace)
+        return fused_ids, trace
+
     def _fuse_anchor_and_image_rounds(
         self,
         question_stem: str,
@@ -2669,7 +2743,19 @@ class EVISystem:
             )
 
         image_fusion_trace: Dict[str, Any] = {"enabled": False}
-        if (
+        raw_multimodal_fusion_trace: Dict[str, Any] = {"enabled": False}
+        if self._apply_raw_multimodal_candidate_rank_fusion:
+            fused_rounds, raw_multimodal_fusion_trace = (
+                self._fuse_evi_and_raw_multimodal_rounds(
+                    question_stem, pre_image_ranked_rounds
+                )
+            )
+            ranked_rounds = fused_rounds[: self._max_candidates]
+            image_fusion_trace = {
+                "enabled": False,
+                "application_policy": "raw_image_used_in_raw_multimodal_candidate_fusion",
+            }
+        elif (
             self._use_raw_image_retrieval
             and self._facet_round_scorer
             not in {
@@ -2744,6 +2830,7 @@ class EVISystem:
             "episode_directory_v2": episode_directory_v2_trace,
             "episode_directory_v3": episode_directory_v3_trace,
             "image_fusion": image_fusion_trace,
+            "raw_multimodal_candidate_fusion": raw_multimodal_fusion_trace,
             "rounds": round_trace,
         }
         trace_json(log, "faceted_round_merge", {"num_rounds": len(merged), "rounds": round_trace})

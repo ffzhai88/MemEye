@@ -27,6 +27,7 @@ This design is intended to preserve item-level evidence for counting while recov
 - `extractor.py`: task-agnostic offline visual anchor extraction.
 - `indexes.py`: in-memory anchor vector index and type-aware retrieval scoring.
 - `facet_multimodal.py`: query-local calibration and early round-level fusion of dialogue anchors, visual anchors, and raw-image retrieval for each facet.
+- `raw_multimodal.py`: fixed-candidate raw dialogue/image scoring and equal-weight mean-rank fusion with the primary EVI ranking.
 - `episode_retrieval.py`: pure session-set merge, member expansion, and direct/episode reciprocal-rank fusion.
 - `episode_directory.py`: diagnostic query-independent session indexes: one holistic vector per session (v1) and one packet vector per natural round with max-packet session scoring (v2).
 - `episode_cards.py`: cached query-independent LLM session retrieval cards (v3); cards are retrieval representations only and are not QA evidence.
@@ -98,6 +99,9 @@ Important keys:
 - `evi_facet_round_scorer: visual_corroborated_best_source` retains independent dialogue and visual candidate budgets; raw images rerank only visual-anchor candidates before the existing cross-facet best-source consensus.
 - `evi_image_round_search_k`: candidate depth for both EVI and raw-image rankings before fusion.
 - `evi_image_round_fusion`: `reciprocal_rank` uses the anchor/image union; `anchor_candidate_reciprocal_rank` reranks only anchor candidates.
+- `evi_apply_raw_multimodal_candidate_rank_fusion`: rescore the fixed EVI Top-K with full-question raw dialogue/image evidence and fuse EVI/Raw-MM ranks by their parameter-free arithmetic mean.
+- `evi_raw_multimodal_candidate_k`: fixed EVI candidate depth for Raw-MM calibration; the paper-facing configuration uses 30.
+- `evi_raw_multimodal_text_weight` / `evi_raw_multimodal_image_weight`: raw-evidence score weights before Raw-MM ranking; the canonical setting is 0.5/0.5 with missing image score zero.
 - `evi_use_episode_set_retrieval`: add a soft session-set retrieval path without filtering direct round candidates.
 - `evi_episode_search_k`: session-set depth per facet.
 - `evi_episode_round_search_k`: maximum expanded episode-round path depth before direct/episode fusion.
@@ -114,6 +118,7 @@ Important keys:
 - `config/methods/evi_retrieval_episode_directory_card_diagnostic.yaml`: adds v3 session-card traces while leaving online retrieval unchanged.
 - `config/methods/evi_retrieval_multifacet_multimodal.yaml`: dataset-agnostic multifacet multimodal retrieval with no question-type router or post-hoc image reranking.
 - `config/methods/evi_retrieval_multifacet_visual_corroborated_best_source.yaml`: provenance-gated visual corroboration followed by facet-local best-source selection.
+- `config/methods/evi_retrieval_multifacet_raw_multimodal_rank_fusion.yaml`: the same EVI candidate generator followed by fixed-pool raw multimodal scoring and EVI/Raw-MM mean-rank fusion.
 - `use_image_embedding_cache`: cache raw-image and image-query embeddings under `~/.cache/memeye/raw_image_embeddings` by default.
 - `multimodal_clip_fallback_model`: local CLIP fallback used when SigLIP loading or encoding fails.
 - `use_memory_brief_cache`: enable legacy candidate brief cache.

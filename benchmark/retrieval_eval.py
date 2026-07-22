@@ -95,6 +95,7 @@ def _rank_details(ranked_round_ids: List[str], clue_round_ids: List[str]) -> Dic
 
 def _retrieval_components(trace: Dict[str, Any]) -> Dict[str, List[str]]:
     image_fusion = trace.get("image_fusion", {}) or {}
+    raw_multimodal_fusion = trace.get("raw_multimodal_candidate_fusion", {}) or {}
     anchor_ids = list(
         trace.get("anchor_ranked_round_ids", [])
         or image_fusion.get("anchor_ranked_round_ids", [])
@@ -117,6 +118,18 @@ def _retrieval_components(trace: Dict[str, Any]) -> Dict[str, List[str]]:
         "episode_ranked_round_ids": [str(value) for value in episode_ids if value],
         "direct_episode_fused_round_ids": [
             str(value) for value in direct_episode_ids if value
+        ],
+        "raw_multimodal_ranked_round_ids": [
+            str(value)
+            for value in raw_multimodal_fusion.get(
+                "raw_multimodal_ranked_round_ids", []
+            )
+            if value
+        ],
+        "evi_raw_multimodal_fused_round_ids": [
+            str(value)
+            for value in raw_multimodal_fusion.get("fused_ranked_round_ids", [])
+            if value
         ],
     }
 
@@ -267,7 +280,14 @@ def _build_retriever(
             if config.get("evi_use_raw_image_retrieval")
             else 0
         )
-        config["max_candidates"] = max(max_k, image_pool_k)
+        raw_multimodal_pool_k = (
+            int(config.get("evi_raw_multimodal_candidate_k", 0) or 0)
+            if config.get("evi_apply_raw_multimodal_candidate_rank_fusion")
+            else 0
+        )
+        config["max_candidates"] = max(
+            max_k, image_pool_k, raw_multimodal_pool_k
+        )
         config["evi_retrieval_only"] = True
         config["_runtime_paths"] = {"run_dir": str(run_dir)}
         system = EVISystem(config)

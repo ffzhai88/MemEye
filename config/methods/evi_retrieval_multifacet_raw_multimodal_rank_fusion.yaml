@@ -1,0 +1,68 @@
+method: evi
+name: evi_retrieval_multifacet_raw_multimodal_rank_fusion
+modality: multimodal
+evi_pipeline: faceted_topk
+
+# Stage 1: the unchanged multifacet EVI policy generates and ranks a broad
+# candidate pool from dialogue/visual anchors with provenance-bound image
+# corroboration. No benchmark label or question type enters this stage.
+evi_facet_round_scorer: visual_corroborated_best_source
+facet_max_facets: 4
+facet_search_k: 30
+facet_round_fusion: max_similarity_times_best_source_rank_consensus
+facet_full_question_weight: 1.0
+evi_use_retrieval_facets: true
+use_facet_cache: true
+
+# Stage 2: score exactly the EVI Top-30 against the full question using raw
+# dialogue and original images. Missing images receive image score zero, which
+# matches the canonical Semantic RAG multimodal scorer and the saved offline
+# candidate-rescoring experiment.
+evi_apply_raw_multimodal_candidate_rank_fusion: true
+evi_raw_multimodal_candidate_k: 30
+evi_raw_multimodal_text_weight: 0.5
+evi_raw_multimodal_image_weight: 0.5
+use_raw_multimodal_text_embedding_cache: true
+
+# Stage 3 uses equal-weight mean rank over EVI rank and Raw-MM rank. Rank fusion
+# avoids treating EVI memory scores and raw multimodal cosine scores as if they
+# were calibrated in one numerical space.
+
+evi_retrieval_only: true
+evi_use_episode_set_retrieval: false
+evi_enable_episode_directory_diagnostic: false
+evi_enable_episode_directory_packet_diagnostic: false
+evi_enable_episode_directory_card_diagnostic: false
+evi_use_scope_interpretation: false
+evi_use_evidence_organizer: false
+
+evi_use_raw_image_retrieval: true
+evi_image_round_search_k: 30
+evi_image_round_fusion: reciprocal_rank
+multimodal_embedding_model: siglip2-base-patch16-384
+multimodal_clip_fallback_model: openai/clip-vit-base-patch32
+multimodal_clip_local_files_only: true
+use_image_embedding_cache: true
+
+text_embedding_model: all-MiniLM-L6-v2
+use_embedding_cache: true
+evi_use_image_anchors: true
+use_dataset_captions: false
+include_session_markers: false
+
+raw_search_k: 120
+max_candidates: 30
+max_candidate_anchors: 8
+evi_final_max_rounds: 10
+min_selected_rounds: 1
+max_answer_images: 12
+use_final_memory_images: false
+
+vlm_max_new_tokens: 1024
+vlm_timeout: 90
+use_memory_brief_cache: true
+evi_debug: true
+evi_debug_console: true
+evi_debug_append: true
+evi_debug_top_k: 50
+evi_debug_prompt_chars: 12000
