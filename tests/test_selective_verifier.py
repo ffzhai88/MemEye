@@ -61,7 +61,7 @@ def test_invalid_response_fails_closed():
     assert verdict.confidence == "low"
 
 
-def test_initial_selection_is_disputed_mean_top_k_only():
+def test_initial_selection_is_nonstable_mean_top_k_only():
     result = verification_candidate_ids(
         ["a", "b", "c"],
         ["d", "b", "e"],
@@ -69,6 +69,16 @@ def test_initial_selection_is_disputed_mean_top_k_only():
         order_ranking=["b", "a", "f", "d"],
     )
     assert result == ["a"]
+
+
+def test_initial_selection_includes_consensus_low_candidate():
+    result = verification_candidate_ids(
+        ["stable", "anchor"],
+        ["stable", "raw"],
+        top_k=2,
+        order_ranking=["stable", "moderate"],
+    )
+    assert result == ["moderate"]
 
 
 def test_conservative_rerank_requests_lazy_disputed_backfill():
@@ -90,7 +100,7 @@ def test_conservative_rerank_requests_lazy_disputed_backfill():
     assert trace["pending_round_id"] == "raw"
 
 
-def test_conservative_rerank_preserves_consensus_moderate_backfill():
+def test_conservative_rerank_requires_consensus_low_backfill_verdict():
     high_reject = {
         "parse_valid": True,
         "evidence_utility": "not_useful",
@@ -103,10 +113,32 @@ def test_conservative_rerank_preserves_consensus_moderate_backfill():
         {"anchor": high_reject},
         top_k=2,
     )
+    assert ranking[:2] == ["stable", "anchor"]
+    assert trace["status"] == "needs_verification"
+    assert trace["pending_round_id"] == "moderate"
+
+
+
+def test_conservative_rerank_accepts_verified_consensus_low_backfill():
+    high_reject = {
+        "parse_valid": True,
+        "evidence_utility": "not_useful",
+        "confidence": "high",
+    }
+    preserve = {
+        "parse_valid": True,
+        "evidence_utility": "possibly_useful",
+        "confidence": "medium",
+    }
+    ranking, trace = conservative_rerank(
+        ["stable", "anchor", "moderate"],
+        ["stable", "anchor"],
+        ["stable", "raw"],
+        {"anchor": high_reject, "moderate": preserve},
+        top_k=2,
+    )
     assert ranking[:2] == ["stable", "moderate"]
     assert trace["status"] == "resolved"
-    assert trace["consensus_moderate_top_k_round_ids"] == ["moderate"]
-    assert trace["demoted_round_ids"] == ["anchor"]
 
 
 def test_conservative_rerank_falls_back_to_rejected_when_budget_would_shrink():

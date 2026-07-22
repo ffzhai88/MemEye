@@ -240,13 +240,18 @@ def verification_candidate_ids(
     top_k: int = 10,
     order_ranking: Sequence[str] = (),
 ) -> List[str]:
-    """Return initially selected mean-Top-K candidates with source disagreement."""
+    """Return non-stable mean-Top-K candidates that require verification.
+
+    Only candidates placed in both component Top-K lists are stable enough to
+    enter the final Top-K without verification. This deliberately includes
+    consensus-low candidates when the mean ranking would select them.
+    """
 
     abstract_top = set(map(str, list(abstract_ranking)[:top_k]))
     raw_top = set(map(str, list(raw_ranking)[:top_k]))
-    contested = (abstract_top ^ raw_top) - {""}
+    stable_in = (abstract_top & raw_top) - {""}
     mean_top = list(map(str, list(order_ranking)[:top_k]))
-    return [rid for rid in mean_top if rid in contested]
+    return [rid for rid in mean_top if rid and rid not in stable_in]
 
 
 def _is_high_confidence_rejection(verdict: Mapping[str, Any]) -> bool:
@@ -266,12 +271,12 @@ def conservative_rerank(
 ) -> Tuple[List[str], Dict[str, Any]]:
     """Replay mean-rank until Top-K is resolved or another verdict is needed.
 
-    Agreement never triggers a VLM call: this includes shared high ranks and
-    candidates that both component rankings place outside their Top-K but that
-    mean-rank promotes through consistent moderate ranks. A disputed candidate
-    is accepted unless it has a parse-valid high-confidence rejection. When an
-    unseen disputed candidate is encountered while filling a vacancy, it is
-    returned as ``pending_round_id`` for lazy verification.
+    Only shared high ranks bypass the VLM. Every other candidate that can enter
+    the final Top-K, including a candidate outside both component Top-K lists,
+    must have a verdict. A candidate is accepted unless it has a parse-valid
+    high-confidence rejection. When an unseen non-stable candidate is
+    encountered while filling a vacancy, it is returned as ``pending_round_id``
+    for lazy verification.
     """
 
     base = list(dict.fromkeys(map(str, base_ranking)))
@@ -279,9 +284,10 @@ def conservative_rerank(
     raw_top = set(map(str, list(raw_ranking)[:top_k]))
     stable_in = abstract_top & raw_top
     contested = abstract_top ^ raw_top
+    requires_verification = set(base) - stable_in
     rejected = {
         rid
-        for rid in contested
+        for rid in requires_verification
         if rid in verdicts and _is_high_confidence_rejection(verdicts[rid])
     }
     target = min(top_k, len(base))
@@ -290,7 +296,7 @@ def conservative_rerank(
     for rid in base:
         if len(final_top) >= target:
             break
-        if rid in contested:
+        if rid in requires_verification:
             if rid not in verdicts:
                 pending = rid
                 break
@@ -300,7 +306,7 @@ def conservative_rerank(
 
     if pending:
         return base, {
-            "policy": "mean_top_k_disagreement_lazy_verification",
+            "policy": "mean_top_k_nonstable_lazy_verification",
             "top_k": top_k,
             "status": "needs_verification",
             "pending_round_id": pending,
@@ -323,7 +329,7 @@ def conservative_rerank(
     demoted = [rid for rid in base if rid in rejected and rid in base_top and rid not in selected]
     promoted = [rid for rid in final_top if rid not in base_top]
     return final_ranking, {
-        "policy": "mean_top_k_disagreement_lazy_verification",
+        "policy": "mean_top_k_nonstable_lazy_verification",
         "top_k": top_k,
         "status": "resolved",
         "pending_round_id": "",
@@ -331,6 +337,14 @@ def conservative_rerank(
         "contested_round_ids": [rid for rid in base if rid in contested],
         "high_confidence_rejected_round_ids": [rid for rid in base if rid in rejected],
         "rejected_outside_top_k": rejected_outside_top,
+        "consensus_low_round_ids": [
+            rid for rid in base
+            if rid not in abstract_top and rid not in raw_top
+        ],
+        "verified_nonstable_round_ids": [
+            rid for rid in base
+            if rid in requires_verification and rid in verdicts
+        ],
         "consensus_moderate_top_k_round_ids": [
             rid
             for rid in final_top

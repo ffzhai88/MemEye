@@ -26,7 +26,7 @@ The README is the public-facing overview. This file is the practical guide for a
 - `analyze_episode_directory_v2.py`: compares v2 packet-score and v3 session-card rankings, reciprocal-rank fusion, image-session ranking, session-length bias, and fixed-pipeline replay.
 - `analyze_session_card_ablation.py`: re-embeds saved Card sections without VLM calls to compare identity-only, identity-plus-distinctive-evidence, and full-Card session retrieval and replay.
 - `analyze_multifacet_fusion.py`: replays visual-corroborated best-source ranking from saved multifacet traces without embedding or model calls.
-- `analyze_selective_vlm_verification.py`: starts from saved Anchor-only/Raw-MM mean-rank candidates, checks disputed candidates already in mean Top-K, lazily verifies disputed backfills only after a rejection, and writes resumable two-benchmark diagnostics.
+- `analyze_selective_vlm_verification.py`: starts from saved Anchor-only/Raw-MM mean-rank candidates, exempts only candidates in both component Top-K lists, verifies every other candidate before final Top-K admission, and writes resumable two-benchmark diagnostics.
 - `score_locked_llm_judge.py`: post-hoc LLM-as-a-judge scoring for open-ended outputs.
 - `register_external_data.py`: creates task configs from an external MemEye data checkout.
 - `benchmark/`: core benchmark package.
@@ -170,7 +170,7 @@ under `memlens/`. Metrics remain side-by-side because the two benchmarks use
 different annotation semantics.
 
 After generating abstract candidates and running the offline Raw-MM/provenance
-analyzer, selectively verify contested Top-10 rounds with a VLM:
+analyzer, selectively verify non-stable Top-10 rounds with a VLM:
 
 ```bash
 bash eval_selective_verification.sh \
@@ -179,10 +179,11 @@ bash eval_selective_verification.sh \
 ```
 
 This stage never passes benchmark, question-type, answer, or clue labels to the
-VLM. By default it verifies only disputed candidates already in mean Top-10,
-then checks lower disputed candidates lazily if a rejection opens a slot. The
-shared Anchor candidate pool remains Top-30. It uses an exact prompt/evidence
-cache and question-level JSONL resume.
+VLM. Candidates present in both Anchor Top-10 and Raw-MM Top-10 bypass the VLM.
+Every other candidate, including a consensus-low backfill outside both component
+Top-10 lists, must be verified before entering the final Top-10. The shared
+Anchor candidate pool remains Top-30. It uses an exact prompt/evidence cache and
+question-level JSONL resume.
 
 Compare retrieval suites at `K=10`:
 

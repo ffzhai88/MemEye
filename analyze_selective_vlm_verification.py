@@ -1,4 +1,4 @@
-"""Selectively verify contested retrieval candidates with a VLM.
+"""Selectively verify non-stable retrieval candidates with a VLM.
 
 The base ranking is saved Anchor-only plus Raw-MM mean-rank. The VLM checks
 one raw round at a time and never receives benchmark names, question types,
@@ -452,7 +452,7 @@ def _process_question(
         "candidate_k": candidate_k,
         "evaluation_k": eval_k,
         "verification_top_k": verification_top_k,
-        "selection_policy": "mean_top_k_disagreement_then_lazy_backfill",
+        "selection_policy": "mean_top_k_nonstable_then_lazy_backfill",
         "initial_selected_round_ids": initial_selected,
         "lazy_selected_round_ids": lazy_selected,
         "selected_round_ids": verified_order,
@@ -532,7 +532,7 @@ def _verifier_diagnostics(
     grounding: Counter[str] = Counter()
     checked = parsed = errors = demoted = demoted_clues = changed = 0
     stable_intersection_drops = initial_checked = lazy_checked = 0
-    consensus_moderate_selected = 0
+    consensus_low_selected = unchecked_consensus_low_selected = 0
     for row in rows:
         clues = set(map(str, row.get("clue_round_ids", [])))
         before = list(
@@ -545,8 +545,11 @@ def _verifier_diagnostics(
         stable_intersection_drops += len(
             ((abstract_top & raw_top) & set(before)) - set(after)
         )
-        consensus_moderate_selected += len(
-            set(after) - (abstract_top | raw_top)
+        consensus_low = set(after) - (abstract_top | raw_top)
+        verified = set(map(str, row.get("selected_round_ids", [])))
+        consensus_low_selected += len(consensus_low)
+        unchecked_consensus_low_selected += len(
+            consensus_low - verified
         )
         initial_checked += len(row.get("initial_selected_round_ids", []))
         lazy_checked += len(row.get("lazy_selected_round_ids", []))
@@ -577,7 +580,8 @@ def _verifier_diagnostics(
         "stable_mean_top_k_drops": stable_intersection_drops,
         "initial_checked_candidates": initial_checked,
         "lazy_backfill_checked_candidates": lazy_checked,
-        "consensus_moderate_selected_candidates": consensus_moderate_selected,
+        "consensus_low_selected_candidates": consensus_low_selected,
+        "unchecked_consensus_low_selected_candidates": unchecked_consensus_low_selected,
     }
 
 
@@ -604,13 +608,13 @@ def _write_metrics(
             "VLM prompts or reranking"
         ),
         "selection_policy": (
-            "initially verify mean-rank Top-K candidates in the Anchor/Raw-MM "
-            "Top-K symmetric difference; verify lower disputed candidates "
-            "only when needed for backfill"
+            "verify every mean-rank candidate that can enter final Top-K "
+            "unless it is in both Anchor and Raw-MM Top-K lists; verify "
+            "lower non-stable candidates only when needed for backfill"
         ),
         "decision_policy": (
-            "preserve mean-rank order for all agreement cases and skip only "
-            "parse-valid high-confidence not_useful disputed candidates"
+            "preserve mean-rank order, exempt only shared-high candidates, "
+            "and skip only parse-valid high-confidence not_useful candidates"
         ),
         "verifier": {
             "prompt_version": PROMPT_VERSION,
@@ -649,12 +653,12 @@ def _write_metrics(
         "",
         (
             "Base: Anchor-only plus Raw-MM mean-rank. The VLM sees raw "
-            "evidence first for disputed candidates already in mean Top-K, "
-            "then lazily for disputed backfill candidates."
+            "evidence for every candidate that can enter final Top-K unless "
+            "both component rankings place it in their Top-K."
         ),
         (
-            "Candidates with agreement retain mean-rank behavior, including "
-            "consistent moderate candidates. All annotations are evaluation-only."
+            "Consensus-low candidates are checked lazily before admission. "
+            "All annotations are evaluation-only."
         ),
         "",
         "| Benchmark | Strategy | Micro R | Macro R | Hit@K | Full@K | W/T/L vs mean |",
@@ -687,7 +691,8 @@ def _write_metrics(
         f"- Stable mean-Top-K drops: {diagnostics['stable_mean_top_k_drops']}",
         f"- Initial checked candidates: {diagnostics['initial_checked_candidates']}",
         f"- Lazy backfill checks: {diagnostics['lazy_backfill_checked_candidates']}",
-        f"- Consensus-moderate final selections: {diagnostics['consensus_moderate_selected_candidates']}",
+        f"- Consensus-low final selections: {diagnostics['consensus_low_selected_candidates']}",
+        f"- Unchecked consensus-low final selections: {diagnostics['unchecked_consensus_low_selected_candidates']}",
         (
             f"- Questions with a changed Top-{args.eval_k}: "
             f"{diagnostics['questions_with_changed_top_k']}"
@@ -773,8 +778,8 @@ def _run_config(
         "benchmark": args.benchmark,
         "max_questions_per_dataset": args.max_questions,
         "dry_run": args.dry_run,
-        "selection_policy": "mean_top_k_disagreement_then_lazy_backfill",
-        "decision_policy": "mean_rank_preserving_lazy_disagreement_verification",
+        "selection_policy": "mean_top_k_nonstable_then_lazy_backfill",
+        "decision_policy": "mean_rank_preserving_lazy_nonstable_verification",
         "label_isolation": True,
     }
 
@@ -864,7 +869,7 @@ def main() -> None:
     output_dir = (
         Path(args.output_dir).resolve()
         if args.output_dir
-        else input_dir / "selective_verification"
+        else input_dir / "selective_verification_nonstable_lazy"
     )
     _configure_logging(output_dir)
     model_path = Path(args.verifier_model_config).resolve()
