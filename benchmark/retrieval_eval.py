@@ -285,8 +285,9 @@ def _build_retriever(
             if config.get("evi_apply_raw_multimodal_candidate_rank_fusion")
             else 0
         )
+        configured_pool_k = int(config.get("max_candidates", 0) or 0)
         config["max_candidates"] = max(
-            max_k, image_pool_k, raw_multimodal_pool_k
+            max_k, configured_pool_k, image_pool_k, raw_multimodal_pool_k
         )
         config["evi_retrieval_only"] = True
         config["_runtime_paths"] = {"run_dir": str(run_dir)}

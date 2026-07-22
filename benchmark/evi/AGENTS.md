@@ -119,6 +119,7 @@ Important keys:
 - `config/methods/evi_retrieval_multifacet_multimodal.yaml`: dataset-agnostic multifacet multimodal retrieval with no question-type router or post-hoc image reranking.
 - `config/methods/evi_retrieval_multifacet_visual_corroborated_best_source.yaml`: provenance-gated visual corroboration followed by facet-local best-source selection.
 - `config/methods/evi_retrieval_multifacet_raw_multimodal_rank_fusion.yaml`: the same EVI candidate generator followed by fixed-pool raw multimodal scoring and EVI/Raw-MM mean-rank fusion.
+- `config/methods/evi_retrieval_multifacet_abstract_candidates.yaml`: broad anchor-only Top-50 traces for offline provenance-verification replay; original images never affect its online candidate ranking.
 - `use_image_embedding_cache`: cache raw-image and image-query embeddings under `~/.cache/memeye/raw_image_embeddings` by default.
 - `multimodal_clip_fallback_model`: local CLIP fallback used when SigLIP loading or encoding fails.
 - `use_memory_brief_cache`: enable legacy candidate brief cache.

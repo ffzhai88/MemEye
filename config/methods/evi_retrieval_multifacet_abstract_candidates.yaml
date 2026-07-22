@@ -1,0 +1,56 @@
+method: evi
+name: evi_retrieval_multifacet_abstract_candidates
+modality: multimodal
+evi_pipeline: faceted_topk
+
+# Diagnostic candidate generator for provenance verification. Query-time
+# retrieval uses stored dialogue and visual anchors only. Original images do
+# not participate in candidate scoring; they are reserved for the offline
+# provenance-verification stage.
+evi_facet_round_scorer: anchor
+facet_max_facets: 4
+facet_search_k: 50
+facet_round_fusion: max_similarity_times_best_source_rank_consensus
+facet_full_question_weight: 1.0
+evi_use_retrieval_facets: true
+use_facet_cache: true
+
+evi_retrieval_only: true
+evi_use_episode_set_retrieval: false
+evi_enable_episode_directory_diagnostic: false
+evi_enable_episode_directory_packet_diagnostic: false
+evi_enable_episode_directory_card_diagnostic: false
+evi_use_scope_interpretation: false
+evi_use_evidence_organizer: false
+
+# Keep image-model metadata in the saved config for the offline verifier, but
+# do not query original images inside EVI candidate generation.
+evi_use_raw_image_retrieval: false
+evi_apply_raw_multimodal_candidate_rank_fusion: false
+multimodal_embedding_model: siglip2-base-patch16-384
+multimodal_clip_fallback_model: openai/clip-vit-base-patch32
+multimodal_clip_local_files_only: true
+use_image_embedding_cache: true
+
+text_embedding_model: all-MiniLM-L6-v2
+use_embedding_cache: true
+evi_use_image_anchors: true
+use_dataset_captions: false
+include_session_markers: false
+
+raw_search_k: 160
+max_candidates: 50
+max_candidate_anchors: 8
+evi_final_max_rounds: 10
+min_selected_rounds: 1
+max_answer_images: 12
+use_final_memory_images: false
+
+vlm_max_new_tokens: 1024
+vlm_timeout: 90
+use_memory_brief_cache: true
+evi_debug: true
+evi_debug_console: true
+evi_debug_append: true
+evi_debug_top_k: 50
+evi_debug_prompt_chars: 12000
