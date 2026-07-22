@@ -389,6 +389,31 @@ def _configure_logging(output_dir: Path) -> None:
         log.addHandler(handler)
 
 
+def _memlens_method_config(
+    memlens_dir: Path,
+    shared_method_config: Mapping[str, Any],
+    cache_root: Path,
+) -> Dict[str, Any]:
+    """Load a merged legacy config or reuse the joint run's shared method config."""
+    merged_config = memlens_dir / "config.json"
+    if merged_config.exists():
+        return _diagnostic_method_config(_read_json(merged_config), cache_root)
+    suite_config = memlens_dir / "suite_config.json"
+    if not suite_config.exists():
+        raise FileNotFoundError(
+            f"MEMLENS run has neither {merged_config.name} nor "
+            f"{suite_config.name}: {memlens_dir}"
+        )
+    # Current MEMLENS retrieval suites save only run metadata in suite_config;
+    # the joint runner uses the same method YAML for MemEye and MEMLENS.
+    log.info(
+        "[memlens] %s contains run metadata only; reusing the joint "
+        "MemEye method configuration",
+        suite_config,
+    )
+    return dict(shared_method_config)
+
+
 def _write_outputs(
     output_dir: Path,
     rows: List[Dict[str, Any]],
@@ -549,8 +574,9 @@ def main() -> None:
     memlens_rows = _read_jsonl(input_dir / "memlens" / "retrievals.jsonl")
     if args.max_questions > 0:
         memlens_rows = memlens_rows[:args.max_questions]
-    memlens_config = _read_json(input_dir / "memlens" / "config.json")
-    memlens_method = _diagnostic_method_config(memlens_config, cache_root)
+    memlens_method = _memlens_method_config(
+        input_dir / "memlens", first_method, cache_root
+    )
     image_root = Path(args.memlens_image_root).resolve()
     for index, row in enumerate(memlens_rows, 1):
         question_id = str(row.get("question_id", ""))

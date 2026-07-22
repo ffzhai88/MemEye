@@ -1,4 +1,10 @@
-from analyze_provenance_verification import score_provenance_strategies
+from pathlib import Path
+from tempfile import TemporaryDirectory
+
+from analyze_provenance_verification import (
+    _memlens_method_config,
+    score_provenance_strategies,
+)
 
 
 def test_product_verification_prefers_joint_memory_and_raw_support():
@@ -38,3 +44,19 @@ def test_missing_image_removes_only_visual_path():
     assert ("text_round", "dialogue") in paths
     assert ("text_round", "visual") not in paths
     assert ("image_round", "visual") in paths
+
+
+def test_memlens_suite_config_reuses_joint_method_configuration():
+    with TemporaryDirectory() as directory:
+        memlens_dir = Path(directory)
+        (memlens_dir / "suite_config.json").write_text(
+            '{"method_config": "config/methods/example.yaml"}',
+            encoding="utf-8",
+        )
+        shared = {
+            "text_embedding_model": "shared-model",
+            "raw_multimodal_text_embedding_cache_dir": "shared-cache",
+        }
+        resolved = _memlens_method_config(memlens_dir, shared, memlens_dir / "cache")
+        assert resolved == shared
+        assert resolved is not shared
