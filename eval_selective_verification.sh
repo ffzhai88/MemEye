@@ -2,9 +2,9 @@
 set -euo pipefail
 
 INPUT_RUN="${1:?Usage: bash eval_selective_verification.sh <abstract-joint-run> [model-config]}"
-MODEL_CONFIG="${2:-config/models/qwen3_vl_8b_openrouter.yaml}"
+MODEL_CONFIG="${2:-config/models/qwen3_vl_8B_ali.yaml}"
 
-OUTPUT_DIR="${OUTPUT_DIR:-${INPUT_RUN}/selective_verification}"
+OUTPUT_DIR="${OUTPUT_DIR:-${INPUT_RUN}/selective_verification_lazy}"
 WORKERS="${WORKERS:-8}"
 CANDIDATE_K="${CANDIDATE_K:-30}"
 EVAL_K="${EVAL_K:-10}"

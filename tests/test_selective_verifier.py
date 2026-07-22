@@ -61,42 +61,55 @@ def test_invalid_response_fails_closed():
     assert verdict.confidence == "low"
 
 
-def test_candidate_selection_is_top_k_symmetric_difference():
+def test_initial_selection_is_disputed_mean_top_k_only():
     result = verification_candidate_ids(
         ["a", "b", "c"],
         ["d", "b", "e"],
         top_k=2,
-        order_ranking=["b", "d", "a", "f"],
+        order_ranking=["b", "a", "f", "d"],
     )
-    assert result == ["d", "a"]
+    assert result == ["a"]
 
 
-def test_conservative_rerank_never_promotes_consensus_excluded_round():
+def test_conservative_rerank_requests_lazy_disputed_backfill():
     ranking, trace = conservative_rerank(
-        ["stable", "anchor", "outside", "raw", "tail"],
-        ["stable", "anchor", "outside"],
-        ["stable", "raw", "outside"],
+        ["stable", "anchor", "raw", "outside"],
+        ["stable", "anchor"],
+        ["stable", "raw"],
         {
             "anchor": {
                 "parse_valid": True,
                 "evidence_utility": "not_useful",
                 "confidence": "high",
             },
-            "raw": {
-                "parse_valid": True,
-                "evidence_utility": "useful",
-                "confidence": "high",
-            },
         },
         top_k=2,
     )
-    assert ranking[:2] == ["stable", "raw"]
-    assert "outside" not in ranking[:2]
+    assert ranking[:2] == ["stable", "anchor"]
+    assert trace["status"] == "needs_verification"
+    assert trace["pending_round_id"] == "raw"
+
+
+def test_conservative_rerank_preserves_consensus_moderate_backfill():
+    high_reject = {
+        "parse_valid": True,
+        "evidence_utility": "not_useful",
+        "confidence": "high",
+    }
+    ranking, trace = conservative_rerank(
+        ["stable", "anchor", "moderate", "raw"],
+        ["stable", "anchor"],
+        ["stable", "raw"],
+        {"anchor": high_reject},
+        top_k=2,
+    )
+    assert ranking[:2] == ["stable", "moderate"]
+    assert trace["status"] == "resolved"
+    assert trace["consensus_moderate_top_k_round_ids"] == ["moderate"]
     assert trace["demoted_round_ids"] == ["anchor"]
-    assert trace["promoted_round_ids"] == ["raw"]
 
 
-def test_conservative_rerank_falls_back_within_union_when_all_contested_rejected():
+def test_conservative_rerank_falls_back_to_rejected_when_budget_would_shrink():
     rejected = {
         rid: {
             "parse_valid": True,
@@ -106,14 +119,13 @@ def test_conservative_rerank_falls_back_within_union_when_all_contested_rejected
         for rid in ("anchor", "raw")
     }
     ranking, trace = conservative_rerank(
-        ["stable", "anchor", "outside", "raw"],
+        ["stable", "anchor", "raw"],
         ["stable", "anchor"],
         ["stable", "raw"],
         rejected,
         top_k=2,
     )
     assert ranking[:2] == ["stable", "anchor"]
-    assert "outside" not in ranking[:2]
     assert trace["demoted_count"] == 0
 
 

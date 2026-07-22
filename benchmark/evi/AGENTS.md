@@ -28,7 +28,7 @@ This design is intended to preserve item-level evidence for counting while recov
 - `indexes.py`: in-memory anchor vector index and type-aware retrieval scoring.
 - `facet_multimodal.py`: query-local calibration and early round-level fusion of dialogue anchors, visual anchors, and raw-image retrieval for each facet.
 - `raw_multimodal.py`: fixed-candidate raw dialogue/image scoring and equal-weight mean-rank fusion with the primary EVI ranking.
-- `selective_verifier.py`: narrative one-round raw-evidence utility prompt, strict verdict parsing, exact-input cache, and union-closed Top-K conflict resolution that freezes shared inclusions and shared exclusions.
+- `selective_verifier.py`: narrative one-round raw-evidence utility prompt, strict verdict parsing, exact-input cache, and mean-rank-preserving lazy verification of disputed Top-K candidates and backfills.
 - `episode_retrieval.py`: pure session-set merge, member expansion, and direct/episode reciprocal-rank fusion.
 - `episode_directory.py`: diagnostic query-independent session indexes: one holistic vector per session (v1) and one packet vector per natural round with max-packet session scoring (v2).
 - `episode_cards.py`: cached query-independent LLM session retrieval cards (v3); cards are retrieval representations only and are not QA evidence.

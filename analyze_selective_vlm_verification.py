@@ -334,7 +334,7 @@ def _process_question(
         benchmark, dataset_name, question_id
     )
     rankings = _ranking_payload(row, candidate_k)
-    selected = verification_candidate_ids(
+    initial_selected = verification_candidate_ids(
         rankings["abstract_evi"],
         rankings["raw_multimodal_fixed"],
         top_k=verification_top_k,
@@ -362,53 +362,70 @@ def _process_question(
     trace_by_round = _trace_rounds(original_row)
     dates = _session_dates(dataset)
 
-    futures = {}
-    for round_id in selected:
-        ranks = {
-            name: mapping.get(round_id, 0)
-            for name, mapping in rank_maps.items()
-        }
-        future = executor.submit(
-            _verify_one,
-            verifier,
-            dataset,
-            trace_by_round,
-            dates,
-            question,
-            question_date,
-            facets,
-            round_id,
-            ranks,
-            max_images,
-        )
-        futures[future] = round_id
-
     results_by_id: Dict[str, Dict[str, Any]] = {}
-    for future in as_completed(futures):
-        round_id = futures[future]
-        results_by_id[round_id] = future.result()
-    verification_results = [
-        results_by_id[round_id] for round_id in selected
-    ]
-    api_failures = [
-        item for item in verification_results if item.get("error")
-    ]
-    if api_failures:
-        failed_ids = [item["round_id"] for item in api_failures]
-        raise RuntimeError(
-            "Verifier API failed for candidates " + ", ".join(failed_ids)
+    verified_order: List[str] = []
+
+    def verify_batch(round_ids: Sequence[str]) -> None:
+        futures = {}
+        for round_id in round_ids:
+            if round_id in results_by_id:
+                continue
+            ranks = {
+                name: mapping.get(round_id, 0)
+                for name, mapping in rank_maps.items()
+            }
+            future = executor.submit(
+                _verify_one,
+                verifier,
+                dataset,
+                trace_by_round,
+                dates,
+                question,
+                question_date,
+                facets,
+                round_id,
+                ranks,
+                max_images,
+            )
+            futures[future] = round_id
+        for future in as_completed(futures):
+            round_id = futures[future]
+            result = future.result()
+            if result.get("error"):
+                raise RuntimeError(
+                    f"Verifier API failed for candidate {round_id}: "
+                    f"{result['error']}"
+                )
+            results_by_id[round_id] = result
+        verified_order.extend(
+            rid
+            for rid in round_ids
+            if rid in results_by_id and rid not in verified_order
         )
-    verdicts = {
-        item["round_id"]: dict(item.get("verdict") or {})
-        for item in verification_results
-    }
-    final_ranking, rerank_trace = conservative_rerank(
-        rankings["evi_raw_mean_rank"],
-        rankings["abstract_evi"],
-        rankings["raw_multimodal_fixed"],
-        verdicts,
-        top_k=verification_top_k,
-    )
+
+    verify_batch(initial_selected)
+    lazy_selected: List[str] = []
+    while True:
+        verdicts = {
+            rid: dict(item.get("verdict") or {})
+            for rid, item in results_by_id.items()
+        }
+        final_ranking, rerank_trace = conservative_rerank(
+            rankings["evi_raw_mean_rank"],
+            rankings["abstract_evi"],
+            rankings["raw_multimodal_fixed"],
+            verdicts,
+            top_k=verification_top_k,
+        )
+        pending = str(rerank_trace.get("pending_round_id") or "")
+        if not pending:
+            break
+        lazy_selected.append(pending)
+        verify_batch([pending])
+
+    verification_results = [
+        results_by_id[round_id] for round_id in verified_order
+    ]
     rankings["selective_vlm"] = final_ranking
 
     clues = [
@@ -435,8 +452,10 @@ def _process_question(
         "candidate_k": candidate_k,
         "evaluation_k": eval_k,
         "verification_top_k": verification_top_k,
-        "selection_policy": "abstract_raw_top_k_symmetric_difference",
-        "selected_round_ids": selected,
+        "selection_policy": "mean_top_k_disagreement_then_lazy_backfill",
+        "initial_selected_round_ids": initial_selected,
+        "lazy_selected_round_ids": lazy_selected,
+        "selected_round_ids": verified_order,
         "rankings": rankings,
         "clue_ranks": clue_ranks,
         "verification_results": verification_results,
@@ -512,7 +531,8 @@ def _verifier_diagnostics(
     confidence: Counter[str] = Counter()
     grounding: Counter[str] = Counter()
     checked = parsed = errors = demoted = demoted_clues = changed = 0
-    union_violations = stable_intersection_drops = 0
+    stable_intersection_drops = initial_checked = lazy_checked = 0
+    consensus_moderate_selected = 0
     for row in rows:
         clues = set(map(str, row.get("clue_round_ids", [])))
         before = list(
@@ -522,10 +542,14 @@ def _verifier_diagnostics(
         changed += int(before != after)
         abstract_top = set(row["rankings"]["abstract_evi"][:eval_k])
         raw_top = set(row["rankings"]["raw_multimodal_fixed"][:eval_k])
-        union_violations += len(set(after) - (abstract_top | raw_top))
         stable_intersection_drops += len(
-            (abstract_top & raw_top) - set(after)
+            ((abstract_top & raw_top) & set(before)) - set(after)
         )
+        consensus_moderate_selected += len(
+            set(after) - (abstract_top | raw_top)
+        )
+        initial_checked += len(row.get("initial_selected_round_ids", []))
+        lazy_checked += len(row.get("lazy_selected_round_ids", []))
         demoted_ids = set(
             row.get("rerank_trace", {}).get("demoted_round_ids", [])
         )
@@ -550,8 +574,10 @@ def _verifier_diagnostics(
         "demoted_candidates": demoted,
         "demoted_annotated_clues": demoted_clues,
         "questions_with_changed_top_k": changed,
-        "top_k_union_violations": union_violations,
-        "stable_intersection_drops": stable_intersection_drops,
+        "stable_mean_top_k_drops": stable_intersection_drops,
+        "initial_checked_candidates": initial_checked,
+        "lazy_backfill_checked_candidates": lazy_checked,
+        "consensus_moderate_selected_candidates": consensus_moderate_selected,
     }
 
 
@@ -578,13 +604,13 @@ def _write_metrics(
             "VLM prompts or reranking"
         ),
         "selection_policy": (
-            "symmetric difference of abstract Anchor and Raw-MM Top-K; "
-            "their Top-K intersection is not sent to the VLM"
+            "initially verify mean-rank Top-K candidates in the Anchor/Raw-MM "
+            "Top-K symmetric difference; verify lower disputed candidates "
+            "only when needed for backfill"
         ),
         "decision_policy": (
-            "freeze the shared Top-K intersection, fill remaining slots only "
-            "from the symmetric difference, and consider parse-valid "
-            "high-confidence not_useful candidates last"
+            "preserve mean-rank order for all agreement cases and skip only "
+            "parse-valid high-confidence not_useful disputed candidates"
         ),
         "verifier": {
             "prompt_version": PROMPT_VERSION,
@@ -623,11 +649,12 @@ def _write_metrics(
         "",
         (
             "Base: Anchor-only plus Raw-MM mean-rank. The VLM sees raw "
-            "evidence only where Anchor and Raw-MM disagree on Top-K inclusion."
+            "evidence first for disputed candidates already in mean Top-K, "
+            "then lazily for disputed backfill candidates."
         ),
         (
-            "The shared Top-K intersection is frozen; consensus-excluded "
-            "rounds cannot enter Top-K. All annotations are evaluation-only."
+            "Candidates with agreement retain mean-rank behavior, including "
+            "consistent moderate candidates. All annotations are evaluation-only."
         ),
         "",
         "| Benchmark | Strategy | Micro R | Macro R | Hit@K | Full@K | W/T/L vs mean |",
@@ -657,8 +684,10 @@ def _write_metrics(
         f"- Parse-valid rate: {diagnostics['parse_valid_rate']:.4f}",
         f"- Demoted candidates: {diagnostics['demoted_candidates']}",
         f"- Demoted annotated clues: {diagnostics['demoted_annotated_clues']}",
-        f"- Top-K union violations: {diagnostics['top_k_union_violations']}",
-        f"- Stable-intersection drops: {diagnostics['stable_intersection_drops']}",
+        f"- Stable mean-Top-K drops: {diagnostics['stable_mean_top_k_drops']}",
+        f"- Initial checked candidates: {diagnostics['initial_checked_candidates']}",
+        f"- Lazy backfill checks: {diagnostics['lazy_backfill_checked_candidates']}",
+        f"- Consensus-moderate final selections: {diagnostics['consensus_moderate_selected_candidates']}",
         (
             f"- Questions with a changed Top-{args.eval_k}: "
             f"{diagnostics['questions_with_changed_top_k']}"
@@ -744,10 +773,8 @@ def _run_config(
         "benchmark": args.benchmark,
         "max_questions_per_dataset": args.max_questions,
         "dry_run": args.dry_run,
-        "selection_policy": "abstract_raw_top_k_symmetric_difference",
-        "decision_policy": (
-            "top_k_union_closed_high_confidence_rejection_demotion"
-        ),
+        "selection_policy": "mean_top_k_disagreement_then_lazy_backfill",
+        "decision_policy": "mean_rank_preserving_lazy_disagreement_verification",
         "label_isolation": True,
     }
 
@@ -950,12 +977,14 @@ def main() -> None:
                     for item in result["verification_results"]
                 )
                 log.info(
-                    "[%d/%d] %s candidates=%d parse_valid=%d "
-                    "demoted=%d cache_hits=%d",
+                    "[%d/%d] %s candidates=%d initial=%d lazy=%d "
+                    "parse_valid=%d demoted=%d cache_hits=%d",
                     index,
                     selected_count,
                     key,
                     len(result["verification_results"]),
+                    len(result["initial_selected_round_ids"]),
+                    len(result["lazy_selected_round_ids"]),
                     parse_valid,
                     result["rerank_trace"]["demoted_count"],
                     verifier.cache_hits,

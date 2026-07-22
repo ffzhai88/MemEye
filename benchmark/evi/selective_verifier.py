@@ -240,23 +240,13 @@ def verification_candidate_ids(
     top_k: int = 10,
     order_ranking: Sequence[str] = (),
 ) -> List[str]:
-    """Return candidates with conflicting Top-K inclusion decisions.
-
-    Selection is exactly the symmetric difference between abstract Anchor and
-    Raw-MM Top-K sets. ``order_ranking`` only makes API/log order deterministic;
-    it cannot add or remove a candidate.
-    """
+    """Return initially selected mean-Top-K candidates with source disagreement."""
 
     abstract_top = set(map(str, list(abstract_ranking)[:top_k]))
     raw_top = set(map(str, list(raw_ranking)[:top_k]))
     contested = (abstract_top ^ raw_top) - {""}
-    ordered: List[str] = []
-    for ranking in (order_ranking, abstract_ranking, raw_ranking):
-        for round_id in ranking:
-            rid = str(round_id)
-            if rid in contested and rid not in ordered:
-                ordered.append(rid)
-    return ordered
+    mean_top = list(map(str, list(order_ranking)[:top_k]))
+    return [rid for rid in mean_top if rid in contested]
 
 
 def _is_high_confidence_rejection(verdict: Mapping[str, Any]) -> bool:
@@ -274,19 +264,19 @@ def conservative_rerank(
     verdicts: Mapping[str, Mapping[str, Any]],
     top_k: int = 10,
 ) -> Tuple[List[str], Dict[str, Any]]:
-    """Resolve Top-K disagreement without admitting consensus-excluded rounds.
+    """Replay mean-rank until Top-K is resolved or another verdict is needed.
 
-    The shared Anchor/Raw-MM Top-K intersection is frozen in. Remaining slots
-    are filled only from their symmetric difference, with parse-valid,
-    high-confidence rejections considered last. If every alternative is
-    rejected, rejected contested candidates are used as a deterministic
-    fallback so the retrieval budget remains exactly Top-K.
+    Agreement never triggers a VLM call: this includes shared high ranks and
+    candidates that both component rankings place outside their Top-K but that
+    mean-rank promotes through consistent moderate ranks. A disputed candidate
+    is accepted unless it has a parse-valid high-confidence rejection. When an
+    unseen disputed candidate is encountered while filling a vacancy, it is
+    returned as ``pending_round_id`` for lazy verification.
     """
 
     base = list(dict.fromkeys(map(str, base_ranking)))
     abstract_top = set(map(str, list(abstract_ranking)[:top_k]))
     raw_top = set(map(str, list(raw_ranking)[:top_k]))
-    union = abstract_top | raw_top
     stable_in = abstract_top & raw_top
     contested = abstract_top ^ raw_top
     rejected = {
@@ -294,37 +284,58 @@ def conservative_rerank(
         for rid in contested
         if rid in verdicts and _is_high_confidence_rejection(verdicts[rid])
     }
-    accepted = contested - rejected
-
-    # Mean-rank orders candidates but cannot change the eligible Top-K set.
-    order = list(dict.fromkeys(
-        base
-        + list(map(str, abstract_ranking))
-        + list(map(str, raw_ranking))
-    ))
-    selected = set(stable_in)
-    for pool in (accepted, rejected):
-        for rid in order:
-            if len(selected) >= min(top_k, len(union)):
+    target = min(top_k, len(base))
+    final_top: List[str] = []
+    pending = ""
+    for rid in base:
+        if len(final_top) >= target:
+            break
+        if rid in contested:
+            if rid not in verdicts:
+                pending = rid
                 break
-            if rid in pool:
-                selected.add(rid)
+            if rid in rejected:
+                continue
+        final_top.append(rid)
 
-    final_top = [rid for rid in order if rid in selected]
+    if pending:
+        return base, {
+            "policy": "mean_top_k_disagreement_lazy_verification",
+            "top_k": top_k,
+            "status": "needs_verification",
+            "pending_round_id": pending,
+            "partial_top_k_round_ids": final_top,
+        }
+
+    # Degenerate fallback: keep the budget full even if all remaining disputed
+    # candidates were rejected. Rejected rounds are considered in mean order.
+    if len(final_top) < target:
+        for rid in base:
+            if rid in rejected and rid not in final_top:
+                final_top.append(rid)
+                if len(final_top) >= target:
+                    break
+
+    selected = set(final_top)
     final_ranking = final_top + [rid for rid in base if rid not in selected]
     base_top = set(base[:top_k])
-    excluded_consensus = [rid for rid in base if rid not in union]
-    rejected_outside_top = [rid for rid in order if rid in rejected and rid not in selected]
-    demoted = [rid for rid in order if rid in rejected and rid in base_top and rid not in selected]
+    rejected_outside_top = [rid for rid in base if rid in rejected and rid not in selected]
+    demoted = [rid for rid in base if rid in rejected and rid in base_top and rid not in selected]
     promoted = [rid for rid in final_top if rid not in base_top]
     return final_ranking, {
-        "policy": "top_k_union_closed_high_confidence_rejection_demotion",
+        "policy": "mean_top_k_disagreement_lazy_verification",
         "top_k": top_k,
-        "stable_in_round_ids": [rid for rid in order if rid in stable_in],
-        "contested_round_ids": [rid for rid in order if rid in contested],
-        "high_confidence_rejected_round_ids": [rid for rid in order if rid in rejected],
+        "status": "resolved",
+        "pending_round_id": "",
+        "stable_in_round_ids": [rid for rid in base if rid in stable_in],
+        "contested_round_ids": [rid for rid in base if rid in contested],
+        "high_confidence_rejected_round_ids": [rid for rid in base if rid in rejected],
         "rejected_outside_top_k": rejected_outside_top,
-        "consensus_excluded_round_ids": excluded_consensus,
+        "consensus_moderate_top_k_round_ids": [
+            rid
+            for rid in final_top
+            if rid not in abstract_top and rid not in raw_top
+        ],
         "final_top_k_round_ids": final_top,
         "demoted_round_ids": demoted,
         "promoted_round_ids": promoted,
