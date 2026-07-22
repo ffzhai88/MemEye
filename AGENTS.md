@@ -26,6 +26,7 @@ The README is the public-facing overview. This file is the practical guide for a
 - `analyze_episode_directory_v2.py`: compares v2 packet-score and v3 session-card rankings, reciprocal-rank fusion, image-session ranking, session-length bias, and fixed-pipeline replay.
 - `analyze_session_card_ablation.py`: re-embeds saved Card sections without VLM calls to compare identity-only, identity-plus-distinctive-evidence, and full-Card session retrieval and replay.
 - `analyze_multifacet_fusion.py`: replays visual-corroborated best-source ranking from saved multifacet traces without embedding or model calls.
+- `analyze_selective_vlm_verification.py`: starts from saved Anchor-only/Raw-MM mean-rank candidates, checks only the Anchor/Raw-MM Top-K symmetric difference against raw rounds with an OpenAI-compatible VLM, and writes resumable two-benchmark diagnostics.
 - `score_locked_llm_judge.py`: post-hoc LLM-as-a-judge scoring for open-ended outputs.
 - `register_external_data.py`: creates task configs from an external MemEye data checkout.
 - `benchmark/`: core benchmark package.
@@ -167,6 +168,20 @@ It contains `joint_run.log`, `joint_config.json`, `joint_status.json`,
 `joint_metrics.json`, the MemEye suite under `memeye/`, and MEMLENS artifacts
 under `memlens/`. Metrics remain side-by-side because the two benchmarks use
 different annotation semantics.
+
+After generating abstract candidates and running the offline Raw-MM/provenance
+analyzer, selectively verify contested Top-10 rounds with a VLM:
+
+```bash
+bash eval_selective_verification.sh \
+  runs/JOINT-retrieval/<abstract-candidate-run> \
+  config/models/qwen3_vl_8b_openrouter.yaml
+```
+
+This stage never passes benchmark, question-type, answer, or clue labels to the
+VLM. By default it verifies the Anchor/Raw-MM Top-10 symmetric difference; the
+shared Anchor candidate pool remains Top-30. It uses an exact prompt/evidence
+cache and question-level JSONL resume.
 
 Compare retrieval suites at `K=10`:
 
