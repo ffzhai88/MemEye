@@ -41,6 +41,7 @@ from benchmark.evi.grouped_verifier import (
     local_replace_rerank,
 )
 from benchmark.evi.vlm import make_openai_vlm
+from router.http_utils import encode_image_data_url
 
 log = logging.getLogger("grouped_vlm_verification")
 BASE_STRATEGIES = (
@@ -97,6 +98,11 @@ def _model(
         "max_new_tokens": max_tokens,
         "timeout": timeout,
         "prompt_version": PROMPT_VERSION,
+        "image_preprocessing": {
+            "max_long_edge": args.image_max_long_edge,
+            "resize_format": "JPEG_when_resized",
+            "jpeg_quality": 80,
+        },
         "dry_run": bool(args.dry_run),
     }
     namespace = json.dumps(namespace_payload, sort_keys=True)
@@ -127,7 +133,8 @@ def _model(
         )
     return {
         "vlm": make_openai_vlm(
-            api_key, base_url, model, max_tokens, timeout
+            api_key, base_url, model, max_tokens, timeout,
+            image_max_long_edge=args.image_max_long_edge,
         ),
         **namespace_payload,
     }, namespace
@@ -231,7 +238,10 @@ def _process_question(
             if Path(path).is_file()
         )
         estimated_base64_bytes = sum(
-            4 * ((Path(path).stat().st_size + 2) // 3)
+            len(encode_image_data_url(
+                path,
+                max_long_edge=args.image_max_long_edge,
+            ).encode("ascii"))
             for path in images
             if Path(path).is_file()
         )
@@ -395,6 +405,7 @@ def _write_outputs(
         "max_rounds_per_batch": args.max_rounds_per_batch,
         "max_images_per_round": args.max_images_per_round,
         "max_images_per_batch": args.max_images_per_batch,
+        "image_max_long_edge": args.image_max_long_edge,
         "label_isolation": True,
         "ranking_policy": (
             "mean-rank plus explicit within-group high-confidence "
@@ -502,6 +513,10 @@ def main() -> None:
     parser.add_argument("--max-rounds-per-batch", type=int, default=6)
     parser.add_argument("--max-images-per-round", type=int, default=4)
     parser.add_argument("--max-images-per-batch", type=int, default=12)
+    parser.add_argument(
+        "--image-max-long-edge", type=int, default=768,
+        help="Resize images like the SRAG QA router; 0 keeps originals",
+    )
     parser.add_argument("--workers", type=int, default=8)
     parser.add_argument("--max-new-tokens", type=int, default=1024)
     parser.add_argument("--timeout", type=int, default=0)
@@ -532,6 +547,8 @@ def main() -> None:
             parser.error(
                 f"--{name.replace('_', '-')} must be positive"
             )
+    if args.image_max_long_edge < 0:
+        parser.error("--image-max-long-edge must be non-negative")
     if args.eval_k > args.candidate_k:
         parser.error("--eval-k cannot exceed --candidate-k")
 
@@ -562,6 +579,7 @@ def main() -> None:
         cache_dir,
         namespace,
         request_log_dir=output_dir / "request_manifests",
+        image_max_long_edge=args.image_max_long_edge,
     )
     resolver = DatasetResolver(
         input_dir,
@@ -580,6 +598,7 @@ def main() -> None:
         "max_rounds_per_batch": args.max_rounds_per_batch,
         "max_images_per_round": args.max_images_per_round,
         "max_images_per_batch": args.max_images_per_batch,
+        "image_max_long_edge": args.image_max_long_edge,
         "cache_dir": str(cache_dir),
         "label_isolation": True,
     }

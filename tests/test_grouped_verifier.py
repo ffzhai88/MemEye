@@ -1,5 +1,9 @@
+import base64
+import io
 import json
+from pathlib import Path
 
+from benchmark.evi.vlm import _encode_image
 from benchmark.evi.grouped_verifier import (
     GroupedEvidenceVerifier,
     build_group_plan,
@@ -222,3 +226,48 @@ def test_failed_request_still_writes_exact_manifest(tmp_path):
     assert manifest["images"][0]["file_bytes"] == 7
     assert manifest["images"][0]["estimated_base64_bytes"] == 12
     assert manifest["result"] == "failed"
+
+def test_srag_compatible_image_preprocessing(tmp_path):
+    from PIL import Image
+
+    image = tmp_path / "large.png"
+    Image.new("RGB", (2000, 1200), color=(120, 30, 20)).save(image)
+    raw_url = _encode_image(str(image), max_long_edge=0)
+    resized_url = _encode_image(str(image), max_long_edge=768)
+
+    assert resized_url.startswith("data:image/jpeg;base64,")
+    assert len(resized_url) < len(raw_url)
+    processed = Image.open(io.BytesIO(base64.b64decode(
+        resized_url.split(",", 1)[1]
+    )))
+    assert max(processed.size) == 768
+
+
+def test_manifest_records_processed_payload_size(tmp_path):
+    from PIL import Image
+
+    image = tmp_path / "large.png"
+    Image.new("RGB", (2000, 1200), color=(120, 30, 20)).save(image)
+    verifier = GroupedEvidenceVerifier(
+        lambda _system, _prompt, _images: json.dumps({
+            "members": [{
+                "round_id": "S1:R1",
+                "state": "uncertain",
+                "confidence": "low",
+                "reason": "test",
+            }],
+            "joint_groups": [],
+        }),
+        tmp_path / "cache",
+        "fake-model-img768",
+        request_log_dir=tmp_path / "requests",
+        image_max_long_edge=768,
+    )
+    result = verifier.verify("prompt", [str(image)], ["S1:R1"])
+    manifest = json.loads(Path(
+        result["request_manifest_path"]
+    ).read_text(encoding="utf-8"))
+    item = manifest["images"][0]
+    assert manifest["image_preprocessing"]["max_long_edge"] == 768
+    assert item["processed_data_url_bytes"] < item["estimated_data_url_bytes"]
+    assert manifest["estimated_encoded_image_bytes"] == item["processed_data_url_bytes"]

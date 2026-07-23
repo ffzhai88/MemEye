@@ -735,6 +735,11 @@ def _model_config(
         "max_new_tokens": max_tokens,
         "timeout": timeout,
         "prompt_version": PROMPT_VERSION,
+        "image_preprocessing": {
+            "max_long_edge": args.image_max_long_edge,
+            "resize_format": "JPEG_when_resized",
+            "jpeg_quality": 80,
+        },
         "dry_run": bool(args.dry_run),
     }
     namespace = json.dumps(namespace_payload, sort_keys=True)
@@ -753,7 +758,8 @@ def _model_config(
             })
         return {"vlm": dry_vlm, **namespace_payload}, namespace
     vlm = make_openai_vlm(
-        api_key, base_url, model, max_tokens, timeout
+        api_key, base_url, model, max_tokens, timeout,
+        image_max_long_edge=args.image_max_long_edge,
     )
     return {"vlm": vlm, **namespace_payload}, namespace
 
@@ -775,6 +781,7 @@ def _run_config(
         "evaluation_k": args.eval_k,
         "verification_top_k": args.verification_top_k or args.eval_k,
         "max_images_per_round": args.max_images_per_round,
+        "image_max_long_edge": args.image_max_long_edge,
         "benchmark": args.benchmark,
         "max_questions_per_dataset": args.max_questions,
         "dry_run": args.dry_run,
@@ -811,6 +818,10 @@ def main() -> None:
         "--max-images-per-round", type=int, default=4
     )
     parser.add_argument(
+        "--image-max-long-edge", type=int, default=768,
+        help="Resize images like the SRAG QA router; 0 keeps originals",
+    )
+    parser.add_argument(
         "--max-questions", type=int, default=0,
         help="Limit per dataset",
     )
@@ -843,6 +854,8 @@ def main() -> None:
             parser.error(
                 f"--{name.replace('_', '-')} must be positive"
             )
+    if args.image_max_long_edge < 0:
+        parser.error("--image-max-long-edge must be non-negative")
     if args.verification_top_k < 0:
         parser.error(
             "--verification-top-k must be non-negative"

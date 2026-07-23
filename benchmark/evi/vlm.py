@@ -8,6 +8,8 @@ import os
 from pathlib import Path
 from typing import Callable, List, Optional
 
+from router.http_utils import encode_image_data_url
+
 from ._utils import guess_mime, retry_vlm_call
 
 log = logging.getLogger(__name__)
@@ -85,7 +87,11 @@ def with_disk_cache(fn: VLMCallable, namespace: str) -> VLMCallable:
     return _cached
 
 
-def _encode_image(path: str) -> str:
+def _encode_image(path: str, max_long_edge: int = 0) -> str:
+    if max_long_edge > 0:
+        return encode_image_data_url(
+            path, max_long_edge=max_long_edge
+        )
     with open(path, "rb") as f:
         b64 = base64.b64encode(f.read()).decode("utf-8")
     mime = guess_mime(path)
@@ -98,6 +104,7 @@ def make_openai_vlm(
     model: str,
     max_new_tokens: int,
     timeout: int,
+    image_max_long_edge: int = 0,
 ) -> VLMCallable:
     import openai
 
@@ -111,7 +118,10 @@ def make_openai_vlm(
             try:
                 content.append({
                     "type": "image_url",
-                    "image_url": {"url": _encode_image(path), "detail": "high"},
+                    "image_url": {
+                        "url": _encode_image(path, image_max_long_edge),
+                        "detail": "high",
+                    },
                 })
             except Exception as exc:
                 log.warning("VLM: cannot read %s: %s", path, exc)

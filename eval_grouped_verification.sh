@@ -12,6 +12,7 @@ EVAL_K="${EVAL_K:-10}"
 MAX_ROUNDS_PER_BATCH="${MAX_ROUNDS_PER_BATCH:-6}"
 MAX_IMAGES_PER_ROUND="${MAX_IMAGES_PER_ROUND:-4}"
 MAX_IMAGES_PER_BATCH="${MAX_IMAGES_PER_BATCH:-12}"
+IMAGE_MAX_LONG_EDGE="${IMAGE_MAX_LONG_EDGE:-768}"
 MAX_NEW_TOKENS="${MAX_NEW_TOKENS:-1024}"
 MAX_QUESTIONS="${MAX_QUESTIONS:-0}"
 BENCHMARK="${BENCHMARK:-all}"
@@ -26,11 +27,12 @@ else
 fi
 
 for grouping_mode in "${MODES[@]}"; do
-  output_dir="$INPUT_RUN/grouped_verification_$grouping_mode"
+  output_dir="$INPUT_RUN/grouped_verification_${grouping_mode}_img${IMAGE_MAX_LONG_EDGE}"
   cache_dir="$output_dir/vlm_cache"
   echo "[GROUPED-VLM] mode=$grouping_mode input=$INPUT_RUN"
   echo "[GROUPED-VLM] model=$MODEL_CONFIG workers=$WORKERS"
   echo "[GROUPED-VLM] candidate_k=$CANDIDATE_K eval_k=$EVAL_K rounds_per_batch=$MAX_ROUNDS_PER_BATCH"
+  echo "[GROUPED-VLM] image_preprocess=max_long_edge_$IMAGE_MAX_LONG_EDGE jpeg_quality_80"
   echo "[GROUPED-VLM] output=$output_dir cache=$cache_dir resume=enabled"
 
   args=(
@@ -43,6 +45,7 @@ for grouping_mode in "${MODES[@]}"; do
     --max-rounds-per-batch "$MAX_ROUNDS_PER_BATCH"
     --max-images-per-round "$MAX_IMAGES_PER_ROUND"
     --max-images-per-batch "$MAX_IMAGES_PER_BATCH"
+    --image-max-long-edge "$IMAGE_MAX_LONG_EDGE"
     --max-new-tokens "$MAX_NEW_TOKENS"
     --workers "$WORKERS"
     --benchmark "$BENCHMARK"

@@ -7,6 +7,8 @@ import threading
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Mapping, Sequence, Set, Tuple
 
+from router.http_utils import encode_image_data_url
+
 from ._utils import extract_json
 
 PROMPT_VERSION = "grouped-evidence-utility-v1"
@@ -360,6 +362,7 @@ class GroupedEvidenceVerifier:
         cache_dir: Path,
         model_namespace: str,
         request_log_dir: Path | None = None,
+        image_max_long_edge: int = 0,
     ) -> None:
         self.vlm = vlm
         self.cache_dir = Path(cache_dir)
@@ -368,6 +371,7 @@ class GroupedEvidenceVerifier:
         self.request_log_dir = (
             Path(request_log_dir) if request_log_dir else None
         )
+        self.image_max_long_edge = int(image_max_long_edge)
         if self.request_log_dir:
             self.request_log_dir.mkdir(parents=True, exist_ok=True)
         self._lock = threading.Lock()
@@ -393,6 +397,7 @@ class GroupedEvidenceVerifier:
         payload = {
             "version": PROMPT_VERSION,
             "model": self.model_namespace,
+            "image_max_long_edge": self.image_max_long_edge,
             "system": SYSTEM_PROMPT,
             "prompt": prompt,
             "images": image_state,
@@ -432,14 +437,32 @@ class GroupedEvidenceVerifier:
                     file_bytes = base64_bytes = 0
                     absolute_path = str(image_path)
                     missing = True
-                data_url_bytes = base64_bytes + 64 if not missing else 0
-                encoded_image_bytes += data_url_bytes
+                raw_data_url_bytes = (
+                    base64_bytes + 64 if not missing else 0
+                )
+                processed_data_url_bytes = raw_data_url_bytes
+                processed_binary_bytes = file_bytes
+                if not missing and self.image_max_long_edge > 0:
+                    processed_url = encode_image_data_url(
+                        absolute_path,
+                        max_long_edge=self.image_max_long_edge,
+                    )
+                    processed_data_url_bytes = len(
+                        processed_url.encode("ascii")
+                    )
+                    encoded = processed_url.split(",", 1)[-1]
+                    processed_binary_bytes = (
+                        len(encoded.rstrip("=")) * 3 // 4
+                    )
+                encoded_image_bytes += processed_data_url_bytes
                 image_details.append({
                     "position": position,
                     "path": absolute_path,
                     "file_bytes": file_bytes,
                     "estimated_base64_bytes": base64_bytes,
-                    "estimated_data_url_bytes": data_url_bytes,
+                    "estimated_data_url_bytes": raw_data_url_bytes,
+                    "processed_binary_bytes": processed_binary_bytes,
+                    "processed_data_url_bytes": processed_data_url_bytes,
                     "missing": missing,
                 })
             text_bytes = len(SYSTEM_PROMPT.encode("utf-8")) + len(
@@ -461,6 +484,11 @@ class GroupedEvidenceVerifier:
                 ],
                 "images": image_details,
                 "image_count": len(images),
+                "image_preprocessing": {
+                    "max_long_edge": self.image_max_long_edge,
+                    "resize_format": "JPEG_when_resized",
+                    "jpeg_quality": 80,
+                },
                 "raw_image_bytes": sum(
                     item["file_bytes"] for item in image_details
                 ),
