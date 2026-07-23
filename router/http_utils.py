@@ -1,4 +1,5 @@
 import base64
+import hashlib
 import json
 import mimetypes
 import os
@@ -34,7 +35,7 @@ def encode_image_data_url(image_path: str, max_long_edge: int = 768) -> str:
         import io
         img = Image.open(io.BytesIO(raw))
         w, h = img.size
-        if max(w, h) > max_long_edge:
+        if max_long_edge > 0 and max(w, h) > max_long_edge:
             scale = max_long_edge / max(w, h)
             img = img.resize((int(w * scale), int(h * scale)), Image.LANCZOS)
             buf = io.BytesIO()
@@ -46,6 +47,29 @@ def encode_image_data_url(image_path: str, max_long_edge: int = 768) -> str:
 
     data = base64.b64encode(raw).decode("ascii")
     return f"data:{mime_type};base64,{data}"
+
+
+def image_data_url_fingerprint(
+    image_path: str, max_long_edge: int = 768
+) -> Dict[str, Any]:
+    """Fingerprint the exact preprocessed data URL sent to a model.
+
+    The result intentionally excludes filesystem paths and mtimes, so identical
+    visual inputs share verifier cache entries across runs and machines.
+    """
+    data_url = encode_image_data_url(
+        image_path, max_long_edge=max_long_edge
+    )
+    header, encoded = data_url.split(",", 1)
+    return {
+        "sha256": hashlib.sha256(
+            data_url.encode("ascii")
+        ).hexdigest(),
+        "mime_type": header.split(":", 1)[-1].split(";", 1)[0],
+        "binary_bytes": len(base64.b64decode(encoded)),
+        "data_url_bytes": len(data_url.encode("ascii")),
+        "max_long_edge": int(max_long_edge),
+    }
 
 
 def encode_image_inline(image_path: str) -> Dict[str, str]:

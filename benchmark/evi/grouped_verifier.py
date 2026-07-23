@@ -7,7 +7,10 @@ import threading
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Mapping, Sequence, Set, Tuple
 
-from router.http_utils import encode_image_data_url
+from router.http_utils import (
+    encode_image_data_url,
+    image_data_url_fingerprint,
+)
 
 from ._utils import extract_json
 
@@ -386,16 +389,15 @@ class GroupedEvidenceVerifier:
     ) -> Dict[str, Any]:
         image_state = []
         for value in images:
-            path = Path(value)
             try:
-                stat = path.stat()
-                image_state.append(
-                    (str(path.resolve()), stat.st_size, stat.st_mtime_ns)
-                )
+                image_state.append(image_data_url_fingerprint(
+                    str(value), max_long_edge=self.image_max_long_edge
+                ))
             except OSError:
-                image_state.append((str(path), "missing"))
+                image_state.append({"missing": True})
         payload = {
             "version": PROMPT_VERSION,
+            "cache_schema": "content-addressed-v1",
             "model": self.model_namespace,
             "image_max_long_edge": self.image_max_long_edge,
             "system": SYSTEM_PROMPT,

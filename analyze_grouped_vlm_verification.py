@@ -572,7 +572,10 @@ def main() -> None:
     )
     cache_dir = (
         Path(args.cache_dir).resolve()
-        if args.cache_dir else output_dir / "vlm_cache"
+        if args.cache_dir else Path(os.environ.get(
+            "MEMEYE_VERIFIER_CACHE_DIR",
+            str(Path.home() / ".cache" / "memeye" / "verifier"),
+        )).expanduser().resolve() / "grouped"
     )
     verifier = GroupedEvidenceVerifier(
         model_payload["vlm"],

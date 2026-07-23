@@ -14,6 +14,8 @@ import json
 import threading
 from dataclasses import asdict, dataclass
 from pathlib import Path
+from router.http_utils import image_data_url_fingerprint
+
 from typing import Any, Callable, Dict, List, Mapping, Sequence, Tuple
 
 from ._utils import extract_json
@@ -365,25 +367,28 @@ class SelectiveEvidenceVerifier:
         vlm: Callable[[str, str, List[str]], str],
         cache_dir: Path,
         model_namespace: str,
+        image_max_long_edge: int = 0,
     ) -> None:
         self.vlm = vlm
         self.cache_dir = Path(cache_dir)
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         self.model_namespace = model_namespace
         self._lock = threading.Lock()
+        self.image_max_long_edge = int(image_max_long_edge)
         self.cache_hits = 0
         self.cache_misses = 0
 
     def _cache_key(self, user_prompt: str, image_paths: Sequence[str]) -> str:
         image_state: List[Dict[str, Any]] = []
         for value in image_paths:
-            path = Path(value)
             try:
-                stat = path.stat()
-                image_state.append({"path": str(path.resolve()), "size": stat.st_size, "mtime_ns": stat.st_mtime_ns})
+                image_state.append(image_data_url_fingerprint(
+                    str(value), max_long_edge=self.image_max_long_edge
+                ))
             except OSError:
-                image_state.append({"path": str(path), "missing": True})
+                image_state.append({"missing": True})
         payload = {
+            "cache_schema": "content-addressed-v1",
             "prompt_version": PROMPT_VERSION,
             "model": self.model_namespace,
             "system": SYSTEM_PROMPT,

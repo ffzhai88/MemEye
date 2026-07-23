@@ -901,12 +901,16 @@ def main() -> None:
     cache_dir = (
         Path(args.cache_dir).resolve()
         if args.cache_dir
-        else output_dir / "vlm_cache"
+        else Path(os.environ.get(
+            "MEMEYE_VERIFIER_CACHE_DIR",
+            str(Path.home() / ".cache" / "memeye" / "verifier"),
+        )).expanduser().resolve() / "selective"
     )
     verifier = SelectiveEvidenceVerifier(
         model_payload["vlm"],
         cache_dir=cache_dir,
         model_namespace=namespace,
+        image_max_long_edge=args.image_max_long_edge,
     )
     resolver = DatasetResolver(
         input_dir=input_dir,

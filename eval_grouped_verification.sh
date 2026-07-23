@@ -14,6 +14,7 @@ MAX_IMAGES_PER_ROUND="${MAX_IMAGES_PER_ROUND:-4}"
 MAX_IMAGES_PER_BATCH="${MAX_IMAGES_PER_BATCH:-12}"
 IMAGE_MAX_LONG_EDGE="${IMAGE_MAX_LONG_EDGE:-768}"
 MAX_NEW_TOKENS="${MAX_NEW_TOKENS:-1024}"
+VERIFIER_CACHE_ROOT="${MEMEYE_VERIFIER_CACHE_DIR:-${XDG_CACHE_HOME:-${HOME}/.cache}/memeye/verifier}"
 MAX_QUESTIONS="${MAX_QUESTIONS:-0}"
 BENCHMARK="${BENCHMARK:-all}"
 
@@ -28,7 +29,7 @@ fi
 
 for grouping_mode in "${MODES[@]}"; do
   output_dir="$INPUT_RUN/grouped_verification_${grouping_mode}_img${IMAGE_MAX_LONG_EDGE}"
-  cache_dir="$output_dir/vlm_cache"
+  cache_dir="${CACHE_DIR:-${VERIFIER_CACHE_ROOT}/grouped}"
   echo "[GROUPED-VLM] mode=$grouping_mode input=$INPUT_RUN"
   echo "[GROUPED-VLM] model=$MODEL_CONFIG workers=$WORKERS"
   echo "[GROUPED-VLM] candidate_k=$CANDIDATE_K eval_k=$EVAL_K rounds_per_batch=$MAX_ROUNDS_PER_BATCH"
