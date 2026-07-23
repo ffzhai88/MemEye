@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-INPUT_RUN="$1"
+INPUT_RUN="${1:-}"
 MODEL_CONFIG="${2:-config/models/qwen3_vl_8B_ali.yaml}"
 MODE="${3:-both}"
 : "${INPUT_RUN:?Usage: bash eval_grouped_verification.sh <abstract-joint-run> [model-config] [mode]}"

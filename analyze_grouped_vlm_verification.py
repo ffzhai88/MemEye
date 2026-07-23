@@ -225,15 +225,45 @@ def _process_question(
             question_date=question_date,
             members=members,
         )
+        raw_image_bytes = sum(
+            Path(path).stat().st_size
+            for path in images
+            if Path(path).is_file()
+        )
+        estimated_base64_bytes = sum(
+            4 * ((Path(path).stat().st_size + 2) // 3)
+            for path in images
+            if Path(path).is_file()
+        )
         payloads[index] = {
             "batch_index": index,
             "round_ids": list(round_ids),
             "members": members,
             "image_paths": images,
             "image_count": len(images),
+            "raw_image_bytes": raw_image_bytes,
+            "estimated_base64_image_bytes": estimated_base64_bytes,
+            "estimated_request_bytes": (
+                estimated_base64_bytes
+                + len(prompt.encode("utf-8"))
+                + 4096
+            ),
             "omitted_image_count": omitted,
             "prompt_chars": len(prompt),
         }
+        log.info(
+            "[REQUEST] %s/%s/%s batch=%d rounds=%s images=%d "
+            "raw_image_mb=%.2f estimated_request_mb=%.2f",
+            benchmark,
+            dataset_name,
+            question_id,
+            index,
+            ",".join(map(str, round_ids)),
+            len(images),
+            raw_image_bytes / (1024 * 1024),
+            payloads[index]["estimated_request_bytes"]
+            / (1024 * 1024),
+        )
         futures[executor.submit(
             verifier.verify, prompt, images, round_ids
         )] = index
@@ -528,7 +558,10 @@ def main() -> None:
         if args.cache_dir else output_dir / "vlm_cache"
     )
     verifier = GroupedEvidenceVerifier(
-        model_payload["vlm"], cache_dir, namespace
+        model_payload["vlm"],
+        cache_dir,
+        namespace,
+        request_log_dir=output_dir / "request_manifests",
     )
     resolver = DatasetResolver(
         input_dir,

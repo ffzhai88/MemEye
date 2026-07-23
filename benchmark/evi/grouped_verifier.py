@@ -359,11 +359,17 @@ class GroupedEvidenceVerifier:
         vlm: Callable[[str, str, List[str]], str],
         cache_dir: Path,
         model_namespace: str,
+        request_log_dir: Path | None = None,
     ) -> None:
         self.vlm = vlm
         self.cache_dir = Path(cache_dir)
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         self.model_namespace = model_namespace
+        self.request_log_dir = (
+            Path(request_log_dir) if request_log_dir else None
+        )
+        if self.request_log_dir:
+            self.request_log_dir.mkdir(parents=True, exist_ok=True)
         self._lock = threading.Lock()
         self.cache_hits = 0
         self.cache_misses = 0
@@ -408,6 +414,79 @@ class GroupedEvidenceVerifier:
                     self.cache_hits += 1
                 except (OSError, json.JSONDecodeError):
                     pass
+
+        request_manifest = None
+        request_path = None
+        if self.request_log_dir:
+            image_details = []
+            encoded_image_bytes = 0
+            for position, value in enumerate(images, 1):
+                image_path = Path(value)
+                try:
+                    stat = image_path.stat()
+                    file_bytes = stat.st_size
+                    base64_bytes = 4 * ((file_bytes + 2) // 3)
+                    absolute_path = str(image_path.resolve())
+                    missing = False
+                except OSError:
+                    file_bytes = base64_bytes = 0
+                    absolute_path = str(image_path)
+                    missing = True
+                data_url_bytes = base64_bytes + 64 if not missing else 0
+                encoded_image_bytes += data_url_bytes
+                image_details.append({
+                    "position": position,
+                    "path": absolute_path,
+                    "file_bytes": file_bytes,
+                    "estimated_base64_bytes": base64_bytes,
+                    "estimated_data_url_bytes": data_url_bytes,
+                    "missing": missing,
+                })
+            text_bytes = len(SYSTEM_PROMPT.encode("utf-8")) + len(
+                prompt.encode("utf-8")
+            )
+            request_manifest = {
+                "cache_key": key,
+                "prompt_version": PROMPT_VERSION,
+                "model_namespace": self.model_namespace,
+                "round_ids": list(map(str, round_ids)),
+                "system_prompt": SYSTEM_PROMPT,
+                "user_prompt": prompt,
+                "content_order": [
+                    "user_prompt_text",
+                    *[
+                        f"image_url[{index}]"
+                        for index in range(1, len(images) + 1)
+                    ],
+                ],
+                "images": image_details,
+                "image_count": len(images),
+                "raw_image_bytes": sum(
+                    item["file_bytes"] for item in image_details
+                ),
+                "estimated_encoded_image_bytes": encoded_image_bytes,
+                "text_bytes": text_bytes,
+                "estimated_request_body_bytes": (
+                    text_bytes + encoded_image_bytes + 2048
+                ),
+                "cache_hit": cache_hit,
+                "will_call_api": not cache_hit,
+                "result": "pending" if not cache_hit else "cache_hit",
+                "error": "",
+            }
+            request_path = (
+                self.request_log_dir / f"{key}.request.json"
+            )
+            temporary = request_path.with_suffix(".json.tmp")
+            with self._lock:
+                temporary.write_text(
+                    json.dumps(
+                        request_manifest, ensure_ascii=False, indent=2
+                    ),
+                    encoding="utf-8",
+                )
+                temporary.replace(request_path)
+
         if not cache_hit:
             try:
                 raw_response = self.vlm(
@@ -432,10 +511,28 @@ class GroupedEvidenceVerifier:
                         ),
                         encoding="utf-8",
                     )
+        if request_manifest is not None and request_path is not None:
+            request_manifest["result"] = (
+                "success" if raw_response else "failed"
+            )
+            request_manifest["error"] = error
+            request_manifest["response_chars"] = len(raw_response)
+            temporary = request_path.with_suffix(".json.tmp")
+            with self._lock:
+                temporary.write_text(
+                    json.dumps(
+                        request_manifest, ensure_ascii=False, indent=2
+                    ),
+                    encoding="utf-8",
+                )
+                temporary.replace(request_path)
         return {
             "verdict": parse_group_verdict(raw_response, round_ids),
             "raw_response": raw_response,
             "cache_hit": cache_hit,
             "cache_key": key,
+            "request_manifest_path": (
+                str(request_path) if request_path else ""
+            ),
             "error": error,
         }

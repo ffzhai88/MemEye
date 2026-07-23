@@ -1,6 +1,7 @@
 import json
 
 from benchmark.evi.grouped_verifier import (
+    GroupedEvidenceVerifier,
     build_group_plan,
     build_group_prompt,
     local_replace_rerank,
@@ -191,3 +192,33 @@ def test_overlapping_verdicts_keep_blocks_drop():
     )
     assert ranking[:2] == ["high", "other"]
     assert trace["aggregate_member_verdicts"]["high"]["state"] == "keep_joint"
+
+def test_failed_request_still_writes_exact_manifest(tmp_path):
+    image = tmp_path / "large.jpg"
+    image.write_bytes(b"1234567")
+
+    def fail(_system, _prompt, _images):
+        raise RuntimeError("request too large")
+
+    verifier = GroupedEvidenceVerifier(
+        fail,
+        tmp_path / "cache",
+        "fake-model",
+        request_log_dir=tmp_path / "requests",
+    )
+    result = verifier.verify(
+        "full user prompt",
+        [str(image)],
+        ["S1:R1"],
+    )
+
+    assert result["error"] == "RuntimeError: request too large"
+    manifest_path = tmp_path / "requests" / (
+        result["cache_key"] + ".request.json"
+    )
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert manifest["round_ids"] == ["S1:R1"]
+    assert manifest["user_prompt"] == "full user prompt"
+    assert manifest["images"][0]["file_bytes"] == 7
+    assert manifest["images"][0]["estimated_base64_bytes"] == 12
+    assert manifest["result"] == "failed"
