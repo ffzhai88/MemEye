@@ -1,9 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-## ali key
-export OPENAI_API_KEY=sk-ws-H.EHDELYD.tIcG.MEYCIQCUxaaKoQCGLLUARaIbgiiCt1iaf-SNq7iFWNlM2zD6RQIhAMzwJrKNWKSrHs4GCiITagOBBHhuMJGNrYTW5A-2E_g4
-
 INPUT_RUN="${1:-}"
 MODEL_CONFIG="${2:-config/models/qwen3_vl_8B_ali.yaml}"
 MODE="${3:-both}"

@@ -394,6 +394,140 @@ class SavedContextReplayMethod(_MemGalleryHistoryMethod):
         )
         return history
 
+
+class SavedRankingReplayMethod(_MemGalleryHistoryMethod):
+    """Replay one saved retrieval ranking as raw multimodal QA context."""
+
+    name = "saved_ranking_replay"
+    fixed_modality = "multimodal"
+    history_source = "saved_ranking_replay"
+
+    def __init__(self, config: Optional[Dict[str, Any]] = None) -> None:
+        super().__init__(config)
+        source_path = Path(
+            str(self.config.get("source_rankings_jsonl", ""))
+        ).expanduser()
+        if not source_path.is_file():
+            raise FileNotFoundError(
+                f"Saved retrieval rankings not found: {source_path}"
+            )
+        self.source_path = source_path.resolve()
+        self.source_benchmark = str(
+            self.config.get("source_benchmark", "memeye")
+        ).strip()
+        self.source_dataset = str(
+            self.config.get("source_dataset", "")
+        ).strip()
+        if not self.source_dataset:
+            raise ValueError("source_dataset is required for saved ranking replay")
+        self.ranking_strategy = str(
+            self.config.get("ranking_strategy", "selective_vlm")
+        ).strip()
+        self.top_k = int(self.config.get("context_top_k", 10))
+        if self.top_k <= 0:
+            raise ValueError("context_top_k must be positive")
+
+        self._rows_by_question_id: Dict[str, Dict[str, Any]] = {}
+        with self.source_path.open("r", encoding="utf-8") as handle:
+            for line in handle:
+                if not line.strip():
+                    continue
+                row = json.loads(line)
+                if str(row.get("benchmark", "")).strip() != self.source_benchmark:
+                    continue
+                if str(row.get("dataset", "")).strip() != self.source_dataset:
+                    continue
+                question_id = str(row.get("question_id", "")).strip()
+                if not question_id:
+                    continue
+                if question_id in self._rows_by_question_id:
+                    raise ValueError(
+                        "Duplicate saved ranking row for "
+                        f"{self.source_dataset}/{question_id}"
+                    )
+                self._rows_by_question_id[question_id] = row
+        if not self._rows_by_question_id:
+            raise ValueError(
+                "No saved ranking rows found for "
+                f"{self.source_benchmark}/{self.source_dataset}"
+            )
+
+    @staticmethod
+    def _unique(values: List[Any]) -> List[str]:
+        out: List[str] = []
+        seen = set()
+        for value in values:
+            round_id = str(value).strip()
+            if round_id and round_id not in seen:
+                out.append(round_id)
+                seen.add(round_id)
+        return out
+
+    def build_history(
+        self, dataset: MemoryBenchmarkDataset, qa: Dict[str, Any]
+    ) -> List[Dict[str, Any]]:
+        question_id = str(qa.get("question_id", "")).strip()
+        if not question_id:
+            raise KeyError("QA is missing question_id for saved ranking replay")
+        source = self._rows_by_question_id.get(question_id)
+        if source is None:
+            raise KeyError(
+                "Question missing from saved retrieval rankings: "
+                f"{self.source_dataset}/{question_id}"
+            )
+        rankings = source.get("rankings")
+        if not isinstance(rankings, dict):
+            raise ValueError(
+                f"Saved row has no rankings object: {self.source_dataset}/{question_id}"
+            )
+        ranking = rankings.get(self.ranking_strategy)
+        if not isinstance(ranking, list):
+            raise KeyError(
+                f"Ranking strategy {self.ranking_strategy!r} missing for "
+                f"{self.source_dataset}/{question_id}"
+            )
+        selected = self._unique(ranking)[: self.top_k]
+        if len(selected) < self.top_k:
+            raise ValueError(
+                f"Saved ranking contains only {len(selected)} unique rounds for "
+                f"{self.source_dataset}/{question_id}; expected {self.top_k}"
+            )
+        missing = [round_id for round_id in selected if round_id not in dataset.rounds]
+        if missing:
+            raise KeyError(
+                f"Saved ranking references unknown rounds for "
+                f"{self.source_dataset}/{question_id}: {missing}"
+            )
+
+        allowed = set(selected)
+        history: List[Dict[str, Any]] = []
+        for session_id in dataset.session_order():
+            history.extend(
+                history_from_round_ids(
+                    dataset.get_session(session_id),
+                    dataset.rounds,
+                    allowed,
+                    modality="multimodal",
+                )
+            )
+        self.runtime_info.update({
+            "ranking_source": str(self.source_path),
+            "ranking_strategy": self.ranking_strategy,
+            "source_benchmark": self.source_benchmark,
+            "source_dataset": self.source_dataset,
+            "source_question_id": question_id,
+            "selected_round_ids": selected,
+            "context_top_k": self.top_k,
+        })
+        self._update_history_runtime(history)
+        print(
+            f"[RANKING-REPLAY] dataset={self.source_dataset} "
+            f"question_id={question_id} strategy={self.ranking_strategy} "
+            f"selected={selected}"
+        )
+        return history
+
+
 class SemanticRAGTextMethod(_RetrievalHistoryMethod):
     name = "semantic_rag_text_only"
     fixed_modality = "text_only"
@@ -529,6 +663,7 @@ def get_method(method_name: str, config: Optional[Dict[str, Any]] = None) -> His
         TargetSessionContextMethod.name: TargetSessionContextMethod,
         ClueOnlyContextMethod.name: ClueOnlyContextMethod,
         SavedContextReplayMethod.name: SavedContextReplayMethod,
+        SavedRankingReplayMethod.name: SavedRankingReplayMethod,
         SemanticRAGTextMethod.name: SemanticRAGTextMethod,
         SemanticRAGMultimodalMethod.name: SemanticRAGMultimodalMethod,
         "semantic_rag_multimodal_session_markers": SemanticRAGMultimodalMethod,
