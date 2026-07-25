@@ -424,6 +424,9 @@ class SavedRankingReplayMethod(_MemGalleryHistoryMethod):
             self.config.get("ranking_strategy", "selective_vlm")
         ).strip()
         self.top_k = int(self.config.get("context_top_k", 10))
+        self.include_session_markers = bool(
+            self.config.get("include_session_markers", False)
+        )
         if self.top_k <= 0:
             raise ValueError("context_top_k must be positive")
 
@@ -508,6 +511,7 @@ class SavedRankingReplayMethod(_MemGalleryHistoryMethod):
                     dataset.rounds,
                     allowed,
                     modality="multimodal",
+                    include_session_marker=self.include_session_markers,
                 )
             )
         self.runtime_info.update({
@@ -518,6 +522,7 @@ class SavedRankingReplayMethod(_MemGalleryHistoryMethod):
             "source_question_id": question_id,
             "selected_round_ids": selected,
             "context_top_k": self.top_k,
+            "include_session_markers": self.include_session_markers,
         })
         self._update_history_runtime(history)
         print(

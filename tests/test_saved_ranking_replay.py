@@ -38,8 +38,19 @@ class SavedRankingReplayTest(unittest.TestCase):
             )
             captured = []
 
-            def fake_history(session, rounds, allowed, modality):
-                captured.append((session["session_id"], set(allowed), modality))
+            def fake_history(
+                session,
+                rounds,
+                allowed,
+                modality,
+                include_session_marker=False,
+            ):
+                captured.append((
+                    session["session_id"],
+                    set(allowed),
+                    modality,
+                    include_session_marker,
+                ))
                 return []
 
             with patch(
@@ -51,19 +62,21 @@ class SavedRankingReplayTest(unittest.TestCase):
                     "source_dataset": "example",
                     "ranking_strategy": "selective_vlm",
                     "context_top_k": 2,
+                    "include_session_markers": True,
                 })
                 self.assertEqual(
                     method.build_history(_Dataset(), {"question_id": "Q1"}),
                     [],
                 )
             self.assertEqual(captured, [
-                ("S1", {"S1:R1", "S2:R1"}, "multimodal"),
-                ("S2", {"S1:R1", "S2:R1"}, "multimodal"),
+                ("S1", {"S1:R1", "S2:R1"}, "multimodal", True),
+                ("S2", {"S1:R1", "S2:R1"}, "multimodal", True),
             ])
             self.assertEqual(
                 method.runtime_info["selected_round_ids"],
                 ["S2:R1", "S1:R1"],
             )
+            self.assertTrue(method.runtime_info["include_session_markers"])
 
 
 if __name__ == "__main__":

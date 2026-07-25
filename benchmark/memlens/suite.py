@@ -142,6 +142,19 @@ def official_judge_rows(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     ]
 
 
+def effective_memlens_method_config(method_cfg: Dict[str, Any]) -> Dict[str, Any]:
+    """Apply MEMLENS answer-context defaults without changing retrieval.
+
+    The official benchmark exposes the date of every session to the answer
+    model. MemEye methods keep this optional for legacy MemEye runs, so the
+    MEMLENS adapter enables it here unless an experiment explicitly overrides
+    the setting.
+    """
+    effective = dict(method_cfg)
+    effective.setdefault("include_session_markers", True)
+    return effective
+
+
 def run_official_judge(
     *, official_dir: Path, input_path: Path, output_dir: Path, log_path: Path,
     model: str, base_url: str, key_env: str, workers: int, questions_file: Optional[Path],
@@ -191,6 +204,7 @@ def run_suite(args: Any) -> Path:
     image_root = Path(args.image_root or manifest.get("runtime_image_root", "")).resolve()
     model_cfg = load_yaml(resolve_config_path(args.model_config))
     method_cfg = load_yaml(resolve_config_path(args.method_config))
+    effective_method_cfg = effective_memlens_method_config(method_cfg)
     method_name = str(method_cfg.get("method") or method_cfg.get("name") or "method")
     if args.run_dir:
         run_dir = Path(args.run_dir).resolve()
@@ -212,6 +226,9 @@ def run_suite(args: Any) -> Path:
         "max_questions": args.max_questions, "selected_questions": len(items),
         "git_commit": get_git_commit(REPO_ROOT), "run_dir": str(run_dir),
         "question_date_in_query": True,
+        "session_markers_in_answer_context": bool(
+            effective_method_cfg.get("include_session_markers", False)
+        ),
         "keep_embedding_models": not bool(getattr(args, "unload_embedding_models", False)),
         "cleanup_policy": "drop per-item methods and retrievers; retain shared embedding backends",
         "judge": {"enabled": not args.skip_judge, "model": args.judge_model,
@@ -223,7 +240,14 @@ def run_suite(args: Any) -> Path:
     with (run_dir / "memlens_run.log").open(log_mode, encoding="utf-8") as log:
         with contextlib.redirect_stdout(Tee(sys.stdout, log)), contextlib.redirect_stderr(Tee(sys.stderr, log)):
             print(f"[MEMLENS] run_dir={run_dir} selected={len(items)} resumed={len(existing)}")
-            agent_probe = get_method(method_name, config={**method_cfg, "_model_cfg": model_cfg})
+            print(
+                "[MEMLENS] answer_context "
+                f"include_session_markers={effective_method_cfg['include_session_markers']}"
+            )
+            agent_probe = get_method(
+                method_name,
+                config={**effective_method_cfg, "_model_cfg": model_cfg},
+            )
             is_agentic = callable(getattr(agent_probe, "answer", None))
             del agent_probe
             router = None if is_agentic else instantiate_router(model_cfg, load_sys_prompt("open", method_cfg))
@@ -242,7 +266,7 @@ def run_suite(args: Any) -> Path:
                     qa = dataset.qas[0]
                     question_id = str(qa.get("question_id") or question_id)
                     question = format_memlens_question(qa)
-                    runtime_cfg = dict(method_cfg)
+                    runtime_cfg = dict(effective_method_cfg)
                     runtime_cfg.update({"_model_cfg": model_cfg, "_runtime_paths": {
                         "output_root": str(run_dir.parent), "output_json": "", "run_dir": str(run_dir)},
                         "_eval_cfg": {"mode": "open"}})
