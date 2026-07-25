@@ -13,7 +13,7 @@ export OPENAI_API_KEY=sk-ws-H.EHDELYD.tIcG.MEYCIQCUxaaKoQCGLLUARaIbgiiCt1iaf-SNq
 
 DEFAULT_METHOD_CONFIGS="config/methods/semantic_rag_multimodal.yaml config/methods/evi_retrieval_image_rerank.yaml config/methods/evi_compact_card_episode_image_rerank.yaml"
 
-MODEL_CONFIG="${1:-config/models/qwen3_vl_8B_ali.yaml.yaml}"
+MODEL_CONFIG="${1:-config/models/qwen3_vl_8B_ali.yaml}"
 METHOD_CONFIGS="${2:-${MEMLENS_METHOD_CONFIGS:-$DEFAULT_METHOD_CONFIGS}}"
 OUTPUT_ROOT="${3:-runs}"
 MAX_QUESTIONS="${4:-1}"
@@ -69,7 +69,7 @@ for METHOD_CONFIG in $METHOD_CONFIGS; do
   echo "[MEMLENS] image_root=$IMAGE_ROOT"
   echo "======================================================================"
 
-  python run_memlens_suite.py \
+  python run_memlens_suite_v2.py \
     --manifest "$MANIFEST" \
     --image-root "$IMAGE_ROOT" \
     --model-config "$MODEL_CONFIG" \

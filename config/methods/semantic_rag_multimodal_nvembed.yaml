@@ -13,7 +13,7 @@ text_embedding_kwargs:
   # Round-level dialogue packets are far shorter than NV-Embed's 32K limit.
   # A small batch avoids latent-attention OOM without changing retrieval semantics.
   max_length: 4096
-  batch_size: 4
+  batch_size: 1
 multimodal_embedding_model: siglip2-base-patch16-384
 text_dense_weight: 0.5
 image_dense_weight: 0.5

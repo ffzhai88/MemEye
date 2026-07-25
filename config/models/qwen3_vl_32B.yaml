@@ -1,0 +1,7 @@
+name: qwen3_vl_32b
+provider: openai_api
+model: Qwen/Qwen3-VL-32B-Instruct
+api_key_env: OPENAI_API_KEY
+base_url: https://api.siliconflow.cn/v1
+max_new_tokens: 128
+timeout: 90

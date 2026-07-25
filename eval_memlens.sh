@@ -23,19 +23,26 @@
 #     runs/MEMLENS/20260719_120000_qwen3_vl_8b_openrouter_evi_compact_card_episode_image_rerank
 
 set -eu
+export CUDA_VISIBLE_DEVICES=9
+
+## ali key
+export OPENAI_API_KEY=sk-ws-H.EHDELYD.tIcG.MEYCIQCUxaaKoQCGLLUARaIbgiiCt1iaf-SNq7iFWNlM2zD6RQIhAMzwJrKNWKSrHs4GCiITagOBBHhuMJGNrYTW5A-2E_g4
 
 MODEL_CONFIG="${1:-config/models/qwen3_vl_8b_openrouter.yaml}"
+METHOD_CONFIG="${2:-config/methods/semantic_rag_multimodal_nvembed.yaml}"
 METHOD_CONFIG="${2:-config/methods/evi_compact_card_episode_image_rerank.yaml}"
 OUTPUT_ROOT="${3:-runs}"
+MAX_QUESTIONS="${4:-1}"
 MAX_QUESTIONS="${4:-0}"
-JUDGE_MODEL="${5:-${MEMLENS_JUDGE_MODEL:-}}"
+JUDGE_MODEL="${5:-${MEMLENS_JUDGE_MODEL:-Qwen/Qwen3.5-122B-A10B}}"
+JUDGE_MODEL="${5:-${MEMLENS_JUDGE_MODEL:-Qwen/Qwen3-VL-8B-Instruct}}"
 RUN_DIR="${6:-}"
 
 MANIFEST="${MEMLENS_MANIFEST:-data/memlens/converted_32k_agent195/manifest.json}"
 OFFICIAL_DIR="${MEMLENS_OFFICIAL_DIR:-third_party/MEMLENS}"
 QUESTIONS_FILE="${MEMLENS_QUESTIONS_FILE:-data/memlens/dataset_32k.json}"
-JUDGE_WORKERS="${MEMLENS_JUDGE_WORKERS:-8}"
-OPENAI_BASE_URL="${OPENAI_BASE_URL:-https://api.openai.com/v1}"
+JUDGE_WORKERS="${MEMLENS_JUDGE_WORKERS:-1}"
+OPENAI_BASE_URL="${OPENAI_BASE_URL:-https://api.siliconflow.cn/v1}"
 export OPENAI_BASE_URL
 
 if [ -z "${OPENAI_API_KEY:-}" ]; then

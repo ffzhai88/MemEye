@@ -12,8 +12,8 @@ evi_pipeline: faceted_topk
 
 # Text embedding backend used for task-agnostic evidence-anchor retrieval.
 # Safer default for local compile/smoke tests is all-MiniLM-L6-v2; use NV-Embed-v2 for full experiments if available.
-# text_embedding_model: all-MiniLM-L6-v2
-text_embedding_model: nvidia/NV-Embed-v2
+text_embedding_model: all-MiniLM-L6-v2
+# text_embedding_model: nvidia/NV-Embed-v2
 # text_embedding_kwargs:
 #   max_length: 16384
 #   batch_size: 8

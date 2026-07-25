@@ -30,7 +30,7 @@ for METHOD_CONFIG in $METHOD_CONFIGS; do
   echo "======================================================================"
   echo "[MEMLENS-RETRIEVAL][$CURRENT/$COUNT] $METHOD_CONFIG"
   echo "======================================================================"
-  python run_memlens_retrieval_suite.py \
+  python run_memlens_retrieval_suite_v2.py \
     --manifest "$MANIFEST" \
     --image-root "$IMAGE_ROOT" \
     --model-config "$MODEL_CONFIG" \
