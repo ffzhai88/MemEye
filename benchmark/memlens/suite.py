@@ -160,6 +160,14 @@ def run_official_judge(
         command.extend(["--questions_file", str(questions_file)])
     env = os.environ.copy()
     env["OPENAI_API_KEY"] = api_key
+    # The benchmark endpoint is directly reachable. Inherited SOCKS proxy
+    # variables make the official OpenAI/httpx client require the optional
+    # ``socksio`` package even though the QA router itself does not use it.
+    for proxy_key in (
+        "ALL_PROXY", "HTTPS_PROXY", "HTTP_PROXY",
+        "all_proxy", "https_proxy", "http_proxy",
+    ):
+        env.pop(proxy_key, None)
     output_dir.mkdir(parents=True, exist_ok=True)
     with log_path.open("a", encoding="utf-8") as log:
         print(f"[OFFICIAL-JUDGE] model={model} base_url={base_url} workers={workers}")
@@ -300,7 +308,8 @@ def run_suite(args: Any) -> Path:
             judge_input = run_dir / "official_judge_input.json"
             write_json(judge_input, {"data": official_judge_rows(ordered), "meta": {"run_dir": str(run_dir)}})
             print(f"[MEMLENS] generation complete completed={len(ordered)}/{len(items)} errors={errors}")
-            if not args.skip_judge:
+            generation_complete = len(ordered) == len(items)
+            if not args.skip_judge and generation_complete:
                 if not args.judge_model:
                     raise ValueError("--judge-model is required unless --skip-judge is used")
                 run_official_judge(
@@ -315,4 +324,9 @@ def run_suite(args: Any) -> Path:
                     metrics["official_judge"] = load_json(judge_metrics_path)
                     write_json(run_dir / "metrics.json", metrics)
                 print("[MEMLENS] official judge complete")
+            elif not args.skip_judge:
+                print(
+                    "[MEMLENS] official judge deferred because generation is "
+                    f"incomplete: completed={len(ordered)}/{len(items)}"
+                )
     return run_dir

@@ -44,6 +44,7 @@ def _acquire_run_lock(
     model_config: str,
     strategy: str,
     top_k: int,
+    scope: str = "QA",
 ):
     """Prevent concurrent duplicate QA suites with the same frozen inputs."""
 
@@ -53,11 +54,12 @@ def _acquire_run_lock(
             "model_config": str(resolve_config_path(model_config)),
             "strategy": strategy,
             "top_k": top_k,
+            "scope": scope,
         },
         sort_keys=True,
     )
     digest = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:16]
-    lock_dir = output_root / "QA" / ".locks"
+    lock_dir = output_root / scope / ".locks"
     lock_dir.mkdir(parents=True, exist_ok=True)
     lock_path = lock_dir / f"saved_ranking_{digest}.lock"
     handle = lock_path.open("a+", encoding="utf-8")
