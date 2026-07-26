@@ -1,6 +1,7 @@
 from typing import Any, Dict, List, Optional
 
 from .base import BaseRouter
+from .http_utils import encode_image_data_url
 
 
 class QwenLocalRouter(BaseRouter):
@@ -27,10 +28,14 @@ class QwenLocalRouter(BaseRouter):
         model_type = getattr(cfg, "model_type", "unknown")
 
         model_cls = None
-        if model_type == "qwen2_5_vl":
+        if model_type == "qwen3_vl":
+            model_cls = getattr(self.transformers, "Qwen3VLForConditionalGeneration", None)
+        elif model_type == "qwen2_5_vl":
             model_cls = getattr(self.transformers, "Qwen2_5_VLForConditionalGeneration", None)
         elif model_type == "qwen2_vl":
             model_cls = getattr(self.transformers, "Qwen2VLForConditionalGeneration", None)
+        if model_cls is None:
+            model_cls = getattr(self.transformers, "AutoModelForImageTextToText", None)
         if model_cls is None:
             model_cls = getattr(self.transformers, "AutoModelForVision2Seq", None)
         if model_cls is None:
@@ -47,9 +52,10 @@ class QwenLocalRouter(BaseRouter):
         self.model = model_cls.from_pretrained(
             model_path,
             torch_dtype=dtype,
-            device_map="auto" if use_cuda else "cpu",
         )
         self.model.eval()
+        if use_cuda:
+            self.model = self.model.to("cuda:0")
         self.processor = self.transformers.AutoProcessor.from_pretrained(model_path, use_fast=False)
         self.process_vision_info = self.qwen_vl_utils.process_vision_info
         self.use_cuda = use_cuda
@@ -91,6 +97,62 @@ class QwenLocalRouter(BaseRouter):
             final_content.append({"type": "image", "image": f"file://{img}"})
         messages.append({"role": "user", "content": final_content})
         return messages
+
+    def raw_vlm_call(
+        self,
+        system_prompt: str,
+        user_text: str,
+        images: List[str],
+        image_max_long_edge: int = 0,
+    ) -> str:
+        """Generate from exact system/user prompts without QA wrapper text."""
+        messages: List[Dict[str, Any]] = []
+        if system_prompt:
+            messages.append({
+                "role": "system",
+                "content": [{"type": "text", "text": system_prompt}],
+            })
+        content: List[Dict[str, Any]] = [{"type": "text", "text": user_text}]
+        for path in images:
+            image_value = (
+                encode_image_data_url(path, max_long_edge=image_max_long_edge)
+                if image_max_long_edge > 0
+                else f"file://{path}"
+            )
+            content.append({"type": "image", "image": image_value})
+        messages.append({"role": "user", "content": content})
+
+        text = self.processor.apply_chat_template(
+            messages, tokenize=False, add_generation_prompt=True
+        )
+        image_inputs, video_inputs = self.process_vision_info(messages)
+        processor_kwargs: Dict[str, Any] = dict(
+            text=[text], padding=True, return_tensors="pt"
+        )
+        if image_inputs:
+            processor_kwargs["images"] = image_inputs
+        if video_inputs:
+            processor_kwargs["videos"] = video_inputs
+        inputs = self.processor(**processor_kwargs)
+        if self.use_cuda:
+            inputs = inputs.to("cuda:0")
+
+        generate_kwargs: Dict[str, Any] = dict(
+            max_new_tokens=self.max_new_tokens,
+            do_sample=False,
+            eos_token_id=getattr(self.processor.tokenizer, "eos_token_id", None),
+            pad_token_id=getattr(self.processor.tokenizer, "pad_token_id", None),
+        )
+        if self.max_time is not None:
+            generate_kwargs["max_time"] = self.max_time
+        with self.torch.inference_mode():
+            generated = self.model.generate(**inputs, **generate_kwargs)
+        trimmed = [out_ids[len(in_ids):] for in_ids, out_ids in zip(inputs.input_ids, generated)]
+        out = self.processor.batch_decode(
+            trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False
+        )
+        return (out[0] if out else "").strip()
+
 
     def answer(
         self,

@@ -1,0 +1,6 @@
+name: qwen3_vl_8b_local
+provider: qwen_local
+model_path: llms/Qwen3-VL-8B-Instruct
+max_new_tokens: 512
+max_time: 90
+use_qa_cache: true

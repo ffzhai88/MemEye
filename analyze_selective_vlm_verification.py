@@ -31,7 +31,7 @@ from benchmark.evi.selective_verifier import (
     conservative_rerank,
     verification_candidate_ids,
 )
-from benchmark.evi.vlm import make_openai_vlm
+from benchmark.evi.vlm import make_openai_vlm, make_qwen_local_vlm
 
 
 log = logging.getLogger("selective_vlm_verification")
@@ -708,6 +708,41 @@ def _model_config(
     path: Path, args: argparse.Namespace
 ) -> Tuple[Dict[str, Any], str]:
     config = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    if str(config.get("provider", "openai_api")) == "qwen_local":
+        raw_model_path = str(config.get("model_path", "")).strip()
+        if not raw_model_path:
+            raise ValueError(f"Local model config has no model_path: {path}")
+        checkpoint = Path(raw_model_path).expanduser()
+        if not checkpoint.is_absolute():
+            checkpoint = (path.parent.parent.parent / checkpoint).resolve()
+        if not checkpoint.is_dir():
+            raise FileNotFoundError(f"Local model checkpoint not found: {checkpoint}")
+        max_tokens = args.max_new_tokens or int(
+            config.get("max_new_tokens", 512) or 512
+        )
+        namespace_payload = {
+            "provider": "qwen_local",
+            "model_path": str(checkpoint),
+            "max_new_tokens": max_tokens,
+            "max_time": config.get("max_time"),
+            "prompt_version": PROMPT_VERSION,
+            "dry_run": bool(args.dry_run),
+            "image_preprocessing": {
+                "max_long_edge": args.image_max_long_edge,
+                "resize_format": "JPEG_when_resized",
+                "jpeg_quality": 80,
+            },
+        }
+        namespace = json.dumps(namespace_payload, sort_keys=True)
+        if args.dry_run:
+            def dry_local_vlm(_system: str, _user: str, _images: List[str]) -> str:
+                return '{"anchor_grounding":"uncertain","evidence_utility":"possibly_useful","confidence":"low"}'
+            return {"vlm": dry_local_vlm, **namespace_payload}, namespace
+        vlm = make_qwen_local_vlm(
+            str(checkpoint), max_tokens, config.get("max_time"),
+            args.image_max_long_edge
+        )
+        return {"vlm": vlm, **namespace_payload}, namespace
     if str(config.get("provider", "openai_api")) != "openai_api":
         raise ValueError(
             "Selective verifier currently requires provider=openai_api"
@@ -845,6 +880,12 @@ def main() -> None:
     parser.add_argument("--no-resume", action="store_true")
     args = parser.parse_args()
 
+    verifier_cfg = yaml.safe_load(
+        Path(args.verifier_model_config).read_text(encoding="utf-8")
+    ) or {}
+    if str(verifier_cfg.get("provider", "")) == "qwen_local":
+        args.workers = 1
+
     positive = (
         "candidate_k", "eval_k", "workers",
         "max_images_per_round", "max_new_tokens",
@@ -942,7 +983,7 @@ def main() -> None:
     log.info(
         "Verifier model=%s candidate_k=%d eval_k=%d "
         "verify_top_k=%d workers=%d dry_run=%s",
-        model_payload["model"],
+        model_payload.get("model") or model_payload.get("model_path", "unknown"),
         args.candidate_k,
         args.eval_k,
         verification_top_k,

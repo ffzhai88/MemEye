@@ -150,14 +150,60 @@ def make_openai_vlm(
     return _call
 
 
+def make_qwen_local_vlm(
+    model_path: str,
+    max_new_tokens: int,
+    max_time: Optional[float] = None,
+    image_max_long_edge: int = 0,
+) -> VLMCallable:
+    """Load a local Qwen-VL checkpoint behind the shared VLM interface."""
+    from router.qwen_local import QwenLocalRouter
+
+    router = QwenLocalRouter(
+        model_path=model_path,
+        max_new_tokens=max_new_tokens,
+        system_prompt="",
+        max_time=max_time,
+    )
+
+    def _call(system_prompt: str, user_text: str, images: List[str]) -> str:
+        return router.raw_vlm_call(
+            system_prompt, user_text, images, image_max_long_edge
+        )
+
+    return _call
+
+
 def make_vlm_callable(model_cfg: dict) -> VLMCallable:
     provider = str(model_cfg.get("provider", "openai_api"))
     model = str(model_cfg.get("model", "gpt-4o"))
     max_new_tokens = int(model_cfg.get("max_new_tokens", 1024) or 1024)
     timeout = int(model_cfg.get("timeout", 90) or 90)
 
+    if provider == "qwen_local":
+        model_path = str(model_cfg.get("model_path", "")).strip()
+        if not model_path:
+            raise ValueError("EVI local VLM requires model_path")
+        namespace = json.dumps({
+            "provider": provider,
+            "model_path": str(Path(model_path).expanduser().resolve()),
+            "max_new_tokens": max_new_tokens,
+            "max_time": model_cfg.get("max_time"),
+            "image_max_long_edge": int(model_cfg.get("image_max_long_edge", 0) or 0),
+            "cache_version": "vlm_v2",
+        }, sort_keys=True)
+        log.info("VLM adapter: qwen_local model_path=%s", model_path)
+        return with_disk_cache(
+            make_qwen_local_vlm(
+                model_path, max_new_tokens, model_cfg.get("max_time"),
+                int(model_cfg.get("image_max_long_edge", 0) or 0)
+            ),
+            namespace=namespace,
+        )
     if provider != "openai_api":
-        raise ValueError(f"EVI currently supports provider=openai_api, got {provider!r}")
+        raise ValueError(
+            f"EVI supports provider=openai_api or qwen_local, got {provider!r}"
+        )
 
     api_key = str(model_cfg.get("api_key", ""))
     api_key_env = str(model_cfg.get("api_key_env", "OPENAI_API_KEY"))
