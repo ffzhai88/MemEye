@@ -7,6 +7,7 @@ import logging
 import os
 from pathlib import Path
 from typing import Callable, List, Optional
+from urllib.parse import urlparse
 
 from router.http_utils import encode_image_data_url
 
@@ -107,10 +108,19 @@ def make_openai_vlm(
     image_max_long_edge: int = 0,
 ) -> VLMCallable:
     import openai
+    import httpx
 
     if not api_key:
         raise RuntimeError("EVI VLM requires an API key for openai_api provider")
-    client = openai.OpenAI(api_key=api_key, base_url=base_url, timeout=timeout)
+    hostname = (urlparse(base_url).hostname or "").lower()
+    http_client = None
+    if hostname in {"127.0.0.1", "localhost", "::1"}:
+        # Local vLLM traffic must not inherit workstation HTTP/SOCKS proxies.
+        http_client = httpx.Client(timeout=timeout, trust_env=False)
+    client = openai.OpenAI(
+        api_key=api_key, base_url=base_url, timeout=timeout,
+        http_client=http_client,
+    )
 
     def _call(system_prompt: str, user_text: str, images: List[str]) -> str:
         content: list = [{"type": "text", "text": user_text}]

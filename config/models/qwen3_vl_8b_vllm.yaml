@@ -1,0 +1,8 @@
+name: qwen3_vl_8b_vllm
+provider: openai_api
+model: qwen3-vl-8b-local
+api_key: local-vllm
+base_url: http://127.0.0.1:8000/v1
+max_new_tokens: 512
+timeout: 90
+use_qa_cache: true
